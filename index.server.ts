@@ -1,3 +1,4 @@
+import { trackedRecipient } from "./shared/tracked-decisions";
 import { boardReadiness } from "./shared/readiness";
 import { SnapshotReads } from "./server/snapshot-reads";
 import { readProjectDecisionSources } from "./server/project-decision-sources";
@@ -97,7 +98,30 @@ export default function contribute(server: PluginServerContext) {
   }, decisionCount);
   const invalidateCount = () => reads.invalidate();
   prs.register(server, invalidateCount);
-  tracked.register(server, () => new Set(prefs.read().projects), invalidateCount);
+  tracked.register(server, () => new Set(prefs.read().projects), invalidateCount, async (item,targetId,{paseo}) => {
+    const rows=await discoverSessions(paseo);
+    const current=()=>{
+      const scope=prefs.read();
+      return scope.projects.length>0 && (!item.projectId || scope.projects.includes(item.projectId)) &&
+        trackedRecipient(item,scope.coordinator,managedSessions(rows,scope))===targetId;
+    };
+    if (!current()) return null;
+    const handle=paseo.agents.ref(targetId);
+    const agent=(await handle.refresh())?.agent;
+    if (!current() || !agent || agent.id!==targetId || agent.internal || agent.archivedAt) return null;
+    return {
+      stillCurrent:current,
+      send:async (answer,messageId)=>{
+        await handle.send(answer,{messageId,activeTurnBehavior:"steer"});
+      },
+      accepted:async (answer,messageId)=>{
+        const page=await handle.timeline.refetch({direction:"tail",projection:"projected",limit:128});
+        return !page.error && !page.gap && !page.staleCursor && page.entries.some(({item:m})=>m.type==="user_message" &&
+          (m.messageId===messageId || m.clientMessageId===messageId) && m.text===answer);
+      },
+      ready:agent.status==="idle" && !agent.activeTurn && !agent.pendingPermissions.length && agent.attentionReason!=="permission",
+    };
+  });
   server.handle(boardSnapshot, (input, { paseo }) => reads.read(() => buildSnapshot(paseo), input.fresh));
   server.handle(boardDecisionCount, async (_input, { paseo }) => ({
     count: await reads.count(() => buildSnapshot(paseo)),

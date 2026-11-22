@@ -127,7 +127,7 @@ export function SessionLinks(props: Props) {
   const { t } = useBoardLanguage();
   const [opened, setOpened] = useState(false);
   return <View style={{ gap: 8 }}>
-    <Button theme={props.theme} label={opened ? t("세션 연결 목록 닫기", "Close session links") : t("기존 세션을 프로젝트에 연결", "Link an existing session to a project")} onPress={() => setOpened(!opened)} />
+    <Button theme={props.theme} label={opened ? t("세션 연결 목록 닫기", "Close session links") : t("다른 프로젝트의 세션 하나 연결", "Link a session from another project")} onPress={() => setOpened(!opened)} />
     {opened && <LinkPicker {...props} />}
   </View>;
 }

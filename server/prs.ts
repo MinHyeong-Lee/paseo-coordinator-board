@@ -2,7 +2,7 @@ import { execCommand, type PluginHandlerContext, type PluginServerContext } from
 import { stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { confirmPullRequestMerge, previewPullRequestMerge, pullReason, setProjectRepository,
+import { confirmPullRequestMerge, previewPullRequestMerge, pullReason, repositorySlug, setProjectRepository,
   type MergeTarget, type PullRequestItem, type PullRequestView } from "../shared/prs";
 import { githubMergeApi, PullMerges } from "./pr-merge";
 import { githubRepository } from "../shared/github-repository";
@@ -22,10 +22,11 @@ const check = z.object({ status:z.string().nullish(), conclusion:z.string().null
 const rawPull = z.object({
   number:z.number().int().positive(), title:z.string(), state:z.literal("OPEN"), updatedAt:z.string().datetime({offset:true}),
   isDraft:z.boolean(), mergeable:z.string().nullable(), mergeStateStatus:z.string().nullable(), reviewDecision:z.string().nullable(),
+  headRepo:z.string().nullish(), headBranch:z.string().nullish(),
   checks:z.array(check), autoMerge:z.boolean(),
 });
-const fields = "number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest";
-const projection = "[.[] | {number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,checks:[.statusCheckRollup[]? | {status,conclusion,state}],autoMerge:(.autoMergeRequest != null)}]";
+const fields = "number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest,headRepository,headRefName";
+const projection = "[.[] | {number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,headRepo:.headRepository.nameWithOwner,headBranch:.headRefName,checks:[.statusCheckRollup[]? | {status,conclusion,state}],autoMerge:(.autoMergeRequest != null)}]";
 const ttl = 60_000;
 
 function reason(p: z.output<typeof rawPull>):Reason {
@@ -50,7 +51,8 @@ export function parseOpenPulls(repo:string, json:string):Source {
   for (const p of rows.slice(0,scanLimit)) {
     if (seen.has(p.number)) continue;
     const why = reason(p);
-    items.push({repo, number:p.number, title:p.title.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g," ").slice(0,512),
+    const head = repositorySlug.safeParse(p.headRepo);
+    items.push({repo, number:p.number, ...(head.success && p.headBranch ? {headRepo:head.data,headBranch:p.headBranch} : {}), title:p.title.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g," ").slice(0,512),
       url:`https://github.com/${repo}/pull/${p.number}`, lane:why==="ready"?"review":"progress",reason:why,updatedAt:p.updatedAt});
     seen.add(p.number);
   }

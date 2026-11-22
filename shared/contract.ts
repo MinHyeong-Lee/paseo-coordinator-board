@@ -5,6 +5,8 @@ import { pullRequestViewSchema } from "./prs";
 import { trackedDecisionViewSchema } from "./tracked-decisions";
 import { factSchema } from "./board-facts";
 
+import { workspacePullSchema } from "./workspace-pull";
+
 const sessionId = z.string().min(1).max(256);
 const noteKind = z.enum(["question", "review", "done", "clear"]);
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -14,6 +16,7 @@ const session = z.object({
   projectId: z.string(),
   projectTitle: z.string(),
   workspaceTitle: z.string(),
+  workspacePull: workspacePullSchema.optional(),
   sourceProjectId: z.string().optional(),
   sourceProjectTitle: z.string().optional(),
   model: z.string().nullable(),

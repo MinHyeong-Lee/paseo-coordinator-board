@@ -13,6 +13,7 @@ export const repositoryOverride = z.discriminatedUnion("mode", [
 export const pullReason = z.enum(["ready","draft","conflict","checks-failed","checks-pending","changes-requested","blocked","unknown","auto-merge"]);
 const pull = z.object({
   repo:repositorySlug, number:z.number().int().positive(), title:z.string(), url:z.string().url(),
+  headRepo:repositorySlug.optional(), headBranch:z.string().optional(),
   projectIds:z.array(z.string()), lane:z.enum(["review","progress"]), reason:pullReason, updatedAt:z.string(),
 });
 export const pullRequestViewSchema = z.object({

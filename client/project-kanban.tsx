@@ -1,9 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { View, Pressable, Text, ScrollView } from "react-native";
-import { Button, type Theme } from "./controls";
+import { Button, SessionChip, type Theme } from "./controls";
 import { useBoardLanguage } from "./language";
 import { columnWidth, COLUMN_GAP } from "./lane-width";
-import { PullRequestCard, type MergeNotice } from "./pull-requests";
 import type { PullRequestItem } from "../shared/prs";
 import type { TrackedDecision } from "../shared/tracked-decisions";
 import { factStatus, laneLabel, noteLabel, sessionDetail, type Card, type Lane } from "./model";
@@ -43,6 +42,7 @@ function CardView({ card, theme, onOpen, onEdit, sessionHostLabel }: { card: Car
           {t("실행 호스트", "Host")} · {sessionHostLabel}
         </Text>}
       </Pressable>
+      {onOpen && <SessionChip theme={theme} label={t("세션", "Session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
       {fact && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
         {fact.current ? "" : t("이전 · ", "Previous · ")}{factStatus(fact, t)}
       </Text>}
@@ -57,7 +57,6 @@ function CardView({ card, theme, onOpen, onEdit, sessionHostLabel }: { card: Car
           <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{question}</Text>}
         {noteText && <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{noteText}</Text>}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
-          {onOpen && <Button theme={theme} label={t("세션 열기", "Open session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
           <Button theme={theme} label={noteText ? t("기록 편집", "Edit note") : t("기록 추가", "Add note")} accessibilityLabel={t(`기록 편집 · ${session.title}`, `Edit note · ${session.title}`)} onPress={() => onEdit(session.id)} />
         </View>
       </>}
@@ -67,12 +66,13 @@ function CardView({ card, theme, onOpen, onEdit, sessionHostLabel }: { card: Car
 
 type Entry = {key:string; content: ReactNode};
 
-function RecordPreview({item,theme,render}: {item:TrackedDecision;theme:Theme;render:(item:TrackedDecision)=>ReactNode}) {
+function RecordPreview({item,theme,render,open}: {item:TrackedDecision;theme:Theme;render:(item:TrackedDecision)=>ReactNode;open?:()=>void}) {
   const [expanded,setExpanded] = useState(false);
   const {t} = useBoardLanguage();
   return <View style={{gap:4}}>
     <Button theme={theme} label={expanded ? t("결정 카드 접기","Hide decision card") : item.title}
       accessibilityLabel={t(`결정 카드 · ${item.title}`,`Decision card · ${item.title}`)} onPress={()=>setExpanded(v=>!v)} />
+    {open && !expanded && <SessionChip theme={theme} label={t("연결 세션","Linked session")} accessibilityLabel={item.title+" · "+t("연결된 세션 열기","Open linked session")} onPress={open} />}
     {expanded && render(item)}
   </View>;
 }
@@ -93,10 +93,10 @@ function Column({lane,entries,theme}: {lane:Lane;entries:Entry[];theme:Theme}) {
 }
 
 type Props = Actions & {projectId:string; title:string; decisions:number; cards:Card[]; records:TrackedDecision[]; requests:PullRequestItem[];
-  renderRecord:(item:TrackedDecision)=>ReactNode; theme:Theme; compact:boolean; onMergeResult:(notice:MergeNotice)=>void};
+  renderRecord:(item:TrackedDecision)=>ReactNode; theme:Theme; compact:boolean; openRecord:(item:TrackedDecision)=>(()=>void)|undefined; renderPull:(pr:PullRequestItem,projectId:string)=>ReactNode};
 const order:Lane[] = ["running","review","human","idle","done","unknown"];
 
-export function Project({projectId,title,decisions,cards,records,requests,renderRecord,theme,compact,onMergeResult,...actions}:Props) {
+export function Project({projectId,title,decisions,cards,records,requests,renderRecord,theme,compact,openRecord,renderPull,...actions}:Props) {
   const {t} = useBoardLanguage();
   const [width,setWidth] = useState(0);
   const groups:Record<Lane,Entry[]> = {running:[],review:[],human:[],idle:[],done:[],unknown:[]};
@@ -104,7 +104,7 @@ export function Project({projectId,title,decisions,cards,records,requests,render
     const since = Date.parse(item.since ?? "");
     const answered = item.replyHistory.some(reply => Date.parse(reply.at ?? "") >= since);
     const lane = answered && !item.matchedSessionId ? "review" : "human";
-    groups[lane].push({key:"decision:"+item.key,content:<RecordPreview item={item} theme={theme} render={renderRecord} />});
+    groups[lane].push({key:"decision:"+item.key,content:<RecordPreview item={item} theme={theme} render={renderRecord} open={openRecord(item)} />});
   }
   for(const card of cards) {
     if(card.lane==="human" && records.some(item=>item.matchedSessionId===card.session.id)) continue;
@@ -113,7 +113,7 @@ export function Project({projectId,title,decisions,cards,records,requests,render
   for(const pr of requests) {
     if(records.some(item=>item.matchedPull?.repo===pr.repo && item.matchedPull.number===pr.number)) continue;
     const lane = pr.lane==="review" ? "human" : ["conflict","checks-failed","changes-requested","blocked","unknown"].includes(pr.reason) ? "review" : "running";
-    groups[lane].push({key:pr.url,content:<PullRequestCard projectId={projectId} pr={pr} theme={theme} onResult={onMergeResult} />});
+    groups[lane].push({key:pr.url,content:renderPull(pr,projectId)});
   }
   const lanes=order.filter(lane=>groups[lane].length);
   const stacked = width ? width<490 : compact;
@@ -124,7 +124,7 @@ export function Project({projectId,title,decisions,cards,records,requests,render
   return <View style={{gap:8}} onLayout={e=>setWidth(e.nativeEvent.layout.width)}>
     <Text accessibilityRole="header" style={{fontSize:18,fontWeight:"600",color:theme.colors.foreground}}>{title}</Text>
     <Text style={{fontSize:13,color:theme.colors.foregroundMuted}}>
-      {t(`세션 ${cards.length}개 · 진행 중 ${running} · 내 결정 ${decisions}건`,`Sessions ${cards.length} · In progress ${running} · My decisions ${decisions}`)}
+      {t(`세션 ${cards.length}개 · 진행 중인 세션 ${running}개 · 내 결정 ${decisions}건`,`Sessions ${cards.length} · Running sessions ${running} · My decisions ${decisions}`)}
     </Text>
     {stacked ? <View style={{gap:COLUMN_GAP}}>{columns}</View> :
       <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{gap:COLUMN_GAP,paddingBottom:5,alignItems:"flex-start"}}>{columns}</ScrollView>}
