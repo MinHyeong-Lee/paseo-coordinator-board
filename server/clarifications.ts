@@ -89,6 +89,7 @@ export function restoreClarifiedDecision(
     // Digest judgments classify the explanation turn. Its original decision stays
     // open until an answer, a new input, or a note revision supersedes it.
     row.decision = record.savedDecision;
+    if (record.sourceEvidenceId) row.evidenceId = record.sourceEvidenceId;
     row.lane = "human";
     row.detail = record.savedDecision.question;
     return;
@@ -243,6 +244,8 @@ export class ClarificationSender {
       }
       if (!this.isCurrentRecord(input.card, view)) throw Error(changed);
       const text = body(input, target);
+      const preserve = original && source?.decision && source.decision.version === original.version &&
+        source.decision.source !== "permission" && source.id === input.recipientId;
       const entry: Stored = {
         card: input.card,
         cardKey: key,
@@ -255,20 +258,18 @@ export class ClarificationSender {
         question: input.question,
         status: "pending",
         ...(input.images?.length ? { imageCount: input.images.length } : {}),
-        ...(original && source?.decision && source.decision.version === original.version &&
-        source.decision.source !== "permission" && source.id === input.recipientId
-          ? {
-              savedDecision: source.decision,
-              sourceEvidenceId: source.evidenceId,
-              noteRevision: view.notes[source.id]?.revision ?? 0,
-            }
-          : {}),
+        ...(preserve ? {
+          savedDecision: source.decision,
+          sourceEvidenceId: source.evidenceId,
+          noteRevision: view.notes[source.id]?.revision ?? 0,
+        } : {}),
       };
       this.store.change((current) => {
         if (
           !inScope(current, input.card) ||
           current.coordinator !== view.coordinator ||
-          (original && current.answers[original.sessionId]?.version === original.version) ||
+          (original && (current.answers[original.sessionId]?.version === original.version ||
+            JSON.stringify(current.judgments[original.sessionId]) !== JSON.stringify(scope.judgments[original.sessionId]))) ||
           (source && !isCurrentMembership(source, current)) ||
           !(
             (recipient && isCurrentMembership(recipient, current)) ||
