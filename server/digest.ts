@@ -1,6 +1,7 @@
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createHash } from "node:crypto";
 import { PreferenceStore } from "./preferences";
+import type { WorkImage } from "../shared/operations";
 
 const prompts = {
   ko: "관리 프로젝트의 다이제스트를 한국어로 갱신하세요. read_board_conversation에서 최근 근거를 확인하고 classify_board_conversation으로 기록하세요. 각 질문에는 당사자가 정할 한 문장을 content.question에 적으세요. 근거·기존 기준에서 제안할 수 있는 가장 타당한 답장 하나를 content.recommendation에, 간단한 이유를 content.recommendationReason에 적으세요. 증거에 실제 답장 문장이 없어도 근거 있는 제안은 작성할 수 있습니다. 판단에 필요한 정보가 부족하면 결정을 지어내지 말고 필요한 정보를 content.needsInput에 적으세요. 예전에 판단한 질문도 needsRecommendation이 표시되면 갱신하세요. 진행 보고와 이미 정해진 사항은 내 결정에서 내리고, 직접 결정할 안건을 먼저 보고하세요.",
@@ -17,13 +18,30 @@ export function digestWithFactReplies(language: "ko" | "en", cycleId: string) {
   return prompts[language] + " " + instructions + " " + JSON.stringify({ cycleId });
 }
 
+function photoDigest({data, mimeType}: WorkImage) {
+  // Buffer's base64 decoder accepts malformed input. Require the original canonical
+  // encoding, then identify the file bytes independently of the picker-supplied MIME.
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.toString("base64") !== data) throw new Error("사진의 Base64 데이터를 확인해 주세요.");
+  const pngHeader = "89504e470d0a1a0a0000000d49484452";
+  const valid = mimeType === "image/png" ? bytes.length >= 33 && bytes.toString("hex", 0, 16) === pngHeader
+    : mimeType === "image/jpeg" ? bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    : bytes.length >= 20 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP" &&
+      ["VP8 ", "VP8L", "VP8X"].includes(bytes.toString("latin1", 12, 16));
+  if (!valid) throw new Error("사진 데이터와 파일 형식이 일치하는지 확인해 주세요.");
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 export async function sendCoordinatorRequest(
   paseo: PluginHandlerContext["paseo"],
   store: PreferenceStore,
   expected: string,
   key: string,
   text: string,
-  beforeSend?: (messageId: string) => void,
+  options: {
+    images?: WorkImage[];
+    beforeSend?: (messageId: string) => void;
+  } = {},
 ) {
   if (store.read().coordinator !== expected) throw new Error("현재 코디네이터를 다시 확인해 주세요.");
   if (!store.read().projects.length) throw new Error("관리할 프로젝트를 하나 이상 선택하세요.");
@@ -40,8 +58,10 @@ export async function sendCoordinatorRequest(
   }
   if (store.read().coordinator !== expected) throw new Error("코디네이터가 교체되었습니다. 새로 고쳐 주세요.");
   if (!store.read().projects.length) throw new Error("관리 프로젝트가 변경되었습니다.");
+  const images = options.images;
+  const content = images?.length ? [expected, key, text, images.map(photoDigest)] : [expected, key, text];
   const id = createHash("sha256")
-    .update(JSON.stringify([expected, key, text]))
+    .update(JSON.stringify(content))
     .digest("hex");
   const messageId = [
     id.slice(0, 8),
@@ -50,7 +70,7 @@ export async function sendCoordinatorRequest(
     "8" + id.slice(17, 20),
     id.slice(20, 32),
   ].join("-");
-  beforeSend?.(messageId);
-  await handle.send(text, { messageId, activeTurnBehavior: "steer" });
+  options.beforeSend?.(messageId);
+  await handle.send(text, { messageId, activeTurnBehavior: "steer", ...(images?.length ? {images} : {}) });
   return { ok: true };
 }

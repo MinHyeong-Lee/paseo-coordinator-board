@@ -23,6 +23,8 @@ Click **Start with recommended settings** to create the coordinator, or select *
 
 Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn this off in **Settings → Sidebar pinning**. Replacing the coordinator in the same workspace preserves its existing pin state. For an existing coordinator, click **Pin current coordinator workspace**.
 
+On desktop or web, select photos next to the request field or paste a screenshot into it. Review the images, remove any you do not want to share, then choose **Send to coordinator**. You can send images with or without text. Attach up to four PNG, JPEG, or WebP images, up to 5 MiB each and 12 MiB combined. On the native mobile app, open the coordinator session and attach photos in its conversation composer.
+
 Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
 
 Each session decision has an **Assigned session** chip beside the project and session name. It opens the original conversation without sending a reply. The card leads with the question and one suggested reply. Open **View source** for the original text and the reason behind the suggestion. Use **Ask coordinator for a recommendation** to revisit an older card. If a necessary detail is missing, the card asks for that detail. Choose options directly on the card. When no suggested reply is available, type your own. Open evidence and history for context.

@@ -20,6 +20,7 @@ const schema = z.object({
   autoPinCoordinatorWorkspace: z.boolean().default(true),
   autoReplyToBoardFacts: z.boolean().default(true),
   factHistory: z.record(z.string(), factSchema).default({}),
+  workRequestIds: z.record(z.string(), z.string().uuid()).default({}),
   factCycleKeys: z.record(z.string(), z.literal(true)).default({}),
   factCycle: z.object({
     id: z.string(), coordinator: z.string(), expires: z.number(), messageId: z.string().optional(),

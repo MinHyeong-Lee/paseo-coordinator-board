@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createPaseoApi } from "@getpaseo/client";
+import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
-import { askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
+import { MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
 import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import type { DispatchInput } from "../shared/dispatch";
 import { createOperations } from "../server/operations";
@@ -88,8 +90,8 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
   const ops = createOperations(store, join(dir, "workspace"), facts);
   const handlers = new Map<string, Callback>();
   ops.register({ handle: (contract: Rpc, handler: Callback) => { handlers.set(contract.name,handler); } } as unknown as PluginServerContext);
-  async function call(definition: Rpc, input: unknown) {
-    const result = await handlers.get(definition.name)!(definition.input.parse(input), { paseo });
+  async function call(definition: Rpc, input: unknown, sdk: unknown = paseo) {
+    const result = await handlers.get(definition.name)!(definition.input.parse(input), { paseo:sdk });
     return definition.output.parse(result) as any;
   }
   async function tool(name: string, input: unknown, caller = coordinator) {
@@ -97,7 +99,7 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
     const output = await t.execute(t.input.parse(input) as never, { paseo, agent: { id: caller } } as unknown as PluginHandlerContext & {agent: {id: string}});
     return JSON.parse(output.text);
   }
-  return { handlers, events, sessions, sent, activity, runtime, store, call, tool };
+  return { handlers, events, sessions, sent, activity, runtime, store, call, tool, dir };
 }
 
 test("digest requests follow the board language and older clients default to Korean", async () => {
@@ -122,6 +124,64 @@ test("the board forwards the person's words only to the current coordinator; it 
   expect(s.sessions.size).toBe(0);
   await expect(s.call(requestWork, {...input, coordinator:"different-session"})).rejects.toThrow(/코디네이터/);
   expect(s.sent).toHaveLength(2);
+});
+
+// A real one-pixel image in each accepted wire format.
+const png = {mimeType:"image/png",data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mOYvLAHAAOLAcF4E9p3AAAAAElFTkSuQmCC"};
+const webp = {mimeType:"image/webp",data:"UklGRi4AAABXRUJQVlA4ICIAAABwAQCdASoBAAEAAUAmJZQCdAFAAAD+67eowmknPaRBAAAA"};
+const jpeg = {mimeType:"image/jpeg",data:"/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAA//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/ALQABv/Z"};
+
+test("photo-only work requests reach the installed SDK wire encoder, and an uncertain delivery retries the same image blocks and ID",async()=>{
+  const s=scenario();
+  const input={coordinator,text:"",requestKey:"sdk-photos-request",images:[png,webp,jpeg]};
+  const messages: any[]=[];
+  const transport={
+    getLastServerInfoMessage:()=>null,
+    fetchAgent:async()=>({agent:{id:coordinator,status:"idle",pendingPermissions:[]}}),
+    createRequestId:()=>"fixture-transport-id",
+    sendAgentMessage:DaemonClient.prototype.sendAgentMessage,
+    sendRequest:async ({message}: {message:unknown})=>{
+      messages.push(message);
+      if(messages.length===1) throw Error("lost acknowledgment");
+      return {accepted:true};
+    },
+  };
+  const sdk=createPaseoApi(transport as unknown as DaemonClient);
+  try {
+    await expect(s.call(requestWork,input,sdk)).rejects.toThrow("lost acknowledgment");
+    for(const patch of [{images:[webp,png,jpeg]},{images:[webp]},{images:[],text:"replacement"}]) {
+      await expect(s.call(requestWork,{...input,...patch},sdk)).rejects.toThrow(/새 요청/);
+    }
+    await s.call(requestWork,input,sdk);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({type:"send_agent_message_request",agentId:coordinator,text:"",images:input.images});
+    expect(messages[1].messageId).toBe(messages[0].messageId);
+    expect(messages[1].images).toEqual(messages[0].images);
+    await s.call(requestWork,{...input,requestKey:"new-photos-request",text:"Review these",images:[png]},sdk);
+    expect(messages[2]).toMatchObject({text:"Review these",images:[png]});
+    const persisted=readFileSync(join(s.dir,"scope.json"),"utf8");
+    for(const image of input.images) expect(persisted).not.toContain(image.data);
+  } finally {await sdk.dispose();}
+});
+
+test("work requests reject malformed, mislabeled and oversized photos without reserving a key or sending",async()=>{
+  const s=scenario(),input={coordinator,text:"",requestKey:"invalid-work-photos"};
+  const photoOfSize=(bytes:number)=>({...png,data:Buffer.alloc(bytes).toString("base64")});
+  const full=photoOfSize(MAX_WORK_IMAGE_BYTES);
+  for(const images of [[],[{...png,mimeType:"image/svg+xml"}],[{...png,data:png.data+"!"}],[{...png,data:"data:image/png;base64,"+png.data}],
+    [{...png,data:webp.data}],[{...png,data:"YWJjZA=="}],[png,png,png,png,png],[photoOfSize(MAX_WORK_IMAGE_BYTES+1)],
+    [full,full,photoOfSize(MAX_WORK_IMAGES_BYTES-2*MAX_WORK_IMAGE_BYTES+1)]]) {
+    await expect(s.call(requestWork,{...input,images})).rejects.toThrow();
+  }
+  expect(s.sent).toHaveLength(0);
+  expect(s.store.read().workRequestIds).toEqual({});
+});
+
+test("competing photo drafts cannot reuse a coordinator work request key",async()=>{
+  const s=scenario(), input={coordinator,text:"Review",requestKey:"competing-photo-drafts"};
+  const results=await Promise.allSettled([s.call(requestWork,{...input,images:[png]}),s.call(requestWork,{...input,images:[webp]})]);
+  expect(results.map(r=>r.status).sort()).toEqual(["fulfilled","rejected"]);
+  expect(s.sent).toHaveLength(1);
 });
 
 test("coordinator previews its managed workspaces and live route; no worker-create RPC is exposed to a card", async () => {
