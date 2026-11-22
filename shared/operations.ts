@@ -3,19 +3,26 @@ import { z } from "zod";
 import { accountUsage } from "./usage-routing";
 import { workImages } from "./work-images";
 export { WORK_IMAGE_MIME_TYPES, MAX_WORK_IMAGES, MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, type WorkImage } from "./work-images";
-import { catalogModelSchema, providerEntrySchema, gradeSchema, routeChoiceSchema, routePolicySchema } from "./dispatch";
+import { catalogModelSchema, providerEntrySchema, workerModeProvider, gradeSchema, routeChoiceSchema, routePolicySchema } from "./dispatch";
 
 export const operationState = defineRpc({
   name: "board.operations",
-  input: z.strictObject({}),
+  input: z.strictObject({ view: z.literal("setup").optional() }),
   output: z.object({
     catalog: z.array(catalogModelSchema),
     providers: z.array(providerEntrySchema),
+    workerModeOverrides: z.record(workerModeProvider, z.string()).optional(),
     usage: z.array(accountUsage).optional(), usageRouting: z.boolean().optional(),
     coordinatorMode: z.object({ id: z.string(), label: z.string() }).nullable(),
     routing: routePolicySchema,
     revision: z.number().int().nonnegative(),
   }),
+});
+export const setWorkerMode = defineRpc({
+  name: "board.set-worker-mode",
+  input: z.strictObject({ provider: workerModeProvider, modeId: z.string().min(1).max(256).nullable(),
+    expectedRevision: z.number().int().nonnegative() }),
+  output: z.object({ ok: z.boolean() }),
 });
 export const setProviderInclusion = defineRpc({
   name: "board.set-provider-inclusion",

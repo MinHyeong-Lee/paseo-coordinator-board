@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { repositorySlug } from "../shared/prs";
@@ -9,7 +9,7 @@ const nonempty = z.string().trim().min(1);
 const match = z.object({ id: nonempty, title: nonempty, ask: z.array(z.string()), projectId: nonempty, sessionId: nonempty, question: nonempty });
 const manifest = z.object({ version: z.literal(1), sources: z.array(z.object({
   source: nonempty, projectId: nonempty.nullable(), projectTitle: nonempty,
-  directory: nonempty.refine(isAbsolute), repository: repositorySlug.optional(), matches: z.array(match).default([]),
+  directory: nonempty.refine(isAbsolute), coordinatorFile: z.unknown().optional(), repository: repositorySlug.optional(), matches: z.array(match).default([]),
 })).max(200) });
 const lines = z.union([z.string(), z.array(z.string())]).nullish()
   .transform(value => (typeof value === "string" ? [value] : value ?? []).map(s => s.trim()).filter(Boolean));
@@ -22,9 +22,9 @@ const entry = z.object({
   pr: z.number().int().positive().nullish(), since:z.string().nullish(), howToAnswer:z.string().nullish(), answerLead:z.string().nullish(), urgency:z.string().nullish(),
 });
 const ledger = z.object({ items: z.array(entry) });
-function localFile(path: string, optional = false) {
+function localFile(path: string, optional = false, ownerFile = false) {
   let fd: number;
-  try { fd = openSync(path, "r"); }
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (ownerFile ? constants.O_NOFOLLOW ?? 0 : 0)); }
   catch (error) {
     if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error("Could not open decision source");
@@ -52,6 +52,19 @@ function history(path: string) {
   return byId;
 }
 
+const ownerRecord = z.object({ agentId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/) });
+
+function sourceCoordinator(path: unknown, cache: Map<string, string | null>) {
+  if (typeof path !== "string" || !isAbsolute(path)) return null;
+  if (cache.has(path)) return cache.get(path)!;
+  let id: string | null = null;
+  try {
+    id = ownerRecord.parse(JSON.parse(localFile(path, false, true)!)).agentId;
+  } catch { /* An unreadable owner leaves the ledger available for local recording. */ }
+  cache.set(path, id);
+  return id;
+}
+
 export function readProjectDecisionSources(manifestPath: string, selected: Set<string>, onFailure?: () => void) {
   if (!selected.size) return [];
   const raw = localFile(manifestPath, true);
@@ -60,8 +73,9 @@ export function readProjectDecisionSources(manifestPath: string, selected: Set<s
   const visible = sources.filter(s => !s.projectId || selected.has(s.projectId));
   const keys = visible.map(s => JSON.stringify([s.source,s.projectId]));
   if (new Set(keys).size !== keys.length) throw new Error("Ambiguous decision source");
+  const owners = new Map<string,string | null>();
   return visible.flatMap(source => {
-    try { return readLedger(source,selected); }
+    try { return readLedger(source,selected,sourceCoordinator(source.coordinatorFile,owners)); }
     catch (error) {
       if (!onFailure) throw error;
       onFailure();
@@ -70,7 +84,7 @@ export function readProjectDecisionSources(manifestPath: string, selected: Set<s
   });
 }
 
-function readLedger(source: z.infer<typeof manifest>["sources"][number], selected: Set<string>) {
+function readLedger(source: z.infer<typeof manifest>["sources"][number], selected: Set<string>, sourceCoordinatorId: string | null) {
   const document = localFile(join(source.directory, "decisions.json"));
   const { items } = ledger.parse(JSON.parse(document!));
   const answers = history(join(source.directory,"live","board-answers.tsv"));
@@ -87,7 +101,7 @@ function readLedger(source: z.infer<typeof manifest>["sources"][number], selecte
       if (!row.qa.some(q => q && typeof q === "object" && "q" in q && q.q === prior.text)) qa.push({q:prior.text,a:null,askedAt:prior.at});
     }
     return {
-      source: source.source, projectId: source.projectId, projectTitle: source.projectTitle,
+      sourceCoordinatorId, source: source.source, projectId: source.projectId, projectTitle: source.projectTitle,
       id:row.id,title:row.title,kind,where:row.where,ask:row.ask,recommend:row.recommend,why:row.why,risk:row.risk,steps:row.steps,
       since:row.since, urgency:row.urgency, howToAnswer:row.howToAnswer, answerLead:row.answerLead, sessionId:row.agentId ?? null, sessionHost:row.sessionHost ?? null,
       questions:row.questions.map(q => ({...q, multi:q.multi ?? /복수|여러\s*개|여럿|select (?:all|multiple)/i.test(q.text)})),

@@ -11,12 +11,13 @@ import { trackedReplyMessage, trackedReplyOrigin } from "./decision-message";
 import type { Evidence } from "./conversation";
 import type { PullRequestView } from "../shared/prs";
 import {
-  resolveTrackedDecision, trackedDecisionInputSchema, trackedKey, trackedMatches,
-  type TrackedDecisionInput, type TrackedDecisionView, type TrackedResolution,
+  resolveTrackedDecision, trackedDecisionInputSchema, trackedKey, trackedMatches, usesSourceCoordinator,
+  type RoutedTrackedDecision, type TrackedDecisionInput, type TrackedDecisionView, type TrackedResolution,
 } from "../shared/tracked-decisions";
 
 const maxBytes = 8 * 1024 * 1024;
 const feed = z.union([z.object({version:z.literal(1),items:z.array(z.unknown())}).transform(v=>v.items),z.array(z.unknown())]);
+const sourceAuthority = z.object({sourceCoordinatorId:z.string().min(1).max(256)});
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const photoReference = z.object({mimeType:z.enum(WORK_IMAGE_MIME_TYPES), digest:sha256});
 const receipt = z.object({
@@ -24,7 +25,7 @@ const receipt = z.object({
   reviewedBy:z.string().optional(), reviewReason:z.string().optional(), title:z.string().optional(), coordinator:z.boolean().optional(), response:z.string().optional(),key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
 const receipts = z.object({version:z.literal(1),items:z.array(receipt)});
 type SourceStatus = TrackedDecisionView["status"];
-type InputRow = {key:string;fingerprint:string;item:TrackedDecisionInput};
+type InputRow = {key:string;fingerprint:string;item:RoutedTrackedDecision};
 type Receipt = z.output<typeof receipt>;
 type PendingDelivery = { ready:boolean; send:(answer:string,messageId:string,images?:WorkImage[])=>Promise<void>; accepted:(answer:string,messageId:string)=>Promise<boolean>; stillCurrent:()=>boolean };
 type Attempt = z.output<typeof resolveTrackedDecision.output>;
@@ -81,15 +82,21 @@ export class TrackedDecisionStore {
     const extra=Array.isArray(sources) ? sources : sources.items;
     const raw=feed.safeParse(input.status==="ok"?input.data:[]);
     if(!raw.success || !Array.isArray(extra) || raw.data.length+extra.length>5000)return {status:"invalid",rows};
-    for(const entry of [...raw.data,...extra]) {
+    for(const [index,entry] of [...raw.data,...extra].entries()) {
       const parsed=trackedDecisionInputSchema.safeParse(entry);
       if(!parsed.success)return {status:"invalid",rows:new Map()};
-      const item=parsed.data;
+      const item:RoutedTrackedDecision=parsed.data;
       if(item.projectId!==null && !selected.has(item.projectId))continue;
       const key=trackedKey(item);
       if(rows.has(key))return {status:"invalid",rows:new Map()};
       // An old feed without a host and a current feed explicitly marking this host are the same record.
       const fingerprint=createHash("sha256").update(JSON.stringify({...item,sessionHost:item.sessionHost ?? undefined})).digest("hex");
+      // Authority belongs to the operator-configured importer. Keep it out of
+      // the content fingerprint so rotating owners cannot reopen old receipts.
+      if (index >= raw.data.length) {
+        const owner = sourceAuthority.safeParse(entry);
+        item.sourceCoordinatorId = owner.success ? owner.data.sourceCoordinatorId : null;
+      }
       rows.set(key,{key,fingerprint,item});
     }
     if(partial)return {status:"partial",rows};
@@ -104,6 +111,21 @@ export class TrackedDecisionStore {
     if(!parsed.success)return null;
     const rows=new Map(parsed.data.items.map(r=>[receiptKey(r.key,r.fingerprint),r]));
     return rows.size===parsed.data.items.length?rows:null;
+  }
+
+  // First paint can show local titles while Paseo and GitHub resolve the actionable cards.
+  previewTitles(selected: Set<string>): string[] {
+    if (!selected.size) return [];
+    const {rows} = this.load(selected);
+    const resolved = this.recorded();
+    if (!resolved) return [];
+    const titles: string[] = [];
+    for (const {key, fingerprint, item} of rows.values()) {
+      if (resolved.has(receiptKey(key, fingerprint))) continue;
+      titles.push(item.title);
+      if (titles.length === 3) break;
+    }
+    return titles;
   }
 
   read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView, evidence: ReadonlyMap<string,Evidence> = new Map()):TrackedDecisionView & { history?:ReplyEntry[] } {
@@ -166,6 +188,7 @@ export class TrackedDecisionStore {
     const row=data.rows.get(trackedKey(input));
     if(!row)return {status:data.status==="partial"?"unavailable":"changed"};
     if(row.fingerprint!==input.fingerprint || !validQuestions(row.item,input))return {status:"changed"};
+    if(proof && usesSourceCoordinator(row.item) && row.item.sourceCoordinatorId !== proof.coordinatorId) return {status:"out-of-scope"};
     const records=this.recorded();
     if(!records)return {status:"unavailable"};
     if(!allowed(getScope()))return {status:"out-of-scope"};
@@ -200,15 +223,18 @@ export class TrackedDecisionStore {
     return true;
   }
 
-  async deliver(input:TrackedResolution, getScope:()=>Set<string>, prepare:(row:TrackedDecisionInput)=>Promise<PendingDelivery|null>):Promise<Attempt> {
+  async deliver(input:TrackedResolution, getScope:()=>Set<string>, prepare:(row:RoutedTrackedDecision)=>Promise<PendingDelivery|null>):Promise<Attempt> {
     const selected=getScope();
     if (!selected.size || (input.projectId && !selected.has(input.projectId))) return {status:"out-of-scope"};
     const key=trackedKey(input), version=receiptKey(key,input.fingerprint);
     const current=()=>this.load(getScope()).rows.get(key);
     const row=current();
     if (!row || row.fingerprint!==input.fingerprint || !validQuestions(row.item,input) || (!input.answer?.trim() && !input.images?.length) || !input.recipientId) return {status:"changed"};
+    if (usesSourceCoordinator(row.item) && row.item.sourceCoordinatorId !== input.recipientId) return {status:"changed"};
     const target=await prepare(row.item);
-    if (!target || !target.stillCurrent() || current()?.fingerprint!==input.fingerprint) return {status:"changed"};
+    const latestRow=current();
+    if (!target || !target.stillCurrent() || latestRow?.fingerprint!==input.fingerprint ||
+        latestRow.item.sourceCoordinatorId !== row.item.sourceCoordinatorId) return {status:"changed"};
     const records=this.recorded();
     if (!records) return {status:"unavailable"};
     const previous=records.get(version);
@@ -238,7 +264,7 @@ export class TrackedDecisionStore {
   }
 
   register(server:PluginServerContext,getScope:()=>Set<string>,onChange?:()=>void,
-    prepare?: (row:TrackedDecisionInput, target:string, ctx:import("@getpaseo/plugin/server").PluginHandlerContext)=>Promise<PendingDelivery|null>) {
+    prepare?: (row:RoutedTrackedDecision, target:string, ctx:import("@getpaseo/plugin/server").PluginHandlerContext)=>Promise<PendingDelivery|null>) {
     server.handle(readReplyPhoto,({key,index})=>({image:this.readPhoto(key,index,getScope())}));
     server.handle(resolveTrackedDecision,async (input,ctx)=>{
       const result=input.recipientId && prepare

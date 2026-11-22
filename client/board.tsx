@@ -1,7 +1,7 @@
 import type { BoardReadiness } from "../shared/readiness";
 import { ReplyHistory } from "./reply-history";
 import { TrackedDecisionCard } from "./tracked-decisions";
-import { mentionsSecurityGate, trackedCoverage, trackedRecipient, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
+import { mentionsSecurityGate, trackedCoverage, trackedRecipient, usesSourceCoordinator, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
 import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice, type WorkSessionLink } from "./pull-requests";
 import { decisionCount } from "../shared/decision-count";
 import { matchesWorkspace } from "../shared/workspace-pull";
@@ -116,10 +116,11 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
-  function questionFor(card: ClarificationCard | null, title: string, prior?: TrackedDecision["qa"], onDraftChange?: (active:boolean) => void) {
+  function questionFor(card: ClarificationCard | null, title: string, prior?: TrackedDecision["qa"], onDraftChange?: (active:boolean) => void, ownerId?: string | null) {
     if (!snapshot) return null;
     const recipientId = card ? clarificationRecipient(card, snapshot) : null;
-    const recipientTitle = snapshot.sessions.find(row => row.id === recipientId)?.title;
+    const recipientTitle = ownerId && ownerId === recipientId ? t("운영 코디네이터", "Ledger owner") + " · " + ownerId
+      : snapshot.sessions.find(row => row.id === recipientId)?.title;
     return <Clarification key={card ? clarificationKey(card) : title} title={title} card={card} theme={theme}
       recipientId={recipientId} recipientTitle={recipientTitle} entries={snapshot.clarifications ?? []} prior={prior} onRefresh={onRefresh} onDraftChange={onDraftChange} />;
   }
@@ -163,7 +164,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
             pr.repo === item.mergeTarget?.repo && pr.number === item.mergeTarget.number &&
             (!item.projectId || pr.projectIds.includes(item.projectId)) && (pr.reason !== "ready" || item.matchedPull));
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
-            renderClarification={onDraftChange => questionFor(trackedClarificationCard(item,snapshot!.sessions),item.title,item.qa,onDraftChange)}
+            renderClarification={onDraftChange => questionFor(trackedClarificationCard(item,snapshot!.sessions),item.title,item.qa,onDraftChange,usesSourceCoordinator(item) ? item.sourceCoordinatorId : undefined)}
             pull={pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item),true)}
             recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
               if (status==="sent") setSentNotice({projectId:item.projectId});
@@ -224,6 +225,11 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
             label={`${s.projectTitle} · ${s.title} · ${t("지정", "Assign")}`} onPress={() => actions.onCoordinator?.(s.id)} />)}
           {!snapshot.sessions.length && <Text style={{ color: c.foregroundMuted }}>{t("관리할 프로젝트를 선택하면 지정할 수 있는 세션이 표시됩니다.", "Select a project to see its available sessions.")}</Text>}
         </>}
+      </View>}
+      {!settings && !snapshot && !error && !!readiness?.decisionTitles?.length && <View style={{ gap: 6 }}>
+        <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{t("내 결정", "My decisions")}</Text>
+        {readiness.decisionTitles.map((title, index) => <Text key={index} numberOfLines={2} style={{ color: c.foreground }}>{title}</Text>)}
+        <Text style={{ color: c.foregroundMuted }}>{t("세션과 PR 상태를 확인하고 있어요.", "Checking session and PR status…")}</Text>
       </View>}
       {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: total ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
         <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{filters.length ? t(`내 결정 · ${filteredTotal}건 / 전체 ${total}건`, `My decisions · ${filteredTotal} of ${total}`) : t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>

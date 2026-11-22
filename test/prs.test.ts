@@ -26,15 +26,15 @@ function fixture(ids = ["root","checkout","runtime"], lookupLifecycle?: Construc
   ]);
   const log={local:[] as string[],gh:[] as string[],lookups:[] as string[],native:0,active:0,max:0};
   let now=0;
-  const behavior={fail:false, delay:async()=>{}, after:()=>{}};
+  const behavior={fail:false, delay:async (_repo:string)=>{}, beforeOrigin:async (_path:string)=>{}, after:()=>{}};
   const sdk={
     projects:{list:async()=>{log.native++;return {projects:[...roots].map(([projectId,projectRootPath])=>({projectId,projectRootPath}))};}},
     workspaces:{list:async ({filter})=>{log.lookups.push(filter.projectId);return page(spaces.get(filter.projectId)??[]);}},
   };
-  const deps={now:()=>now,localOrigin:async p=>{log.local.push(p);return ["/primary","/checkout"].includes(p)?"org/example":null;},
+  const deps={now:()=>now,localOrigin:async p=>{log.local.push(p);await behavior.beforeOrigin(p);return ["/primary","/checkout"].includes(p)?"org/example":null;},
     githubPulls:async repo=>{
       log.gh.push(repo);log.active++;log.max=Math.max(log.max,log.active);
-      try{await behavior.delay();behavior.after();if(behavior.fail)throw Error("private host error");return parseOpenPulls(repo,JSON.stringify([raw()]));}finally{log.active--;}
+      try{await behavior.delay(repo);behavior.after();if(behavior.fail)throw Error("private host error");return parseOpenPulls(repo,JSON.stringify([raw()]));}finally{log.active--;}
     }};
   const prs=new ProjectPullRequests(store,deps,undefined,lookupLifecycle);
   let onMapping, onLifecycle;
@@ -120,4 +120,71 @@ test("tracked PR lifecycle reads distinguish merged, closed, open and unavailabl
   expect(calls).toBe(1);
   const moving = fixture(["root"], async () => { moving.store.change(s => {s.projects=[];}); return "MERGED"; });
   expect(await moving.lifecycle(target)).toEqual({state:"UNKNOWN"});
+});
+
+
+test("a known repository starts loading while another project is still resolving its origin", async () => {
+  const f = fixture(["checkout", "root"]);
+  let searching!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>(resolve => { searching = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.behavior.beforeOrigin = async path => {
+    if (path === "/checkout") { searching(); await gate; }
+  };
+  const result = f.read(true);
+  try {
+    await started;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(f.log.gh).toEqual(["org/example"]);
+  } finally {
+    release();
+    await result;
+  }
+  // Both auto-mappings point to the same repo. Preserve the user's order and
+  // avoid a second forced refresh after the earlier GitHub query completed.
+  expect((await result).items[0].projectIds).toEqual(["checkout", "root"]);
+  expect(f.log.gh).toEqual(["org/example"]);
+});
+
+
+test("queued lookups respect revocation and a later authorized mapping can still load the same repo", async () => {
+  const blockers = ["one", "two", "three"];
+  const f = fixture([...blockers, "revoked", "removed", "checkout"]);
+  f.store.change(scope => {
+    for (const id of blockers) scope.projectRepositories[id] = {mode:"manual",repo:"org/"+id};
+    scope.projectRepositories.revoked = {mode:"manual",repo:"org/example"};
+    scope.projectRepositories.removed = {mode:"manual",repo:"org/removed"};
+  });
+  let release!: () => void;
+  let started!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const full = new Promise<void>(resolve => { started = resolve; });
+  f.behavior.delay = async repo => {
+    if (!blockers.includes(repo.slice(4))) return;
+    if (f.log.active === 3) started();
+    await held;
+  };
+  const read = f.read(true);
+  await full;
+  f.store.change(scope => { scope.projects = [...blockers, "checkout"]; });
+  release();
+  const result = await read;
+  expect(f.log.gh).not.toContain("org/removed");
+  expect(f.log.gh.filter(repo => repo === "org/example")).toHaveLength(1);
+  expect(result.items.find(p => p.repo === "org/example")?.projectIds).toEqual(["checkout"]);
+  expect(result.projects.map(p => p.projectId)).toEqual([...blockers,"checkout"]);
+  expect(f.log.max).toBe(3);
+});
+
+test("conflicting workspace remotes avoid unnecessary git probes of other checkout paths", async () => {
+  const f = fixture(["checkout"]);
+  f.spaces.get("checkout").push(
+    {projectId:"checkout",gitRuntime:{remoteUrl:"https://github.com/org/first.git"}},
+    {projectId:"checkout",gitRuntime:{remoteUrl:"https://github.com/org/second.git"}},
+  );
+  const result = await f.read();
+  expect(result.projects[0].status).toBe("unmapped");
+  expect(f.log.local).toEqual(["/missing"]);
+  expect(f.log.gh).toBeEmpty();
 });

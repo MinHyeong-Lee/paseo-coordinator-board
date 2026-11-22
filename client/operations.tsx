@@ -8,6 +8,7 @@ import {
   requestWork,
   setupCoordinator,
   setProviderInclusion,
+  setWorkerMode,
   updateRouting,
   type Operations,
 } from "../shared/operations";
@@ -37,6 +38,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const fetchState = useRpc(operationState),
     setup = useRpc(setupCoordinator),
     includeProvider = useRpc(setProviderInclusion),
+    saveWorkerMode = useRpc(setWorkerMode),
     changeUsageRouting = useRpc(setUsageRouting),
     savePolicy = useRpc(updateRouting);
   const sendWork = useRpc(requestWork),
@@ -58,11 +60,15 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const delivery = useRef({ work: { payload: "", key: "" }, digest: { payload: "", key: "" } });
   const fetchRef = useRef(fetchState);
   fetchRef.current = fetchState;
-  const refresh = useCallback(async (clearError = true) => {
+  const refresh = useCallback(async (clearError = true, setupPreview = false) => {
     const token = ++generation.current;
     setLoading(true);
     try {
-      const result = await fetchRef.current({});
+      // An older daemon may still accept only the original empty input.
+      const result = setupPreview ? await fetchRef.current({ view: "setup" }).catch(error => {
+        if (!/unrecognized[_ ]keys?|invalid (?:rpc )?input|unexpected key/i.test(String(error))) throw error;
+        return fetchRef.current({});
+      }) : await fetchRef.current({});
       if (live.current && token === generation.current) {
         setData(result);
         if (clearError) setError("");
@@ -85,7 +91,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     };
   }, []);
   useEffect(() => {
-    if (needsModels) void refresh();
+    if (needsModels) void refresh(true, !settings);
   }, [needsModels, settings, refresh]);
   useEffect(() => {
     setConfirm(false);
@@ -184,7 +190,14 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
         <Button theme={theme} label={loading ? t("실행기 조회 중…", "Loading providers\u2026") : t("실행기·모델 새로 고침", "Refresh providers and models")} disabled={loading || busy} onPress={() => void refresh()} />
       </View>
       <Text style={{ color: muted }}>{t("새로 발견한 실행기는 기본으로 포함됩니다. 연결된 모델이 있는 실행기에 작업을 배정합니다.", "New providers are included by default. Providers with available models can receive assignments.")}</Text>
-      {data && <ProviderSettings theme={theme} providers={data.providers} catalog={data.catalog} busy={busy || loading} change={async (provider, included) => {
+      {data && <ProviderSettings theme={theme} providers={data.providers} catalog={data.catalog} busy={busy || loading}
+        overrides={data.workerModeOverrides}
+        setMode={async (provider, modeId) => {
+          const result = await act(() => saveWorkerMode({ provider, modeId, expectedRevision: data.revision }),
+            t("다음 작업 세션의 권한을 저장했습니다.", "Saved permissions for new worker sessions."), "provider");
+          if (live.current) await refresh(!!result);
+        }}
+        change={async (provider, included) => {
         const result = await act(() => includeProvider({ provider, included, expectedRevision: data.revision }),
           included ? t("이 실행기를 새 작업 배정에 포함했습니다.", "Provider included in new assignments.") : t("이 실행기를 새 작업 배정에서 제외했습니다.", "Provider excluded from new assignments."), "provider");
         if (live.current) await refresh(!!result);

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { reportingKey } from "../shared/contract";
 import {
-  dispatchInputSchema, includedCatalog, resolveRoute, sameRoute,
+  dispatchInputSchema, includedCatalog, resolveRoute, sameRoute, effectiveWorkerMode,
   type CatalogModel, type DispatchInput, type ProviderEntry, type RouteChoice, type RoutePolicy, type WorkspaceChoice,
 } from "../shared/dispatch";
 import { readAccountUsage } from "./usage-routing";
@@ -13,7 +13,7 @@ export { resolveRoute, validateCandidates } from "../shared/dispatch";
 type Sdk = PluginHandlerContext["paseo"];
 type PaseoWorkspace = Awaited<ReturnType<Sdk["workspaces"]["list"]>>["entries"][number];
 type PaseoAgentConfig = Parameters<Sdk["agents"]["create"]>[0]["config"];
-type DispatchScope = { projects: string[]; routing: RoutePolicy; coordinator: string | null; excludedProviders: string[]; usageRouting?: boolean };
+type DispatchScope = { projects: string[]; routing: RoutePolicy; coordinator: string | null; excludedProviders: string[]; usageRouting?: boolean; workerModeOverrides?: Record<string,string> };
 type Directory = { providers: Omit<ProviderEntry, "included">[]; catalog: CatalogModel[] };
 
 // Only built-in adapters with a known permission contract and a Paseo tool transport.
@@ -25,21 +25,36 @@ const coordinatorModes = new Map<string, string[]>([
   ["opencode", ["build"]],
 ]);
 
-async function readCoordinatorMode(paseo: Pick<Sdk, "providers">, provider: string) {
-  const ids = coordinatorModes.get(provider);
-  if (!ids) return null;
+type ProviderMode = NonNullable<Awaited<ReturnType<Sdk["providers"]["listModes"]>>["modes"]>[number];
+
+async function readModes(paseo: Pick<Sdk, "providers">, provider: string, cwd?: string): Promise<ProviderMode[] | null> {
   try {
-    const result = await paseo.providers.listModes(provider);
-    if (!result.error) {
-      for (const id of ids) {
-        const mode = result.modes?.find(m => m.id === id && m.colorTier !== "dangerous");
-        if (mode) return { id, label: mode.label };
-      }
-    }
+    const result = await paseo.providers.listModes(provider, cwd ? { cwd } : undefined);
+    return !result.error && Array.isArray(result.modes) ? result.modes : null;
   } catch {
-    // A runner can still receive worker jobs when its coordinator mode is unknown.
+    return null;
+  }
+}
+
+function coordinatorModeOf(provider: string, modes: ProviderMode[] | null) {
+  for (const id of coordinatorModes.get(provider) ?? []) {
+    const mode = modes?.find(m => m.id === id && m.colorTier !== "dangerous");
+    if (mode) return { id, label: mode.label };
   }
   return null;
+}
+
+function workerModesOf(provider: string, modes: ProviderMode[] | null) {
+  return modes?.filter(mode => {
+    if (provider === "codex" && mode.id === "full-access") return true;
+    return mode.colorTier !== "dangerous" && mode.id !== "bypassPermissions";
+  }).map(({id, label}) => ({id, label})) ?? null;
+}
+
+export async function requireWorkerMode(paseo: Pick<Sdk, "providers">, provider: string, id: string, cwd?: string) {
+  const modes = workerModesOf(provider, await readModes(paseo, provider, cwd));
+  if (!modes?.some(mode => mode.id === id))
+    throw new Error(`${provider} 작업 권한 모드 '${id}'를 확인할 수 없습니다. 설정에서 사용할 수 있는 작업 권한을 선택하세요.`);
 }
 
 export async function readProviderAvailability(paseo: Pick<Sdk, "providers">) {
@@ -67,8 +82,10 @@ export async function readProviderDirectory(paseo: Pick<Sdk, "providers">, cwd?:
       try {
         const result = await paseo.providers.listModels(provider, cwd ? { cwd } : undefined);
         if (!result.error && Array.isArray(result.models)) {
-          const coordinatorMode = withCoordinatorModes && result.models.some(m => m.isSelectable !== false)
-            ? await readCoordinatorMode(paseo, provider) : null;
+          const modes = withCoordinatorModes && (withLabels || coordinatorModes.has(provider)) && result.models.some(m => m.isSelectable !== false)
+            ? await readModes(paseo, provider, cwd) : null;
+          const coordinatorMode = coordinatorModeOf(provider, modes);
+          if (withLabels && withCoordinatorModes) info.workerModes = workerModesOf(provider, modes);
           for (const model of result.models) {
             if (model.isSelectable === false) continue;
             models.push({
@@ -131,6 +148,7 @@ function creationUuid(key: string, kind: "agent" | "prompt") {
 
 const fingerprintKey = "coordinator-board/dispatch-intent";
 const parentKey = "coordinator-board/dispatch-parent";
+const modeKey = "coordinator-board/dispatch-mode";
 
 export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | "providers">, request: DispatchInput, getScope: () => DispatchScope) {
   const input = dispatchInputSchema.parse(request);
@@ -138,7 +156,7 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     const state = getScope();
     if (typeof state.coordinator !== "string" || !state.coordinator) throw new Error("현재 기기의 코디네이터를 먼저 지정해 주세요.");
     if (!state.projects.includes(input.projectId)) throw new Error("이 호스트에서 관리할 프로젝트를 먼저 선택해 주세요.");
-    return { coordinator: state.coordinator, routing: state.routing, excluded: state.excludedProviders, usageRouting: state.usageRouting !== false };
+    return { workerModeOverrides: state.workerModeOverrides ?? {}, coordinator: state.coordinator, routing: state.routing, excluded: state.excludedProviders, usageRouting: state.usageRouting !== false };
   };
   const initial = scopeForProject();
   const sessionId = creationUuid(input.requestKey, "agent");
@@ -152,6 +170,7 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     throw new Error("선택한 프로젝트에서 작업 가능한 워크스페이스를 다시 골라 주세요.");
   }
   let parent: string;
+  let modeId: string | undefined;
   const route = input.expectedRoute;
   if (receipt) {
     scopeForProject();
@@ -161,14 +180,22 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     const previousParent = receipt.agent.metadata[parentKey];
     if (typeof previousParent !== "string" || !previousParent) throw new Error("기존 작업의 상위 세션을 확인할 수 없습니다.");
     parent = previousParent;
+    const previousMode = receipt.agent.metadata[modeKey];
+    if (typeof previousMode === "string") modeId = previousMode;
     // An agent snapshot alone does not confirm that its initial prompt was accepted.
     // Replay the original creation key/payload so the daemon settles that operation.
   } else {
     const checkUsage = initial.usageRouting && !initial.routing[input.grade];
+    const provider = route.provider;
+    modeId = effectiveWorkerMode(provider, initial.workerModeOverrides);
     const [catalog, usage] = await Promise.all([
-      readCatalog(paseo, target.workspaceDirectory), checkUsage ? readAccountUsage(paseo) : [],
+      readCatalog(paseo, target.workspaceDirectory),
+      checkUsage ? readAccountUsage(paseo) : [],
+      modeId ? requireWorkerMode(paseo, provider, modeId, target.workspaceDirectory) : undefined,
     ]);
     const state = scopeForProject();
+    if (modeId !== effectiveWorkerMode(provider, state.workerModeOverrides))
+      throw new Error("작업 권한 설정이 바뀌었습니다. 미리보기를 다시 확인해 주세요.");
     if (checkUsage !== (state.usageRouting && !state.routing[input.grade])) {
       throw new Error("배정 설정이 바뀌었습니다. 미리보기를 다시 확인해 주세요.");
     }
@@ -178,16 +205,23 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     }
     parent = state.coordinator;
   }
+  if (input.expectedModeId !== undefined && input.expectedModeId !== modeId)
+    throw new Error("작업 권한이 배정 미리보기와 다릅니다. 호스트 설정을 다시 확인해 주세요.");
   const worker = await workspace.agents.create({
     agentId: sessionId, idempotencyKey: "coordinator-board/worker/" + input.requestKey,
     clientMessageId: creationUuid(input.requestKey, "prompt"),
     parent,
-    config: configForRoute(route), title: input.title, prompt: input.prompt,
+    config: { ...configForRoute(route), ...(modeId && { modeId }) }, title: input.title, prompt: input.prompt,
     metadata: {
       [reportingKey]: true, [fingerprintKey]: fingerprint, "coordinator-board/grade": input.grade,
-      [parentKey]: parent,
+      [parentKey]: parent, ...(modeId && { [modeKey]: modeId }),
     },
   });
   if (worker.id !== sessionId || worker.workspaceId !== target.id) throw new Error("생성된 세션과 대상 워크스페이스가 일치하는지 확인해 주세요.");
-  return { sessionId, route };
+  if (modeId) {
+    const agent = (await paseo.agents.ref(sessionId).refresh())?.agent;
+    if (agent?.currentModeId !== modeId)
+      throw new Error(`작업 세션 ${sessionId}을 만들었지만 요청한 권한 '${modeId}'를 확인할 수 없습니다. 기존 세션에서 권한을 확인하세요.`);
+  }
+  return { sessionId, route, ...(modeId && { modeId }) };
 }

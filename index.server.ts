@@ -1,5 +1,5 @@
 import type { ReplyEntry } from "./shared/reply-history";
-import { trackedRecipient } from "./shared/tracked-decisions";
+import { trackedRecipient, usesSourceCoordinator } from "./shared/tracked-decisions";
 import { boardReadiness } from "./shared/readiness";
 import { SnapshotReads } from "./server/snapshot-reads";
 import { readProjectDecisionSources } from "./server/project-decision-sources";
@@ -56,7 +56,7 @@ export default function contribute(server: PluginServerContext) {
     });
   server.handle(boardReadiness, async () => {
     const scope = prefs.read();
-    return { configured: scope.projects.length > 0, coordinator: scope.coordinator };
+    return { configured: scope.projects.length > 0, coordinator: scope.coordinator, decisionTitles: tracked.previewTitles(new Set(scope.projects)) };
   });
   async function buildSnapshot(paseo: PluginHandlerContext["paseo"], refreshPulls=false) {
     // GitHub can take seconds even when Paseo already knows the current sessions.
@@ -167,8 +167,11 @@ export default function contribute(server: PluginServerContext) {
     if (card.kind !== "tracked") return true;
     const scope = prefs.read();
     const records = tracked.read(new Set(scope.projects), [], { items: [], projects: [] });
-    return records.items.some(item => item.source === card.source && item.projectId === card.projectId &&
-      item.id === card.id && item.fingerprint === card.fingerprint);
+    const sameCard = (item:{source:string;projectId:string|null;id:string;fingerprint:string}) =>
+      item.source === card.source && item.projectId === card.projectId && item.id === card.id && item.fingerprint === card.fingerprint;
+    const before = view.trackedDecisions?.items.find(sameCard);
+    const now = records.items.find(sameCard);
+    return !!before && !!now && now.sourceCoordinatorId === before.sourceCoordinatorId;
   });
   server.handle(askClarification, async (input, { paseo }) => {
     try {
@@ -179,15 +182,20 @@ export default function contribute(server: PluginServerContext) {
   });
   prs.register(server, invalidateCount);
   tracked.register(server, () => new Set(prefs.read().projects), invalidateCount, async (item,targetId,{paseo}) => {
-    const rows=await discoverSessions(paseo);
-    const current=()=>{
-      const scope=prefs.read();
-      return scope.projects.length>0 && (!item.projectId || scope.projects.includes(item.projectId)) &&
-        trackedRecipient(item,scope.coordinator,managedSessions(rows,scope))===targetId;
+    let rows = await discoverSessions(paseo);
+    const owned = usesSourceCoordinator(item);
+    const current = () => {
+      const scope = prefs.read();
+      const managed = managedSessions(rows,scope);
+      if (!scope.projects.length || (item.projectId && !scope.projects.includes(item.projectId))) return false;
+      if (trackedRecipient(item,scope.coordinator,managed) !== targetId) return false;
+      return !owned || managed.some(row => row.id === targetId) ||
+        (isManagedCoordinator(scope,targetId) && targetId === scope.coordinator && rows.some(row => row.id === targetId));
     };
     if (!current()) return null;
     const handle=paseo.agents.ref(targetId);
     const agent=(await handle.refresh())?.agent;
+    if (owned) rows = await discoverSessions(paseo);
     if (!current() || !agent || agent.id!==targetId || agent.internal || agent.archivedAt) return null;
     return {
       stillCurrent:current,

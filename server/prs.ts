@@ -101,7 +101,7 @@ function mapping(scope:Preferences, id:string):Mapping {
 const equal = (a:Mapping,b:Mapping) => a.mode===b.mode && a.repo===b.repo;
 
 export class ProjectPullRequests {
-  private readonly sources = new Map<string,{expires:number; value:Promise<Source>}>();
+  private readonly sources = new Map<string,{expires:number; value:Promise<Source|null>}>();
   private readonly discovery = new Map<string,{expires:number; value:Promise<string|null>}>();
   private readonly waiting: (() => void)[] = [];
   private running = 0;
@@ -194,7 +194,7 @@ export class ProjectPullRequests {
         if (path && path!==root) paths.add(path);
     }
     for (const path of paths) {
-      if (!selected()) return null;
+      if (repos.size > 1 || !selected()) return null;
       const repo=await this.deps.localOrigin(path);
       if (repo) repos.add(repo);
     }
@@ -213,13 +213,19 @@ export class ProjectPullRequests {
   private pulls(repo:string,refresh:boolean,stillAllowed:()=>boolean) {
     const existing=this.sources.get(repo), now=this.deps.now();
     if(existing && existing.expires>now && (!refresh || existing.expires === Infinity))return existing.value;
-    const entry={expires:Infinity,value:this.limited(async():Promise<Source>=>{
-      if (!stillAllowed()) return {status:"unavailable",items:[]};
+    const entry={expires:Infinity,value:this.limited(async():Promise<Source|null>=>{
+      if (!stillAllowed()) return null;
       try {return await this.deps.githubPulls(repo);}
       catch {return {status:"unavailable",items:[]};}
     })};
     this.sources.set(repo,entry);
-    void entry.value.then(value=>{entry.expires=this.deps.now()+(value.status==="unavailable"?15_000:ttl);});
+    const discard = () => {
+      if (this.sources.get(repo) === entry) this.sources.delete(repo);
+    };
+    void entry.value.then(value => {
+      if (!value) discard();
+      else entry.expires = this.deps.now() + (value.status === "unavailable" ? 15_000 : ttl);
+    }, discard);
     return entry.value;
   }
 
@@ -234,33 +240,52 @@ export class ProjectPullRequests {
     const native = options.projects ?? (needsProjects ? await paseo.projects.list().then(result=>result.projects,()=>null) : []);
     const roots=new Map((native ?? []).map(p=>[p.projectId,p.projectRootPath]));
     const configs=new Map(ids.map(id=>[id,mapping(selected,id)]));
-    const projects=await Promise.all(ids.map(async(projectId):Promise<ProjectView>=>{
-      const {mode,repo}=configs.get(projectId)!;
-      if(mode==="off")return {projectId,mode,repo:null,status:"off"};
+    const allowed = (id:string, scope:Preferences) => scope.projects.includes(id) && equal(configs.get(id)!, mapping(scope,id));
+    const pending = new Map<string,{ids:Set<string>; read:Promise<Source|null>; allowed:()=>boolean}>();
+    const connect = (repo:string, projectId:string) => {
+      const known = pending.get(repo);
+      if (known) {
+        known.ids.add(projectId);
+        return;
+      }
+      const ids = new Set([projectId]);
+      const stillAllowed = () => {
+        const scope = this.store.read();
+        return [...ids].some(id => allowed(id,scope));
+      };
+      pending.set(repo,{ids,read:this.pulls(repo,refresh,stillAllowed),allowed:stillAllowed});
+    };
+    const projects = await Promise.all(ids.map(async (projectId):Promise<ProjectView> => {
+      const {mode,repo} = configs.get(projectId)!;
+      if (mode === "off") return {projectId,mode,repo:null,status:"off"};
       try {
-        const resolved=mode==="manual"?repo:await this.resolve(paseo,projectId,roots.get(projectId),refresh);
+        const resolved = mode === "manual" ? repo : await this.resolve(paseo,projectId,roots.get(projectId),refresh);
+        if (resolved) connect(resolved,projectId);
         return {projectId,mode,repo:resolved,status:resolved?"ok":native===null?"unavailable":"unmapped"};
-      } catch {return {projectId,mode,repo:null,status:"unavailable"};}
+      } catch { return {projectId,mode,repo:null,status:"unavailable"}; }
     }));
-    const allowed=(p:ProjectView,s:Preferences)=>s.projects.includes(p.projectId) && equal(configs.get(p.projectId)!,mapping(s,p.projectId));
-    const byRepo=new Map<string,ProjectView[]>();
-    const current=this.store.read();
-    for(const p of projects)if(p.repo && allowed(p,current)) byRepo.set(p.repo,[...(byRepo.get(p.repo)??[]),p]);
-    const repos=await Promise.all([...byRepo].map(async([repo,connected])=>{
-      const data=await this.pulls(repo,refresh,()=>{
-        const now=this.store.read();
-        return connected.some(p=>allowed(p,now));
-      });
-      return {data,connected};
-    }));
-    const latest=this.store.read(), items:PullRequestItem[]=[];
-    for(const {data,connected} of repos) {
-      const projectIds=connected.filter(p=>allowed(p,latest)).map(p=>p.projectId);
-      if(!projectIds.length) continue;
-      for(const p of connected)p.status=data.status;
-      items.push(...data.items.map(p=>({...p,projectIds})));
+    const sources = new Map(await Promise.all([...pending].map(async ([repo,group]) => {
+      let value = await group.read;
+      // A queued lookup can lose its last authorized project while a slower
+      // mapping for the same repository is still in progress.
+      if (value === null && group.allowed()) value = await this.pulls(repo,false,group.allowed);
+      return [repo,value] as const;
+    })));
+    const latest = this.store.read();
+    const visible = projects.filter(p => allowed(p.projectId,latest));
+    const byRepo = new Map<string,string[]>();
+    for (const project of visible) {
+      if (!project.repo) continue;
+      project.status = sources.get(project.repo)?.status ?? "unavailable";
+      const connected = byRepo.get(project.repo);
+      if (connected) connected.push(project.projectId);
+      else byRepo.set(project.repo,[project.projectId]);
+    }
+    const items:PullRequestItem[] = [];
+    for (const [repo,projectIds] of byRepo) {
+      for (const p of sources.get(repo)?.items ?? []) items.push({...p,projectIds});
     }
     items.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)||a.repo.localeCompare(b.repo)||b.number-a.number);
-    return {items,projects:projects.filter(p=>allowed(p,latest))};
+    return {items,projects:visible};
   }
 }

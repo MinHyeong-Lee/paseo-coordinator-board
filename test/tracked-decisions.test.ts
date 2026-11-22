@@ -346,3 +346,13 @@ test("an image attached to a local decision is retrievable only inside the proje
   expect(await handler({key:history.key,index:0},{})).toEqual({image:null});
   expect(await handler({key:"../../anywhere",index:0},{})).toEqual({image:null});
 });
+
+test("first-open titles show only unresolved decisions in the selected scope",()=>{
+  const f=fixture();
+  f.write([row("done"), row("hidden",{projectId:"other"}), row("global",{projectId:null,title:"Shared"}), ...[1,2,3,4].map(i=>row(String(i),{title:"Visible "+i}))]);
+  expect(f.close(f.read().items[0]).status).toBe("closed");
+  expect(f.service.previewTitles(f.selected)).toEqual(["Shared","Visible 1","Visible 2"]);
+  expect(f.service.previewTitles(new Set())).toEqual([]);
+  writeFileSync(join(f.dir,"tracked-decisions.resolved.json"),"{");
+  expect(f.service.previewTitles(f.selected)).toEqual([]);
+});

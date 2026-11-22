@@ -74,13 +74,14 @@ const task: DispatchInput = {
 };
 
 function host() {
-  const agents = new Map<string, { id: string; workspaceId: string; metadata: Create["metadata"] }>();
+  const agents = new Map<string, { id: string; workspaceId: string; metadata: Create["metadata"]; currentModeId?: string }>();
   const reqs: Create[] = [];
   const submitted: Create[] = [];
   const daemon = {
     async listAvailableProviders() {
       return { providers: ["cursor", "codex", "offline"].map(provider => ({ provider, available: provider !== "offline" })) };
     },
+    async listProviderModes() { return { modes: [{id: "auto-review", label: "Auto-review"}] }; },
     async listProviderModels(provider: string) {
       assert.notEqual(provider, "offline");
       const def = models.find(m => m.provider === provider)!;
@@ -98,7 +99,7 @@ function host() {
         return previous;
       }
       reqs.push(req);
-      const agent = { id, workspaceId: req.workspaceId!, metadata: req.metadata };
+      const agent = { id, workspaceId: req.workspaceId!, metadata: req.metadata, currentModeId: req.config.modeId };
       agents.set(id, agent);
       return agent;
     },
@@ -148,7 +149,42 @@ test("정책·관리 범위가 달라지거나 다른 워크스페이스면 생�
   assert.equal(reqs.length, 0);
   await dispatchWorker(sdk, { ...task, needsHooks: true, expectedRoute: sol }, () => ({ ...state, coordinator: "local-coord" }));
   assert.equal(reqs[0].config.thinkingOptionId, "high");
+  assert.equal(reqs[0].config.modeId, "auto-review");
   assert.equal(reqs[0].callerAgentId, "local-coord");
+});
+
+test("검증되지 않은 생성 모드는 완료로 보고하지 않고, 재시도할 때 같은 세션을 확인한다", async () => {
+  const { sdk, daemon, reqs } = host();
+  const fetchAgent = daemon.fetchAgent;
+  daemon.fetchAgent = async input => {
+    const result = await fetchAgent(input);
+    return result ? { agent: { ...result.agent, currentModeId: "default" } } : null;
+  };
+  const request = { ...task, needsHooks:true, expectedRoute:sol };
+  await assert.rejects(dispatchWorker(sdk, request, () => state), /만들었지만.*auto-review/);
+  await assert.rejects(dispatchWorker(sdk, request, () => state), /만들었지만.*auto-review/);
+  assert.equal(reqs.length, 1);
+});
+
+test("권한 지정 전 버전이 생성한 작업은 최초 페이로드 그대로 재확인한다", async () => {
+  const { sdk, reqs, submitted } = host();
+  const request = { ...task, needsHooks:true, expectedRoute:sol };
+  await dispatchWorker(sdk, request, () => state);
+  const original = reqs[0];
+  delete original.metadata!["coordinator-board/dispatch-mode"];
+  delete original.config.modeId;
+  const replay = await dispatchWorker(sdk, request, () => state);
+  assert.equal(replay.sessionId, original.agentId);
+  assert.equal("modeId" in replay, false);
+  assert.equal(reqs.length, 1);
+  assert.equal(submitted.length, 2);
+});
+
+test("직접 저장한 실행기 기본 강도를 보존하고 추천 목록 밖의 기본 모델은 지원되는 high를 고른다", () => {
+  const model = {...models[1],provider:"codex",model:"new-default",efforts:["low","high"],isDefault:true};
+  assert.equal(resolveRoute("C", {}, [model])?.effort, "high");
+  const saved = { provider:"codex",model:model.model, effort:null };
+  assert.equal(resolveRoute("C", { C:[saved] }, [model])?.effort, null);
 });
 
 test("워크스페이스 목록은 페이지를 넘겨 관리 프로젝트의 준비된 작업 위치만 표시한다", async () => {

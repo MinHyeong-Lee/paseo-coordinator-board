@@ -10,8 +10,18 @@ export const routeChoiceSchema = z.object({
   model: identifier,
   effort: identifier.nullable(),
 });
+export const workerModeProvider = identifier.refine(id => !["__proto__", "constructor", "prototype"].includes(id));
+export function recommendedWorkerMode(provider: string): string | undefined {
+  if (provider === "claude") return "auto";
+  if (provider === "codex") return "auto-review";
+}
+export function effectiveWorkerMode(provider: string, overrides?: Record<string, string | undefined>): string | undefined {
+  return overrides && Object.hasOwn(overrides, provider) ? overrides[provider] : recommendedWorkerMode(provider);
+}
+export const workerModeOption = z.object({ id: identifier, label: z.string() });
 export const providerEntrySchema = z.object({
   id: identifier, label: z.string(), available: z.boolean(), included: z.boolean(),
+  workerModes: z.array(workerModeOption).nullable().optional(),
   status: z.enum(["ready", "empty", "unavailable", "error"]), modelCount: z.number().int().nonnegative().nullable(),
 });
 export type ProviderEntry = z.infer<typeof providerEntrySchema>;
@@ -27,7 +37,7 @@ export const dispatchInputSchema = z.strictObject({
   projectId, workspaceId: identifier, grade: workerGradeSchema,
   title: z.string().trim().min(1).max(160), prompt: z.string().trim().min(1).max(24000),
   requestKey: z.string().min(12).max(96).regex(/^[a-zA-Z0-9_-]+$/),
-  expectedRoute: routeChoiceSchema, needsHooks: z.boolean().optional(),
+  expectedRoute: routeChoiceSchema, expectedModeId: identifier.optional(), needsHooks: z.boolean().optional(),
 });
 
 export type Grade = z.infer<typeof gradeSchema>;
@@ -112,7 +122,8 @@ export function resolveRoute(grade: Grade, policy: RoutePolicy, catalog: Catalog
   for (const model of [...allowed.filter(m => m.isDefault),...allowed]) {
     if (seen.has(model.provider)) continue;
     seen.add(model.provider);
-    choices.push({provider:model.provider,model:model.model,effort:null});
+    const effort = grade !== "M" && primary(model.provider) && model.efforts.includes("high") ? "high" : null;
+    choices.push({provider:model.provider,model:model.model,effort});
   }
   return preferCapacity(choices,usage);
 }

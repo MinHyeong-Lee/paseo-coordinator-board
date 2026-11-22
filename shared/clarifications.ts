@@ -1,7 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import type { SessionRow, Note } from "./contract";
-import type { TrackedDecision, TrackedDecisionView } from "./tracked-decisions";
+import { sourceCoordinatorRecipient, usesSourceCoordinator, type TrackedDecision, type TrackedDecisionView } from "./tracked-decisions";
 import { repositorySlug, type PullRequestView } from "./prs";
 import { matchesWorkspace } from "./workspace-pull";
 import { workImages } from "./work-images";
@@ -104,10 +104,10 @@ export type ClarificationView = {
 export function clarificationTarget(card: ClarificationCard, view: ClarificationView) {
   const session = (id: string | null | undefined) =>
     view.sessions.find((s) => s.id === id && s.projectId === card.projectId);
-  function target(row: SessionRow | undefined) {
+  function target(row: SessionRow | undefined, coordinator = view.coordinator) {
     return row && !row.nativePending && row.status === "idle" && row.lane !== "running"
       ? row.id
-      : view.coordinator;
+      : coordinator;
   }
   if (card.kind === "session") {
     const row = session(card.sessionId);
@@ -141,8 +141,10 @@ export function clarificationTarget(card: ClarificationCard, view: Clarification
       : item.sessionHost ? undefined : session(sourceSessionId);
     const parts = item.questions.map((q) => [q.id, q.text].filter(Boolean).join(" · "));
     if (current && row?.decision) parts.push(row.decision.question);
+    const coordinator = sourceCoordinatorRecipient(item, view.coordinator, view.sessions);
     return {
-      recipientId: target(row),
+      recipientId: usesSourceCoordinator(item) ? coordinator : target(row, coordinator),
+      sourceCoordinatorId: item.sourceCoordinatorId,
       sourceSessionId,
       sourceHost: item.sessionHost ?? null,
       title: item.title,

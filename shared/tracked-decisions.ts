@@ -29,8 +29,9 @@ export const trackedDecisionInputSchema = reference.extend({
   where:z.enum(["human","manager","session","unknown"]).nullish(), owner:optionalText, answerLead:optionalText,
 });
 export type TrackedDecisionInput = z.output<typeof trackedDecisionInputSchema>;
+export type RoutedTrackedDecision = TrackedDecisionInput & { sourceCoordinatorId?: string | null };
 export const trackedDecisionSchema = trackedDecisionInputSchema.extend({
-  key:z.string(), fingerprint, matchedSessionId:id.nullable(), matchedPull:target.nullable(),
+  sourceCoordinatorId:id.nullable().optional(), key:z.string(), fingerprint, matchedSessionId:id.nullable(), matchedPull:target.nullable(),
 });
 export type TrackedDecision = z.output<typeof trackedDecisionSchema>;
 export const trackedDecisionViewSchema = z.object({
@@ -72,8 +73,18 @@ export function suggestedTrackedReply(item: TrackedDecision) {
   return item.kind !== "merge" && !item.questions.length && !item.matchedSessionId ? item.howToAnswer?.trim() ?? "" : "";
 }
 
-export function trackedRecipient(item:TrackedDecisionInput, coordinator:string|null, sessions:readonly SessionRow[]) {
-  if (item.where === "manager" || item.where === "human") return coordinator;
+export function usesSourceCoordinator(item:RoutedTrackedDecision) {
+  return item.sourceCoordinatorId !== undefined && (item.where === "manager" || item.where === "human");
+}
+
+export function sourceCoordinatorRecipient(item:RoutedTrackedDecision, coordinator:string|null, sessions:readonly SessionRow[]) {
+  const owner = item.sourceCoordinatorId;
+  if (owner === undefined) return coordinator;
+  return owner && (owner === coordinator || sessions.some(s => s.id === owner)) ? owner : null;
+}
+
+export function trackedRecipient(item:RoutedTrackedDecision, coordinator:string|null, sessions:readonly SessionRow[]) {
+  if (item.where === "manager" || item.where === "human") return sourceCoordinatorRecipient(item,coordinator,sessions);
   if (item.where !== "session" || item.sessionHost || !item.sessionId) return null;
   const session = sessions.find(s => s.id === item.sessionId && s.projectId === item.projectId);
   return session ? session.id : null;
@@ -88,9 +99,9 @@ export type TrackedResolution = z.output<typeof resolveTrackedDecision.input>;
 export const trackedKey = (row:z.output<typeof reference>) => JSON.stringify([row.source,row.projectId,row.id]);
 export const pullKey = (repo:string,number:number) => repo+"#"+number;
 
-export function trackedMatches(item:TrackedDecisionInput, sessions:SessionRow[], prs:PullRequestView) {
+export function trackedMatches(item:RoutedTrackedDecision, sessions:SessionRow[], prs:PullRequestView) {
   const {sessionMatch,mergeTarget}=item;
-  const session=!item.sessionHost && sessionMatch && sessions.find(s=>s.id===sessionMatch.sessionId && s.projectId===sessionMatch.projectId &&
+  const session=!usesSourceCoordinator(item) && !item.sessionHost && sessionMatch && sessions.find(s=>s.id===sessionMatch.sessionId && s.projectId===sessionMatch.projectId &&
       s.lane==="human" && !s.nativePending && !s.decisionAnswered && s.decision?.source!=="permission" &&
       (s.decision?.question ?? s.detail)===sessionMatch.question &&
       (!item.sessionId || item.sessionId===s.id));
