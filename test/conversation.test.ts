@@ -58,3 +58,10 @@ test("코디네이터 도구는 선택 범위와 지정 세션을 재확인하�
  steps.push(["user_message","두 줄로"]);await expect(write.execute(choice,ctx)).rejects.toThrow("대화가 바뀌었습니다");
  store.change(s=>{s.coordinator=null});await expect(read.execute({sessionId:"worker"},ctx)).rejects.toThrow("해제");
 });
+
+test("a coordinator digest does not repeat a worker question as its own decision", () => {
+  const report = "| Editing session | question + suggested reply | **Question**: Shall I publish the draft? |";
+  expect(classify(evidence(["assistant_message",report]),row,undefined,true).lane).toBe("idle");
+  expect(classify(evidence(["assistant_message",report+"\nPlease choose a project."]),row,undefined,true).lane).toBe("human");
+  expect(classify(evidence(["assistant_message",report]),row).lane).toBe("human");
+});

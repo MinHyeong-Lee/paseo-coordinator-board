@@ -1,156 +1,99 @@
-import { PullRequestCard, PullRequestSettings } from "./pull-requests";
+import type { BoardReadiness } from "../shared/readiness";
+import { TrackedDecisionCard } from "./tracked-decisions";
+import { trackedCoverage, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
+import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice } from "./pull-requests";
 import { decisionCount } from "../shared/decision-count";
 import type { PullRequestView } from "../shared/prs";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { DecisionActions, ReceiptText, type DecisionReceipt } from "./decision-actions";
 import { SessionLinks } from "./session-links";
+import { RemoteRunning } from "./remote-running";
 import { BoardHosts } from "./hosts";
 import { OperationsPanel } from "./operations";
 import { Button, type Theme } from "./controls";
-import { columnWidth, COLUMN_GAP } from "./lane-width";
+import { Project } from "./project-kanban";
 import { BoardLanguageSetting, useBoardLanguage } from "./language";
-import { factStatus, laneLabel, lanes, noteLabel, sessionDetail, projectCards, type Card, type Lane, type Snapshot } from "./model";
+import { projectCards, type Card, type Snapshot } from "./model";
 
-type Actions = { coordinator?: string | null; onCoordinator?: (id: string | null) => void; changing?: boolean; onOpen?: (id: string) => void; onEdit: (id: string) => void };
-
-function accent(lane: Lane, theme: Theme) {
-  const c = theme.colors;
-  if (lane === "human") return c.statusWarning;
-  if (lane === "running") return c.accent;
-  if (lane === "done") return c.statusSuccess;
-  return c.foregroundMuted;
-}
-
-function CardView({ card, theme, onOpen, onEdit }: { card: Card; theme: Theme } & Actions) {
-  const [expanded, setExpanded] = useState(false);
-  const { t } = useBoardLanguage();
-  const { session, note } = card;
-  const c = theme.colors;
-  const fact = session.boardFact;
-  const question = session.decision?.question;
-  const runtime = [session.provider, session.model === session.provider ? null : session.model].filter(Boolean).join(" / ");
-  const noteText = note && note.kind !== "clear" ? [note.origin === "agent" ? t("세션 보고", "Session report") : null, noteLabel(note.kind, t), note.text].filter(Boolean).join(" · ") : null;
-  return (
-    <View style={{ padding: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface0, gap: 6 }}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
-        accessibilityLabel={t(`${session.title} · ${expanded ? "상세 접기" : "상세 보기"}`, `${session.title} · ${expanded ? "Hide details" : "View details"}`)}
-        onPress={() => setExpanded(value => !value)} style={{ gap: 3 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600", flex: 1 }}>{session.title}</Text>
-          <Text accessible={false} style={{ color: c.foregroundMuted }}>{expanded ? "▴" : "▾"}</Text>
-        </View>
-        <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12 }}>
-          {card.lane === "human" ? t("내 답을 기다리는 중", "Waiting for my decision")
-            : session.detail ? sessionDetail(session.detail, t) : laneLabel(card.lane, t)}
-        </Text>
-      </Pressable>
-      {fact && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
-        {fact.current ? "" : t("이전 · ", "Previous · ")}{factStatus(fact, t)}
-      </Text>}
-      {expanded && <>
-        {fact && <View style={{ gap: 3 }}>
-          <Text selectable style={{ color: c.foreground }}>{fact.answer}</Text>
-          <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("확인 근거", "Source")} · {fact.source}</Text>
-        </View>}
-        <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{[session.sourceProjectTitle && t(`원래 소속 ${session.sourceProjectTitle}`, `From ${session.sourceProjectTitle}`), session.workspaceTitle, runtime].filter(Boolean).join(" · ")}</Text>
-        {!!session.detail && <Text selectable style={{ color: c.foregroundMuted, fontSize: 13 }}>{sessionDetail(session.detail, t)}</Text>}
-        {!!question && question !== session.detail && !session.detail.endsWith(" · " + question) && note?.text !== question &&
-          <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{question}</Text>}
-        {noteText && <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{noteText}</Text>}
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
-          {onOpen && <Button theme={theme} label={t("세션 열기", "Open session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
-          <Button theme={theme} label={noteText ? t("기록 편집", "Edit note") : t("기록 추가", "Add note")} accessibilityLabel={t(`기록 편집 · ${session.title}`, `Edit note · ${session.title}`)} onPress={() => onEdit(session.id)} />
-        </View>
-      </>}
-    </View>
-  );
-}
-
-function Column({ lane, cards, theme, ...actions }: { lane: Lane; cards: Card[]; theme: Theme } & Actions) {
-  const { t } = useBoardLanguage();
-  const [limit, setLimit] = useState(4);
-  const c = theme.colors;
-  return (
-    <View style={{ padding: 8, borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, gap: 8 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: accent(lane, theme) }} />
-        <Text style={{ flex: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>{laneLabel(lane, t)}</Text>
-        <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{cards.length}</Text>
-      </View>
-      {cards.slice(0, limit).map((card) => <CardView key={card.session.id} card={card} theme={theme} {...actions} />)}
-      {cards.length > limit && <Button theme={theme} label={t(`${cards.length - limit}개 중 더 보기`, `Show more (${cards.length - limit} remaining)`)} onPress={() => setLimit((n) => n + 10)} />}
-    </View>
-  );
-}
-
-function Project({ cards, requests, title, theme, compact, ...actions }: { cards: Card[]; requests: PullRequestView["items"]; title: string; theme: Theme; compact: boolean } & Actions) {
-  const { t } = useBoardLanguage();
-  const [width, setWidth] = useState(0);
-  const [selected, setSelected] = useState<Lane | null>(null);
-  const [prLimit, setPrLimit] = useState(4);
-  const grouped = useMemo(() => {
-    const groups: Record<Lane, Card[]> = { human: [], running: [], review: [], idle: [], done: [], unknown: [] };
-    for (const card of cards) groups[card.lane].push(card);
-    return groups;
-  }, [cards]);
-  const narrow = compact || (width > 0 && width < 720);
-  const decisions = grouped.human.length + requests.filter(pr => pr.lane === "review").length;
-  const current = selected ?? lanes.find((lane) => grouped[lane].length > 0) ?? "running";
-  const size = columnWidth(width, lanes.length);
-  const c = theme.colors;
-  return (
-    <View style={{ gap: 8 }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-      <Text accessibilityRole="header" style={{ fontSize: 18, fontWeight: "600", color: c.foreground }}>{title}</Text>
-      <Text style={{ fontSize: 13, color: c.foregroundMuted }}>{t(`세션 ${cards.length}개 · 진행 중 ${grouped.running.length} · 내 결정 ${decisions}건`, `Sessions ${cards.length} · In progress ${grouped.running.length} · My decisions ${decisions}`)}</Text>
-      {requests.slice(0, prLimit).map(pr => <PullRequestCard key={pr.url} pr={pr} theme={theme} />)}
-      {requests.length > prLimit && <Button theme={theme} label={t(`PR ${requests.length - prLimit}건 더 보기`, `Show more pull requests (${requests.length - prLimit})`)}
-        onPress={() => setPrLimit(n => n + 10)} />}
-      {!cards.length || width === 0 && !compact ? null : narrow ? <>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-          {lanes.map((lane) => <Button theme={theme} key={lane} selected={lane === current} label={`${laneLabel(lane, t)} ${grouped[lane].length}`} onPress={() => setSelected(lane)} />)}
-        </View>
-        <Column key={current} lane={current} cards={grouped[current]} theme={theme} {...actions} />
-      </> : <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{ gap: COLUMN_GAP, paddingBottom: 5, alignItems: "flex-start" }}>
-        {lanes.map((lane) => <View key={lane} style={{ width: size }}>
-          <Column lane={lane} cards={grouped[lane]} theme={theme} {...actions} />
-        </View>)}
-      </ScrollView>}
-    </View>
-  );
-}
+type Actions = { sessionHostLabel?: string; coordinator?: string | null; onCoordinator?: (id: string | null) => void; changing?: boolean; onOpen?: (id: string) => void; onEdit: (id: string) => void };
 
 export type BoardViewProps = Actions & {
   theme: Theme; layout: PluginScreenProps["layout"]; hostLabel: string; hostId?: string; onOpenHostSession?: (serverId: string, agentId: string) => void;
-  snapshot: Snapshot | null; error: string | null; loading: boolean; updatedAt: Date | null;
+  readiness?: BoardReadiness | null; snapshot: Snapshot | null; error: string | null; loading: boolean; updatedAt: Date | null;
   onRefresh: () => void; onProject?: (id: string, enabled: boolean) => void;
 };
 
-export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHostSession, error, loading, updatedAt, onRefresh, onProject, ...actions }: BoardViewProps) {
+export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostId, onOpenHostSession, error, loading, updatedAt, onRefresh, onProject, ...actions }: BoardViewProps) {
   const { t, language } = useBoardLanguage();
   const { human, projects } = useMemo(() => snapshot ? projectCards(snapshot) : { human: [], projects: [] }, [snapshot]);
   const pullRequests = snapshot?.pullRequests;
   const readyPrs = pullRequests?.items.filter(pr => pr.lane === "review") ?? [];
+  const records = useMemo(() => {
+    const priority = (urgency: string | null | undefined) => ["now","today","week"].includes(urgency ?? "") ? ["now","today","week"].indexOf(urgency!) : 3;
+    return [...snapshot?.trackedDecisions?.items ?? []].sort((a,b) => priority(a.urgency) - priority(b.urgency) ||
+      (a.where === "human" ? 0 : 1) - (b.where === "human" ? 0 : 1) || (a.since ?? "~").localeCompare(b.since ?? "~"));
+  }, [snapshot?.trackedDecisions]);
+  const covered = trackedCoverage(records);
+  const sessionDecisions = human.filter(c => !covered.sessionIds.has(c.session.id));
+  const prDecisions = readyPrs.filter(pr => !covered.pullKeys.has(pullKey(pr.repo,pr.number)));
   const total = snapshot ? decisionCount(snapshot) : 0;
   const names = new Map(snapshot?.projects.map(project => [project.id, project.title]));
   const displayed = new Map(projects.map(project => [project.id, project]));
   for (const pr of pullRequests?.items ?? []) for (const id of pr.projectIds) {
     if (!displayed.has(id)) displayed.set(id, {id,title:names.get(id) ?? id,cards:[]});
   }
+  const byProject = new Map<string | null,number>();
+  function countFor(projectId: string | null) { byProject.set(projectId, (byProject.get(projectId) ?? 0) + 1); }
+  records.forEach(item => {
+    countFor(item.projectId);
+    if (item.projectId && !displayed.has(item.projectId)) displayed.set(item.projectId, {id:item.projectId,title:names.get(item.projectId) ?? item.projectTitle ?? item.projectId,cards:[]});
+  });
+  sessionDecisions.forEach(card => countFor(card.session.projectId));
+  prDecisions.forEach(pr => pr.projectIds.forEach(countFor));
+  const [showFilters, setShowFilters] = useState(false);
+  const [chosenProject, setChosenProject] = useState<string | null | undefined>(undefined);
+  const filter = chosenProject !== undefined && byProject.has(chosenProject) ? chosenProject : undefined;
+  const inFilter = (id:string | null) => filter === undefined || id === filter;
+  const filteredRecords = records.filter(item => inFilter(item.projectId));
+  const filteredSessions = sessionDecisions.filter(card => inFilter(card.session.projectId));
+  const filteredPrs = prDecisions.filter(pr => pr.projectIds.some(inFilter));
+  const incomplete = snapshot?.trackedDecisions && ["partial","unavailable","invalid"].includes(snapshot.trackedDecisions.status);
   const [settings, setSettings] = useState(false);
   const [showError, setShowError] = useState(false);
   const [manage, setManage] = useState(false);
   const [pickSession, setPickSession] = useState(false);
-  const configured = snapshot?.projects?.some(p => p.selected);
+  const configured = snapshot ? snapshot.projects.some(p => p.selected) : readiness?.configured;
   const pickingProjects = !configured || (!settings && !snapshot?.coordinator);
-  const coordinatorId = snapshot?.coordinator;
+  const coordinatorId = snapshot ? snapshot.coordinator : readiness?.coordinator;
+  const operationsReady = !!snapshot || !!(readiness?.configured && readiness.coordinator && !settings);
   const openCoordinator = coordinatorId && actions.onOpen ? () => actions.onOpen?.(coordinatorId) : undefined;
   const [digestLimit, setDigestLimit] = useState(5);
+  const [mergeNotice, setMergeNotice] = useState<MergeNotice | null>(null);
+  const mergeResult = (notice: MergeNotice) => { setMergeNotice(notice); onRefresh(); };
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
-  const visible = human.slice(0, digestLimit);
+  const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
   const latestMoved = receipts.find(r => snapshot?.projects.some(p => p.id === r.projectId && p.selected) && !human.some(card => card.session.id === r.sessionId && card.session.projectId === r.projectId));
+  const renderDecision = (card: Card) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
+          card={card} hostLabel={hostLabel} theme={theme} coordinator={snapshot!.coordinator} coordinatorTitle={snapshot!.sessions.find(s => s.id === snapshot!.coordinator)?.title}
+          open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
+          onSent={result => {
+            setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
+            onRefresh();
+          }} />;
+  const renderRecord = (item: TrackedDecision) => {
+          const native = human.find(card => card.session.id === item.matchedSessionId);
+          const pr = item.matchedPull && readyPrs.find(pr => pr.repo === item.matchedPull?.repo && pr.number === item.matchedPull.number);
+          const assigned = !native && !item.sessionHost && item.sessionId && snapshot!.sessions.find(session => session.id === item.sessionId && session.projectId === item.projectId);
+          return <TrackedDecisionCard key={item.key} item={item} theme={theme}
+            open={assigned && actions.onOpen ? () => actions.onOpen?.(assigned.id) : undefined} onResolved={onRefresh}>
+            {native && renderDecision(native)}
+            {pr && <PullRequestCard pr={pr} projectId={pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0]}
+              theme={theme} decision openCoordinator={openCoordinator} onResult={mergeResult} />}
+          </TrackedDecisionCard>;
+        };
   const c = theme.colors;
   return (
     <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
@@ -187,8 +130,8 @@ export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHo
         <BoardHosts current={{ id: hostId, label: hostLabel }} settings theme={theme} open={onOpenHostSession} />
         <BoardHosts current={{ id: hostId, label: hostLabel }} settings={false} theme={theme} open={onOpenHostSession} />
       </>}
-      {snapshot && <OperationsPanel settings={settings} theme={theme} coordinator={snapshot.coordinator} configured={!!configured}
-        refreshBoard={onRefresh} openCoordinator={actions.onOpen} />}
+      <OperationsPanel settings={operationsReady && settings} theme={theme} coordinator={operationsReady ? coordinatorId ?? null : null} configured={operationsReady && !!configured}
+        refreshBoard={onRefresh} openCoordinator={actions.onOpen} />
       {settings && snapshot && actions.onCoordinator && <View style={{ gap: 8 }}>
         <Button theme={theme} label={pickSession ? t("기존 세션 목록 닫기", "Close session list") : t("기존 세션에서 코디네이터 지정", "Choose an existing coordinator session")} onPress={() => setPickSession(!pickSession)} />
         {pickSession && <>
@@ -200,21 +143,31 @@ export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHo
       </View>}
       {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: total ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
         <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>
-        {total === 0 && <Text style={{ color: c.foregroundMuted }}>{t("지금 결정할 일이 없습니다.", "No decisions are waiting for you.")}</Text>}
-        {readyPrs.slice(0,digestLimit).map(pr => <PullRequestCard key={pr.url} pr={pr} theme={theme} decision openCoordinator={openCoordinator} />)}
+        {byProject.size > 1 && <View style={{gap: 6}}>
+          <Button theme={theme} label={filter !== undefined ? t("프로젝트 필터", "Project filter") + " · " + (names.get(filter ?? "") ?? t("공통", "Host-wide")) : t("프로젝트로 보기", "Filter by project")}
+            onPress={() => setShowFilters(value => !value)} />
+          {showFilters && <View style={{flexDirection:"row",flexWrap:"wrap",gap:4}}>
+            <Button theme={theme} label={t(`전체 ${total}`,`All ${total}`)} selected={filter === undefined} onPress={() => setChosenProject(undefined)} />
+            {[...byProject].map(([id,count]) => <Button key={id ?? ""} theme={theme} selected={filter === id}
+              label={`${names.get(id ?? "") ?? t("공통","Host-wide")} · ${count}`} onPress={() => setChosenProject(id)} />)}
+          </View>}
+        </View>}
+        {incomplete &&
+          <Text accessibilityLiveRegion="polite" style={{ color: c.statusWarning }}>{t("일부 결정 기록을 읽지 못했습니다. 현재 건수에는 확인한 항목만 포함됩니다.", "Some decision records could not be loaded. The count includes the available items.")}</Text>}
+        {total === 0 && !incomplete && <Text style={{ color: c.foregroundMuted }}>{t("지금 결정할 일이 없습니다.", "No decisions are waiting for you.")}</Text>}
+        {mergeNotice && snapshot.projects.some(p => p.selected && p.id === mergeNotice.projectId) && (mergeNotice.status === "merged" || mergeNotice.status === "already-merged" ||
+          !readyPrs.some(pr => pr.repo + " #" + pr.number === mergeNotice.target)) && <MergeFeedback notice={mergeNotice} theme={theme} />}
+        {filteredPrs.slice(0,digestLimit).map(pr => <PullRequestCard key={JSON.stringify([pr.url, pr.projectIds[0]])} projectId={pr.projectIds[0]} pr={pr} theme={theme} decision openCoordinator={openCoordinator} onResult={mergeResult} />)}
         {latestMoved && <ReceiptText receipt={latestMoved} theme={theme} />}
-        {visible.map(card => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
-          card={card} theme={theme} coordinator={snapshot.coordinator} coordinatorTitle={snapshot.sessions.find(s => s.id === snapshot.coordinator)?.title}
-          open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
-          onSent={result => {
-            setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
-            onRefresh();
-          }} />)}
-        {(human.length > digestLimit || readyPrs.length > digestLimit) && <Button theme={theme} label={t(`결정 ${Math.max(0,human.length - digestLimit) + Math.max(0,readyPrs.length - digestLimit)}건 더 보기`, `Show ${Math.max(0,human.length - digestLimit) + Math.max(0,readyPrs.length - digestLimit)} more decisions`)} onPress={() => setDigestLimit(total)} />}
+        {filteredRecords.slice(0,digestLimit).map(renderRecord)}
+        {filteredSessions.slice(0,digestLimit).map(renderDecision)}
+        {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
       {!settings && snapshot && !displayed.size && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
       {!settings && displayed.size > 0 && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
-      {!settings && [...displayed.values()].map((p) => <Project requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
+      {!settings && [...displayed.values()].map((p) => <Project projectId={p.id} records={records.filter(r => r.projectId === p.id)} renderRecord={renderRecord} decisions={byProject.get(p.id) ?? 0} sessionHostLabel={hostLabel} onMergeResult={mergeResult} requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
+      {!settings && hostId && snapshot && configured && <RemoteRunning current={{ id: hostId, label: hostLabel }}
+        projects={snapshot.projects} repositories={pullRequests?.projects ?? []} open={onOpenHostSession} theme={theme} />}
     </ScrollView>
   );
 }

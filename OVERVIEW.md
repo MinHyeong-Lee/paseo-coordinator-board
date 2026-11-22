@@ -7,10 +7,11 @@ The board groups existing Paseo sessions by project and shows which decisions ne
 On the computer running Paseo 0.16.2 or later, enable trusted plugins and install the GitHub source directly.
 
 ```sh
-paseo plugin install git:devbrother2024/paseo-coordinator-board
+paseo plugin install git:devbrother2024/paseo-coordinator-board --ref feature/decision-requests-and-language
+paseo plugin ls coordinator-board
 ```
 
-The `git:` prefix selects a Git source. Paseo uses the plain `owner/slug` form for registry entries. For a ZIP installation, unzip the package and run `paseo plugin install .` in the folder containing `paseo-plugin.json`. Keep that folder in place. [Source](https://github.com/devbrother2024/paseo-coordinator-board) · [Paseo plugin guide](https://paseo.sh/docs/plugins)
+For a reviewed catalog release, paste the install ID from its directory page into **Settings → Plugins → Plugin source** and select **Install plugin**. The command above installs the development version directly. Replace the branch with a full commit SHA to install a specific revision. The `git:` prefix selects a Git source. Paseo uses the plain `owner/slug` form for registry entries. For a ZIP installation, unzip the package and run `paseo plugin install .` in the folder containing `paseo-plugin.json`. Keep that folder in place. [Source](https://github.com/devbrother2024/paseo-coordinator-board) · [Paseo plugin guide](https://paseo.sh/docs/plugins)
 
 Open the board from the sidebar and select the projects you want in your digest. To manage just one session from another project, open **Settings → Link an existing session to a project**. Search for the session, check its ID and source workspace, select a managed destination, then click **Link to this project**. The card appears once under its destination. The session keeps its original ID, workspace, files and conversation. **Unlink from project** removes the link. The card returns to its source project if that project is also managed.
 
@@ -26,13 +27,13 @@ Each session decision has an **Open assigned session** button beside the project
 
 A worker asking “Which project does this session belong to?” can receive a verified answer from the designated coordinator during a requested digest. The project card shows a record of the response. **Settings → Automatic replies to factual questions** lets you turn this off for the host. Receiving a reply can start the worker's model and use its provider allowance. A decision such as deleting a work folder still requires the person responsible.
 
-- **Reply to a session.** Review the recipient and use **Send suggested reply** or choose an option and use **Send selected reply**. **Edit reply** and **Write a reply** let you send your own wording.
+- **Reply to a session.** The suggested reply and **Send this reply** appear in a single control. Long replies open in full before you can send. Choose an option to change the proposed message. **Edit reply** and **Write a reply** let you send your own wording.
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
 - **Respond to a native approval.** Choose **Open assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
 
 ## GitHub pull requests
 
-The sidebar count combines sessions awaiting a person and pull requests ready for a merge decision. A pull request shared by several managed projects counts once. Open it on GitHub to review or merge. Drafts and pull requests waiting for checks appear in project progress. The board reads open pull requests with the host’s authenticated GitHub CLI. In **Settings → GitHub repositories by project**, choose automatic detection, enter an explicit repository, or turn off lookup for a project.
+The sidebar count combines session questions, pull requests ready for review, and decisions from configured project records. Entries referring to the same pull request or verified session question appear together. A pull request shared by several managed projects counts once. Choose **Merge on board** to review the repository, branches, commit, and allowed merge methods. Confirm to merge with the host’s authenticated GitHub account. Open the PR on GitHub for its diff. A changed commit or failed requirement requires another review. Drafts and pull requests waiting for checks appear in project progress. The board reads open pull requests with the host’s authenticated GitHub CLI. In **Settings → GitHub repositories by project**, choose automatic detection, enter an explicit repository, or turn off lookup for a project.
 
 ## Models, hosts and tools
 
@@ -41,3 +42,10 @@ In **Settings**, choose providers and models for task grades A through D, or the
 The coordinator uses `read_board_conversation` to read managed sessions and `classify_board_conversation` to record a judgment tied to the current evidence. It uses `plan_board_assignment` and `assign_board_worker` to delegate work. A worker with reporting enabled can post a question or a result to its own card with `report_to_board`. These tools require Paseo MCP integration in the session's provider.
 
 The host stores project selections, session links, judgments, delivery receipts and notes in its local plugin data. Opening the board does not start a model. When you send a message, the receiving session uses its provider under your existing plan. [한국어 사용 안내](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+
+## Kanban and decision records
+
+Project progress shows occupied lanes side by side on desktop and stacked on a phone. Session rows show their execution host. Connected, visible remote hosts can show running sessions when their project ID or repository identifies a managed project. Opening a remote session takes you to that host.
+
+Project owners can supply independent records in `tracked-decisions.json` in the plugin data directory, or link existing project ledgers through `tracked-sources.json`. This retains manual checks, multiple questions tied to one session, and release decisions that include a second question. Recording a choice closes that version of the record. Sending a message and confirming a GitHub merge are separate actions. [Configuration example](README.md#프로젝트별-칸반과-결정-원장)

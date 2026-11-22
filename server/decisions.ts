@@ -137,7 +137,7 @@ export class DecisionSender {
       if (!isCurrentMembership(row, current) || (!isCurrentMembership(destination, current) && !isManagedCoordinator(current, destination.id))) throw Error(changed);
       const judgment = current.judgments[row.id];
       if (verifiedBoardFact(row, evidence, current, note)) throw Error(changed);
-      Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined), { evidenceId: evidence.id });
+      Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === current.coordinator), { evidenceId: evidence.id });
       decorateDecision(row, note, current);
       if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
       current.decisionReceipts[messageId] = {

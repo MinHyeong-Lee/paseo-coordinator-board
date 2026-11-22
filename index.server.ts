@@ -1,3 +1,7 @@
+import { boardReadiness } from "./shared/readiness";
+import { SnapshotReads } from "./server/snapshot-reads";
+import { readProjectDecisionSources } from "./server/project-decision-sources";
+import { TrackedDecisionStore } from "./server/tracked-decisions";
 import { ProjectPullRequests } from "./server/prs";
 import { decisionCount } from "./shared/decision-count";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -35,12 +39,45 @@ export default function contribute(server: PluginServerContext) {
   registerRecommendation(server, decisions);
   server.handle(sendDecision, (input, { paseo }) => decisions.send(paseo, input));
   const prs = new ProjectPullRequests(prefs);
-  prs.register(server);
+  const tracked = new TrackedDecisionStore(join(dataDir, "tracked-decisions.json"),
+    selected => {
+      let partial = false;
+      const items = readProjectDecisionSources(join(dataDir, "tracked-sources.json"), selected, () => { partial = true; });
+      return {items,partial};
+    });
+  server.handle(boardReadiness, async () => {
+    const scope = prefs.read();
+    return { configured: scope.projects.length > 0, coordinator: scope.coordinator };
+  });
   async function buildSnapshot(paseo: PluginHandlerContext["paseo"]) {
+    // GitHub can take seconds even when Paseo already knows the current sessions.
+    // Start both paths together, and consume both rejections via Promise.all.
     const catalogRead = paseo.projects.list();
-    const [rows, catalog, fetched] = await Promise.all([
-      discoverSessions(paseo), catalogRead, catalogRead.then(({ projects }) => prs.read(paseo, { projects })),
+    const [sessionView, fetched] = await Promise.all([
+      (async () => {
+        const [catalog, rows] = await Promise.all([catalogRead, discoverSessions(paseo)]);
+        return buildSessionView(paseo, catalog, rows);
+      })(),
+      catalogRead.then(({ projects }) => prs.read(paseo, { projects })),
     ]);
+    const { choices, sessions, evidence } = sessionView;
+    const latest = prefs.read();
+    const visible = sessions.filter(row => isCurrentMembership(row, latest));
+    const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
+    facts.decorate(visible, evidence, visibleNotes);
+    for (const row of visible) decorateDecision(row, visibleNotes[row.id], latest);
+    const selected = new Set(latest.projects);
+    const pullRequests = {
+      projects: fetched.projects.filter(p => selected.has(p.projectId)),
+      items: fetched.items.map(pr => ({ ...pr, projectIds: pr.projectIds.filter(id => selected.has(id)) })).filter(pr => pr.projectIds.length),
+    };
+    const trackedDecisions = tracked.read(selected, visible, pullRequests);
+    return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions,
+      projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
+  }
+  async function buildSessionView(paseo: PluginHandlerContext["paseo"],
+    catalog: Awaited<ReturnType<PluginHandlerContext["paseo"]["projects"]["list"]>>,
+    rows: Awaited<ReturnType<typeof discoverSessions>>) {
     const scope = prefs.read();
     const choices = new Map(catalog.projects.map(p => {
       const id = p.projectId;
@@ -52,39 +89,19 @@ export default function contribute(server: PluginServerContext) {
     const titles = new Map([...choices].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
     const evidence = await reader.decorate(paseo, sessions, scope);
-    const latest = prefs.read();
-    const visible = sessions.filter(row => isCurrentMembership(row, latest));
-    const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
-    facts.decorate(visible, evidence, visibleNotes);
-    for (const row of visible) decorateDecision(row, visibleNotes[row.id], latest);
-    const selected = new Set(latest.projects);
-    const pullRequests = {
-      projects: fetched.projects.filter(p => selected.has(p.projectId)),
-      items: fetched.items.map(pr => ({ ...pr, projectIds: pr.projectIds.filter(id => selected.has(id)) })).filter(pr => pr.projectIds.length),
-    };
-    return { sessions: visible, notes: visibleNotes, pullRequests,
-      projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
+    return { choices, sessions, evidence };
   }
-  let cachedCount: { count: number; observed: number } | undefined;
-  let inFlightSnapshot: ReturnType<typeof buildSnapshot> | undefined;
-  let generation = 0;
-  async function readSnapshot(paseo: PluginHandlerContext["paseo"]) {
-    const revision = ++generation;
-    const request = inFlightSnapshot = buildSnapshot(paseo);
-    try {
-      const snapshot = await request;
-      if (revision === generation) cachedCount = { count: decisionCount(snapshot), observed: Date.now() };
-      return snapshot;
-    } finally {
-      if (request === inFlightSnapshot) inFlightSnapshot = undefined;
-    }
-  }
-  server.handle(boardSnapshot, (_input, { paseo }) => readSnapshot(paseo));
-  server.handle(boardDecisionCount, async (_input, { paseo }) => {
-    if (cachedCount && Date.now() - cachedCount.observed < 15_000) return { count: cachedCount.count };
-    const snapshot = await (inFlightSnapshot ?? readSnapshot(paseo));
-    return { count: decisionCount(snapshot) };
-  });
+  const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
+    const { projects, sessionLinks, coordinator, projectRepositories } = prefs.read();
+    return JSON.stringify([projects, sessionLinks, coordinator, projectRepositories]);
+  }, decisionCount);
+  const invalidateCount = () => reads.invalidate();
+  prs.register(server, invalidateCount);
+  tracked.register(server, () => new Set(prefs.read().projects), invalidateCount);
+  server.handle(boardSnapshot, (input, { paseo }) => reads.read(() => buildSnapshot(paseo), input.fresh));
+  server.handle(boardDecisionCount, async (_input, { paseo }) => ({
+    count: await reads.count(() => buildSnapshot(paseo)),
+  }));
   server.handle(boardScope, async (change, { paseo }) => {
     const rows = await discoverSessions(paseo);
     if (change.kind === "project") {
@@ -111,6 +128,7 @@ export default function contribute(server: PluginServerContext) {
         setCoordinator(scope, change.sessionId);
       });
     }
+    invalidateCount();
     return { ok: true };
   });
   server.handle(saveNote, async (input, { paseo }) => {
@@ -118,13 +136,16 @@ export default function contribute(server: PluginServerContext) {
     if (!managedSessions(sessions, prefs.read()).some(session => session.id === input.sessionId)) {
       throw new Error("이 호스트에서 해당 세션을 찾지 못했습니다. 보드를 새로 고쳐 주세요.");
     }
-    return notes.update(input);
+    const outcome = notes.update(input);
+    if (outcome.ok) invalidateCount();
+    return outcome;
   });
 
   server.handle(setReporting, async ({ sessionId, enabled }, { paseo }) => {
     const sessions = await discoverSessions(paseo);
     if (!managedSessions(sessions, prefs.read()).some(session => session.id === sessionId)) throw new Error("세션을 찾지 못했습니다.");
     await paseo.agents.ref(sessionId).setMetadata({ [reportingKey]: enabled });
+    invalidateCount();
     return { ok: true };
   });
   const removeReport = attachReportTool(server, notes);

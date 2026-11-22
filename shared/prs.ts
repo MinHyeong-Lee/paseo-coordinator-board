@@ -32,3 +32,29 @@ export const setProjectRepository = defineRpc({
   }).refine(input => input.mode === "manual" ? !!input.repo : !input.repo),
   output:z.object({ok:z.literal(true)}),
 });
+
+export const mergeMethod = z.enum(["merge", "squash", "rebase"]);
+export type MergeMethod = z.infer<typeof mergeMethod>;
+const mergeReason = z.enum([...pullReason.options, "merged", "closed", "queue", "permission", "no-method",
+  "changed", "expired", "scope", "unavailable", "unconfirmed"]);
+export type MergeReason = z.infer<typeof mergeReason>;
+const mergeTarget = z.strictObject({
+  projectId: z.string().min(1).max(4096), repo: repositorySlug, number: z.number().int().positive().max(2147483647),
+});
+export type MergeTarget = z.infer<typeof mergeTarget>;
+const mergePreview = z.object({
+  status: z.enum(["ready", "blocked", "merged"]), reason: mergeReason, title: z.string(),
+  headSha: z.string(), headRef: z.string(), baseRef: z.string(), baseSha: z.string(), checks: z.number().int().nonnegative(),
+  methods: z.array(mergeMethod), defaultMethod: mergeMethod.nullable(), token: z.string().uuid().nullable(),
+});
+export type MergePreview = z.infer<typeof mergePreview>;
+const mergeResult = z.object({
+  status: z.enum(["merged", "already-merged", "changed", "blocked", "unconfirmed"]),
+  reason: mergeReason, mergeSha: z.string().nullable(),
+});
+export type MergeResult = z.infer<typeof mergeResult>;
+export const previewPullRequestMerge = defineRpc({ name: "board.preview-pull-request-merge", input: mergeTarget, output: mergePreview });
+export const confirmPullRequestMerge = defineRpc({
+  name: "board.confirm-pull-request-merge",
+  input: mergeTarget.extend({ token: z.string().uuid(), method: mergeMethod }), output: mergeResult,
+});

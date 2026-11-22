@@ -45,17 +45,19 @@ export function excerpt(page: Page): Evidence {
 
 const noQuestion = /(?:확인해\s*주실\s*것|결정해\s*주실\s*것|확인\s*요청)(?:은|이|이란)?\s*(?:없|없습니다|없음)/;
 
-function questionIn(text: string) {
+function questionIn(text: string, coordinatorDigest = false) {
   const lines = text.replace(/^```[\s\S]*?^```[^\n]*/gm, "").split("\n").map(line => line.trim());
+  // A coordinator's digest quotes questions belonging to other sessions in typed table rows.
+  const quotedRow = (line: string) => coordinatorDigest && /^\|[^|]+\|\s*(?:question|질문)\s*(?:\+[^|]*)?\|/i.test(line);
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].startsWith(">") || noQuestion.test(lines[i]) || optionalOffer.test(lines[i]) || !request.test(lines[i])) continue;
+    if (quotedRow(lines[i]) || lines[i].startsWith(">") || noQuestion.test(lines[i]) || optionalOffer.test(lines[i]) || !request.test(lines[i])) continue;
     // Include the checklist or options after a request heading.
-    return lines.slice(i).filter(line => line && !line.startsWith(">")).join(" ").slice(0, 340);
+    return lines.slice(i).filter(line => line && !line.startsWith(">") && !quotedRow(line)).join(" ").slice(0, 340);
   }
   return null;
 }
 
-export function classify(e: Evidence, row: SessionRow, decision?: Preferences["judgments"][string]): Candidate {
+export function classify(e: Evidence, row: SessionRow, decision?: Preferences["judgments"][string], isCoordinator = false): Candidate {
   if (row.lane === "human" || row.lane === "running" || row.lane === "unknown" || row.detail.includes("오류")) return row;
   if (decision?.evidenceId === e.id) {
     return { lane: decision.kind === "question" ? "human" : decision.kind, detail: "코디네이터 판단 · " + decision.text };
@@ -63,11 +65,11 @@ export function classify(e: Evidence, row: SessionRow, decision?: Preferences["j
   const last = e.turns.at(-1);
   if (!last) return row;
   if (last.role === "assistant") {
-    const question = questionIn(last.text);
+    const question = questionIn(last.text, isCoordinator);
     if (question) return { lane: "human", detail: "세션의 확인 요청 · " + question };
   } else {
     const previous = e.turns.slice(0, -1).findLast(t => t.role === "assistant");
-    if (previous && questionIn(previous.text)) {
+    if (previous && questionIn(previous.text, isCoordinator)) {
       return { lane: "review", detail: "질문 뒤에 메시지가 왔습니다. 같은 질문에 대한 답인지 확인하세요." };
     }
   }
@@ -109,7 +111,7 @@ export class ConversationReader {
           if (evidence && row.lane !== "human" && (row.lane === "idle" || row.lane === "review") && !row.detail.includes("오류")) {
             observed.set(row.id, evidence);
             const judgment = prefs.judgments[row.id];
-            Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined), { evidenceId: evidence.id });
+            Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === prefs.coordinator), { evidenceId: evidence.id });
           }
         } catch {
           row.detail += " · 최근 대화 조회 실패";

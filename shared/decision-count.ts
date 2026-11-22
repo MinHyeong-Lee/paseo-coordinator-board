@@ -1,4 +1,5 @@
 import type { Note, SessionRow } from "./contract";
+import { trackedCoverage, pullKey, type TrackedDecisionView } from "./tracked-decisions";
 import type { PullRequestView } from "./prs";
 
 export function displayLane(session: SessionRow, note: Note | undefined): SessionRow["lane"] | "done" {
@@ -18,7 +19,10 @@ export function displayLane(session: SessionRow, note: Note | undefined): Sessio
   return session.lane;
 }
 
-export function decisionCount(view: {sessions: SessionRow[]; notes: Record<string, Note>; pullRequests?: PullRequestView}) {
+export function decisionCount(view: {sessions: SessionRow[]; notes: Record<string, Note>; pullRequests?: PullRequestView; trackedDecisions?: TrackedDecisionView}) {
   const sessions = view.sessions.filter(row => displayLane(row, view.notes[row.id]) === "human");
-  return sessions.length + (view.pullRequests?.items.filter(pr => pr.lane === "review").length ?? 0);
+  const records = view.trackedDecisions?.items ?? [];
+  const covered = trackedCoverage(records);
+  return records.length + sessions.filter(s => !covered.sessionIds.has(s.id)).length +
+    (view.pullRequests?.items.filter(pr => pr.lane === "review" && !covered.pullKeys.has(pullKey(pr.repo, pr.number))).length ?? 0);
 }

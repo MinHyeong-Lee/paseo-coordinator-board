@@ -1,3 +1,4 @@
+import { boardReadiness, type BoardReadiness } from "./shared/readiness";
 import { DecisionBadge, publishDecisionCount } from "./client/decision-badge";
 import { decisionCount } from "./shared/decision-count";
 import type { z } from "zod";
@@ -12,6 +13,10 @@ import type { NoteInput, Snapshot } from "./client/model";
 
 function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
   const getBoard = useRpc(boardSnapshot);
+  const readyRpc = useRpc(boardReadiness);
+  const readyRef = useRef(readyRpc);
+  readyRef.current = readyRpc;
+  const [readiness, setReadiness] = useState<BoardReadiness | null>(null);
   const save = useRpc(saveNote);
   const changeReporting = useRpc(setReporting);
   const configure = useRpc(boardScope);
@@ -28,13 +33,13 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
 
-  const refresh = useCallback(async (background = false) => {
+  const refresh = useCallback(async (background = false, fresh = true) => {
     if (!active.current || (pending.current && background)) return;
     const request = ++latest.current;
     pending.current = true;
     if (!background) setLoading(true);
     try {
-      const next = await read.current({});
+      const next = await read.current(fresh ? { fresh: true } : {});
       if (active.current && request === latest.current) {
         setSnapshot(next);
         publishDecisionCount(host.id, decisionCount(next));
@@ -53,14 +58,20 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
 
   useEffect(() => {
     active.current = true;
-    void refresh();
-    const timer = setInterval(() => void refresh(true), 30_000);
+    void refresh(false, false);
+    const initial = latest.current;
+    // Existing installations may briefly have the old server bundle. The full
+    // snapshot still follows its normal path if early readiness is unavailable.
+    void readyRef.current({}).then(value => {
+      if (active.current && latest.current === initial) setReadiness(value);
+    }).catch(() => {});
+    const timer = setInterval(() => void refresh(true, false), 30_000);
     return () => { clearInterval(timer); active.current = false; latest.current++; };
   }, [refresh]);
 
   async function updateScope(input: z.input<typeof boardScope.input>) {
     setChanging(true); setScopeError(null);
-    try { await configure(input); await refresh(); }
+    try { await configure(input); setSnapshot(null); setReadiness(null); setEditing(null); await refresh(); }
     catch (e) { setScopeError(e instanceof Error ? e.message : String(e)); }
     finally { setChanging(false); }
   }
@@ -72,7 +83,7 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
   };
   const session = editing && snapshot?.sessions.find((row) => row.id === editing);
   return <>
-    <BoardView hostId={host.id} hostLabel={host.label} onOpenHostSession={navigation ? (serverId, agentId) => navigation.openAgent({ serverId, agentId }) : undefined} layout={layout} theme={theme} snapshot={snapshot} loading={loading} updatedAt={updatedAt} error={scopeError || error}
+    <BoardView hostId={host.id} hostLabel={host.label} onOpenHostSession={navigation ? (serverId, agentId) => navigation.openAgent({ serverId, agentId }) : undefined} layout={layout} theme={theme} snapshot={snapshot} readiness={readiness} loading={loading} updatedAt={updatedAt} error={scopeError || error}
       changing={changing} coordinator={snapshot?.coordinator}
       onProject={(projectId, enabled) => void updateScope({kind: "project", projectId, enabled})}
       onCoordinator={sessionId => void updateScope({kind: "coordinator", sessionId})}

@@ -38,7 +38,7 @@ function fixture(ids = ["root","checkout","runtime"]) {
     }};
   const prs=new ProjectPullRequests(store,deps);
   let onMapping;
-  prs.register({handle:(rpc,fn)=>{expect(rpc.name).toBe(setProjectRepository.name);onMapping=fn;}});
+  prs.register({handle:(rpc,fn)=>{if(rpc.name===setProjectRepository.name)onMapping=fn;}});
   const update=(input)=>onMapping(setProjectRepository.input.parse(input));
   const read=(refresh=false)=>prs.read(sdk,{refresh});
   return {store,sdk,read,log,behavior,roots,spaces,update,tick:n=>{now+=n;}};

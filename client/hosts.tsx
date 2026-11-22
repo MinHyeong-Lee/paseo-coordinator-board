@@ -57,7 +57,7 @@ export function BoardHosts({ current, settings, theme, open }: {
         ? <Text style={{ color: c.foregroundMuted }}>{t(`앱에 등록 ${registered.length}대`, `Registered hosts: ${registered.length}`)}</Text>
         : <Button theme={theme} label={t("기기별 세션 닫기", "Close host sessions")} onPress={() => { setExpanded(false); setChosen(null); }} />}
     </View>
-    {settings && <Text style={{ color: c.foregroundMuted }}>{t("앱에 등록한 호스트는 기기별 세션에 기본으로 표시됩니다. 이 설정은 기기별 세션 목록에만 적용됩니다.", "Registered hosts appear here by default. This setting applies only to the sessions-by-host list.")}</Text>}
+    {settings && <Text style={{ color: c.foregroundMuted }}>{t("등록한 기기는 기본으로 표시됩니다. 표시한 기기의 세션은 여기에서 찾을 수 있고, 같은 프로젝트에서 진행 중인 작업은 홈에서도 볼 수 있습니다.", "Registered hosts are shown by default. Browse their sessions here and see running work from matching projects on the board.")}</Text>}
     {scope.status === "loading" && <Text style={{ color: c.foregroundMuted }}>{t("표시할 호스트를 확인하고 있습니다.", "Loading host visibility…")}</Text>}
     {error && <View style={wrap}>
       <Text accessibilityLiveRegion="polite" style={{ color: c.statusDanger }}>{ready ? t("표시 설정을 저장하지 못했습니다. 최신 설정에서 다시 선택해 주세요.", "Could not save host visibility. Review the latest settings and try again.") : t("호스트 표시 설정을 읽지 못했습니다.", "Could not load host visibility settings.")}</Text>

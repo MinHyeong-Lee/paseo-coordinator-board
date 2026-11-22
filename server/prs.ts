@@ -2,7 +2,11 @@ import { execCommand, type PluginHandlerContext, type PluginServerContext } from
 import { stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { pullReason, repositorySlug, setProjectRepository, type PullRequestItem, type PullRequestView } from "../shared/prs";
+import { confirmPullRequestMerge, previewPullRequestMerge, pullReason, setProjectRepository,
+  type MergeTarget, type PullRequestItem, type PullRequestView } from "../shared/prs";
+import { githubMergeApi, PullMerges } from "./pr-merge";
+import { githubRepository } from "../shared/github-repository";
+export { githubRepository } from "../shared/github-repository";
 import { readPages } from "./discovery";
 import type { Preferences, PreferenceStore } from "./preferences";
 
@@ -23,14 +27,6 @@ const rawPull = z.object({
 const fields = "number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest";
 const projection = "[.[] | {number,title,state,updatedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,checks:[.statusCheckRollup[]? | {status,conclusion,state}],autoMerge:(.autoMergeRequest != null)}]";
 const ttl = 60_000;
-
-export function githubRepository(remote: string | null | undefined): string | null {
-  if (!remote || remote.length > 512) return null;
-  const match = /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/?#\s]+\/[^/?#\s]+?)\/?$/i.exec(remote.trim());
-  if (!match) return null;
-  const parsed = repositorySlug.safeParse(match[1].replace(/\.git$/i,""));
-  return parsed.success ? parsed.data : null;
-}
 
 function reason(p: z.output<typeof rawPull>):Reason {
   if (p.isDraft || p.mergeStateStatus === "DRAFT") return "draft";
@@ -101,7 +97,8 @@ export class ProjectPullRequests {
   private readonly discovery = new Map<string,{expires:number; value:Promise<string|null>}>();
   private readonly waiting: (() => void)[] = [];
   private running = 0;
-  constructor(private store:PreferenceStore,private readonly deps = {localOrigin,githubPulls,now:Date.now}) {}
+  constructor(private store:PreferenceStore,private readonly deps = {localOrigin,githubPulls,now:Date.now},
+    private readonly mergeApi=githubMergeApi(args=>run("gh",args))) {}
 
   private async limited<T>(task:()=>Promise<T>):Promise<T> {
     if (this.running >= 3) await new Promise<void>(resolve=>this.waiting.push(resolve));
@@ -114,7 +111,10 @@ export class ProjectPullRequests {
     }
   }
 
-  register(server:PluginServerContext) {
+  register(server:PluginServerContext,onInvalidated?:()=>void) {
+    const merges=new PullMerges(this.mergeApi,this.deps.now,repo=>{this.sources.delete(repo);onInvalidated?.();});
+    server.handle(previewPullRequestMerge,(input,{paseo})=>merges.preview(input,()=>this.mergeScope(paseo,input)));
+    server.handle(confirmPullRequestMerge,(input,{paseo})=>merges.confirm(input,()=>this.mergeScope(paseo,input)));
     server.handle(setProjectRepository,async input=>{
       this.store.change(s=>{
         if (!s.projects.includes(input.projectId)) throw Error("관리할 프로젝트를 먼저 선택하세요.");
@@ -127,6 +127,25 @@ export class ProjectPullRequests {
       this.discovery.delete(input.projectId);
       return {ok:true as const};
     });
+  }
+
+  private async mergeScope(paseo:Sdk,target:MergeTarget) {
+    const saved=this.store.read(), config=mapping(saved,target.projectId);
+    if(!saved.projects.includes(target.projectId) || config.mode==="off") throw Error("scope");
+    const current=()=>{
+      const live=this.store.read();
+      return live.projects.includes(target.projectId) && equal(config,mapping(live,target.projectId));
+    };
+    let repo=config.repo;
+    if(config.mode==="auto"){
+      const native=await paseo.projects.list();
+      const project=native.projects.find(p=>p.projectId===target.projectId);
+      if(!current()) throw Error("scope");
+      // Bypass the browsing cache when a person is about to change a GitHub PR.
+      repo=await this.discover(paseo,target.projectId,project?.projectRootPath);
+    }
+    if(repo!==target.repo || !current()) throw Error("scope");
+    return current;
   }
 
   private async discover(paseo:Sdk,id:string,root:string|undefined) {
