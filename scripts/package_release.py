@@ -28,7 +28,8 @@ required = {
     "client/pull-requests.tsx", "client/decision-badge.tsx", "shared/decision-count.ts", "shared/prs.ts", "server/prs.ts",
     "shared/tracked-decisions.ts", "server/tracked-decisions.ts", "server/project-decision-sources.ts", "server/pr-merge.ts",
     "client/tracked-decisions.tsx", "client/project-kanban.tsx", "client/remote-running.tsx", "client/remote-sessions.ts",
-    "shared/github-repository.ts", "shared/pages.ts", "server/snapshot-reads.ts", "shared/readiness.ts",
+    "shared/github-repository.ts", "shared/workspace-pull.ts", "shared/pages.ts", "server/snapshot-reads.ts", "shared/readiness.ts",
+    "client/history-markdown.tsx", "client/vendor/marked/marked.js", "third-party/marked/LICENSE", "client/reply-history.tsx", "shared/reply-history.ts",
     "package.json", "LICENSE", "OVERVIEW.md", "README.md", "templates/coordinator-session.md",
     "third-party/better-paseo/LICENSE", "THIRD_PARTY_NOTICES.md", "assets/preview.png",
 }

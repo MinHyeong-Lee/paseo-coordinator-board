@@ -3,7 +3,7 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {TrackedDecisionStore} from "../server/tracked-decisions";
-import {resolveTrackedDecision, trackedCoverage, trackedDecisionViewSchema} from "../shared/tracked-decisions";
+import {resolveTrackedDecision, trackedRecipient, trackedCoverage, trackedDecisionViewSchema} from "../shared/tracked-decisions";
 import type {SessionRow} from "../shared/contract";
 import type {PullRequestView} from "../shared/prs";
 
@@ -148,4 +148,72 @@ test("only the local resolution RPC is exposed and a failed scope check or stale
   expect(resolveTrackedDecision.input.safeParse({...input,answer:"x".repeat(4001)}).success).toBe(false);
   f.selected.clear();expect((await map.get(calls[0])(input,{})).status).toBe("out-of-scope");expect(changes).toBe(0);
   f.selected.add("p");expect((await map.get(calls[0])(input,{})).status).toBe("closed");expect(changes).toBe(1);
+});
+
+test("tracked reply reaches the chosen recipient once and records the exact visible answer",async()=>{
+  const f=fixture();f.write([row("editorial",{where:"manager"}),row("other")]);
+  const first=f.read().items[0];
+  const input={source:first.source,projectId:first.projectId,id:first.id,fingerprint:first.fingerprint,recipientId:"coordinator",answer:"Publish on Tuesday"};
+  let sends=0;
+  const prepare=async()=>({ready:true,stillCurrent:()=>true,accepted:async()=>false,send:async(text:string)=>{
+    expect(text).toBe(input.answer);sends++;expect(f.close(f.read().items.find(r=>r.id==="other")!).status).toBe("closed");
+  }});
+  expect((await f.service.deliver(input,()=>f.selected,prepare)).status).toBe("sent");
+  expect((await f.service.deliver(input,()=>f.selected,prepare)).status).toBe("sent");
+  expect((await f.service.deliver({...input,answer:"A different decision"},()=>f.selected,prepare)).status).toBe("changed");
+  expect(sends).toBe(1); expect(f.read().items).toHaveLength(0);
+});
+
+test("busy, rotated and uncertain recipients keep the card; a retry checks receipt before closing",async()=>{
+  const f=fixture();f.write([row("one",{where:"session",sessionId:"s"})]);
+  const first=f.read().items[0];
+  const input={source:first.source,projectId:first.projectId,id:first.id,fingerprint:first.fingerprint,recipientId:"s",answer:"Use B"};
+  let sends=0, confirmed=false;
+  const target={ready:false,stillCurrent:()=>true,accepted:async()=>confirmed,send:async()=>{sends++;throw Error("Lost reply");}};
+  const send=()=>f.service.deliver(input,()=>f.selected,async()=>target);
+  expect((await send()).status).toBe("busy");
+  expect((await f.service.deliver(input,()=>f.selected,async()=>null)).status).toBe("changed");
+  target.ready=true;
+  expect((await send()).status).toBe("unconfirmed");
+  expect((await send()).status).toBe("unconfirmed");
+  expect(f.close(first).status).toBe("unconfirmed");expect(f.read().items).toHaveLength(1);
+  confirmed=true;expect((await send()).status).toBe("sent");expect(sends).toBe(1);
+});
+
+test("record routing follows explicit host and project membership",()=>{
+  const f=fixture();f.write([row("one",{where:"session",sessionId:"s"})]);const [item]=f.read().items;
+  expect(trackedRecipient(item,"coord",[s])).toBe("s");
+  expect(trackedRecipient({...item,sessionHost:"other"},"coord",[s])).toBeNull();
+  expect(trackedRecipient({...item,projectId:"other"},"coord",[s])).toBeNull();
+  expect(trackedRecipient({...item,where:"manager"},"coord",[s])).toBe("coord");
+  expect(trackedRecipient({...item,where:"unknown"},"coord",[s])).toBeNull();
+});
+
+test("a v1 host-wide delivery stays visible after restart and export removal without becoming a new decision", () => {
+  const f = fixture();
+  f.write([row("device-login",{projectId:null,title:"Sign in on the studio device",where:"human"})]);
+  const [original] = f.read().items;
+  const messageId="3fa85f64-5717-4562-b3fc-2c963f66afa6";
+  const at="2026-11-22T06:45:25.444Z";
+  writeFileSync(join(f.dir,"tracked-decisions.resolved.json"),JSON.stringify({version:1,items:[
+    {key:original.key,fingerprint:original.fingerprint,at,answer:"Signed in",recipientId:"coord",messageId,pending:false},
+  ]}));
+  expect(f.read().items).toHaveLength(0);
+  expect(f.read().history).toMatchObject([{projectId:null,title:original.title,answer:"Signed in",status:"sent",coordinator:true,at}]);
+  const evidence=new Map([["coord",{id:"e",turns:[],replies:new Map([[messageId,"Access verified"]])}]]);
+  expect(f.service.read(f.selected,[],{items:[],projects:[]},evidence).history?.[0].response).toBe("Access verified");
+  rmSync(f.path);
+  const restarted=new TrackedDecisionStore(f.path);
+  expect(restarted.read(f.selected,[],{items:[],projects:[]}).history).toMatchObject([{title:original.title,at,response:"Access verified"}]);
+  expect(restarted.read(new Set(),[],{items:[],projects:[]}).history).toBeUndefined();
+});
+
+test("local-only and no-answer resolutions remain distinct and scoped to their project",()=>{
+  const f=fixture();f.write([row("first"),row("second")]);
+  const [first,second]=f.read().items;
+  expect(f.close(first,"Keep it").status).toBe("closed");
+  expect(f.close(second).status).toBe("closed");
+  expect(f.read().history?.map(x=>x.status)).toEqual(["recorded","closed"]);
+  f.selected.clear();f.selected.add("unrelated");
+  expect(f.read().history).toBeUndefined();
 });

@@ -36,10 +36,17 @@ export const trackedDecisionViewSchema = z.object({
   items:z.array(trackedDecisionSchema),status:z.enum(["ok","partial","absent","invalid","unavailable"]),
 });
 export type TrackedDecisionView = z.output<typeof trackedDecisionViewSchema>;
+export function trackedRecipient(item:TrackedDecisionInput, coordinator:string|null, sessions:readonly SessionRow[]) {
+  if (item.where === "manager" || item.where === "human") return coordinator;
+  if (item.where !== "session" || item.sessionHost || !item.sessionId) return null;
+  const session = sessions.find(s => s.id === item.sessionId && s.projectId === item.projectId);
+  return session ? session.id : null;
+}
+
 export const resolveTrackedDecision = defineRpc({
   name:"board.resolve-tracked-decision",
-  input: reference.extend({fingerprint,answer:z.string().trim().min(1).max(4000).optional()}).strict(),
-  output:z.object({status:z.enum(["closed","already-closed","changed","out-of-scope","unavailable"])}),
+  input: reference.extend({fingerprint,answer:z.string().trim().min(1).max(4000).optional(),recipientId:id.optional()}).strict().refine(v => !v.recipientId || !!v.answer),
+  output:z.object({status:z.enum(["closed","already-closed","changed","out-of-scope","unavailable","sent","busy","unconfirmed"])}),
 });
 export type TrackedResolution = z.output<typeof resolveTrackedDecision.input>;
 export const trackedKey = (row:z.output<typeof reference>) => JSON.stringify([row.source,row.projectId,row.id]);

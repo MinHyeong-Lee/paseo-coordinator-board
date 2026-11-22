@@ -1,15 +1,17 @@
 import type { BoardReadiness } from "../shared/readiness";
+import { ReplyHistory } from "./reply-history";
 import { TrackedDecisionCard } from "./tracked-decisions";
-import { trackedCoverage, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
-import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice } from "./pull-requests";
+import { trackedCoverage, trackedRecipient, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
+import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice, type WorkSessionLink } from "./pull-requests";
 import { decisionCount } from "../shared/decision-count";
-import type { PullRequestView } from "../shared/prs";
+import { matchesWorkspace } from "../shared/workspace-pull";
+import type { PullRequestItem } from "../shared/prs";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { DecisionActions, ReceiptText, type DecisionReceipt } from "./decision-actions";
+import { DecisionActions, type DecisionReceipt } from "./decision-actions";
 import { SessionLinks } from "./session-links";
-import { RemoteRunning } from "./remote-running";
+import { useRemoteRunning, RemoteRunning } from "./remote-running";
 import { BoardHosts } from "./hosts";
 import { OperationsPanel } from "./operations";
 import { Button, type Theme } from "./controls";
@@ -35,32 +37,67 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     return [...snapshot?.trackedDecisions?.items ?? []].sort((a,b) => priority(a.urgency) - priority(b.urgency) ||
       (a.where === "human" ? 0 : 1) - (b.where === "human" ? 0 : 1) || (a.since ?? "~").localeCompare(b.since ?? "~"));
   }, [snapshot?.trackedDecisions]);
-  const covered = trackedCoverage(records);
-  const sessionDecisions = human.filter(c => !covered.sessionIds.has(c.session.id));
-  const prDecisions = readyPrs.filter(pr => !covered.pullKeys.has(pullKey(pr.repo,pr.number)));
   const total = snapshot ? decisionCount(snapshot) : 0;
   const names = new Map(snapshot?.projects.map(project => [project.id, project.title]));
   const displayed = new Map(projects.map(project => [project.id, project]));
   for (const pr of pullRequests?.items ?? []) for (const id of pr.projectIds) {
     if (!displayed.has(id)) displayed.set(id, {id,title:names.get(id) ?? id,cards:[]});
   }
-  const byProject = new Map<string | null,number>();
-  function countFor(projectId: string | null) { byProject.set(projectId, (byProject.get(projectId) ?? 0) + 1); }
-  records.forEach(item => {
-    countFor(item.projectId);
-    if (item.projectId && !displayed.has(item.projectId)) displayed.set(item.projectId, {id:item.projectId,title:names.get(item.projectId) ?? item.projectTitle ?? item.projectId,cards:[]});
-  });
-  sessionDecisions.forEach(card => countFor(card.session.projectId));
-  prDecisions.forEach(pr => pr.projectIds.forEach(countFor));
+  function decisionsFor(inScope:(id:string|null)=>boolean) {
+    const visibleRecords=records.filter(item=>inScope(item.projectId));
+    const covered=trackedCoverage(visibleRecords);
+    return {
+      records:visibleRecords,
+      sessions:human.filter(card=>inScope(card.session.projectId) && !covered.sessionIds.has(card.session.id)),
+      prs:readyPrs.filter(pr=>pr.projectIds.some(inScope) && !covered.pullKeys.has(pullKey(pr.repo,pr.number))),
+    };
+  }
+  const byProject=new Map<string|null,number>();
+  const projectIds=new Set<string|null>(snapshot?.projects.filter(p=>p.selected).map(p=>p.id));
+  for (const item of records) {
+    projectIds.add(item.projectId);
+    if (item.projectId && !displayed.has(item.projectId)) displayed.set(item.projectId,{id:item.projectId,title:names.get(item.projectId) ?? item.projectTitle ?? item.projectId,cards:[]});
+  }
+  const history = snapshot?.replyHistory ?? [];
+  for (const entry of history) {
+    projectIds.add(entry.projectId);
+    if (entry.projectId && !displayed.has(entry.projectId)) displayed.set(entry.projectId,{id:entry.projectId,title:names.get(entry.projectId) ?? entry.projectId,cards:[]});
+  }
+  for (const id of projectIds) {
+    const list=decisionsFor(projectId=>projectId===id);
+    byProject.set(id,list.records.length+list.sessions.length+list.prs.length);
+  }
   const [showFilters, setShowFilters] = useState(false);
-  const [chosenProject, setChosenProject] = useState<string | null | undefined>(undefined);
-  const filter = chosenProject !== undefined && byProject.has(chosenProject) ? chosenProject : undefined;
-  const inFilter = (id:string | null) => filter === undefined || id === filter;
-  const filteredRecords = records.filter(item => inFilter(item.projectId));
-  const filteredSessions = sessionDecisions.filter(card => inFilter(card.session.projectId));
-  const filteredPrs = prDecisions.filter(pr => pr.projectIds.some(inFilter));
+  const [chosenProjects,setChosenProjects]=useState<(string|null)[]>([]);
+  const filters=chosenProjects.filter(id=>byProject.has(id));
+  const inFilter=(id:string|null)=>!filters.length || filters.includes(id);
+  const {records:filteredRecords,sessions:filteredSessions,prs:filteredPrs}=decisionsFor(inFilter);
+  const filteredTotal=filteredRecords.length+filteredSessions.length+filteredPrs.length;
+  const filteredHistory=history.filter(entry=>inFilter(entry.projectId));
+  const [historyOpen,setHistoryOpen]=useState<boolean|null>(null);
+  const showHistory=historyOpen ?? (filteredTotal===0);
+  const scroll=useRef<ScrollView>(null);
+  const historyY=useRef(0);
+  const [sentNotice,setSentNotice]=useState<{projectId:string|null}|null>(null);
+  useEffect(()=>{
+    if (!sentNotice) return;
+    const timer=setTimeout(()=>setSentNotice(null),10000);
+    return ()=>clearTimeout(timer);
+  },[sentNotice]);
+  function revealHistory() {
+    setHistoryOpen(true);
+    requestAnimationFrame(()=>scroll.current?.scrollTo({y:Math.max(0,historyY.current-12),animated:true}));
+  }
+  const projectName=(id:string|null)=>names.get(id ?? "") ?? id ?? t("공통","Host-wide");
+  function toggleFilter(id:string|null) {
+    setChosenProjects(previous=>{
+      const active=previous.filter(value=>byProject.has(value));
+      return active.includes(id) ? active.filter(value=>value!==id) : [...active,id];
+    });
+  }
   const incomplete = snapshot?.trackedDecisions && ["partial","unavailable","invalid"].includes(snapshot.trackedDecisions.status);
   const [settings, setSettings] = useState(false);
+  const peers = useRemoteRunning({id:hostId ?? "",label:hostLabel}, snapshot?.projects ?? [], pullRequests?.projects ?? [], !!hostId && !settings);
   const [showError, setShowError] = useState(false);
   const [manage, setManage] = useState(false);
   const [pickSession, setPickSession] = useState(false);
@@ -75,28 +112,53 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
-  const latestMoved = receipts.find(r => snapshot?.projects.some(p => p.id === r.projectId && p.selected) && !human.some(card => card.session.id === r.sessionId && card.session.projectId === r.projectId));
   const renderDecision = (card: Card) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
           card={card} hostLabel={hostLabel} theme={theme} coordinator={snapshot!.coordinator} coordinatorTitle={snapshot!.sessions.find(s => s.id === snapshot!.coordinator)?.title}
           open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
           onSent={result => {
+            setSentNotice({projectId:result.projectId});
             setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
             onRefresh();
           }} />;
+  function linkedSession(item: TrackedDecision) {
+    const id = item.matchedSessionId || item.sessionId;
+    if (!id) return;
+    if (item.sessionHost && item.sessionHost !== hostId) {
+      const peer = peers.find(g => g.host.serverId === item.sessionHost && g.rows.some(s => s.sessionId === id && s.projectId === item.projectId));
+      return peer && onOpenHostSession ? () => onOpenHostSession(peer.host.serverId,id) : undefined;
+    }
+    const local = snapshot?.sessions.find(s => s.id === id && (s.projectId === item.projectId || s.id === item.matchedSessionId));
+    return local && actions.onOpen ? () => actions.onOpen!(local.id) : undefined;
+  }
+  function renderPull(pr:PullRequestItem, projectId:string, decision=false) {
+    const workSessions:WorkSessionLink[] = [];
+    for (const s of snapshot?.sessions ?? []) {
+      if (!pr.projectIds.includes(s.projectId) || !actions.onOpen || !matchesWorkspace(pr,s.workspacePull)) continue;
+      const state = s.status === "closed" ? t("대화 종료","Closed") : s.lane === "running" ? t("진행 중","Running") : s.status === "idle" ? t("대기","Idle") : t("상태 확인 필요","Check status");
+      workSessions.push({key:JSON.stringify([hostId,s.id]),label:[s.title,hostLabel,state].join(" · "),open:()=>actions.onOpen!(s.id)});
+    }
+    if (onOpenHostSession) for (const {host,rows} of peers) for (const s of rows) {
+      if (!pr.projectIds.includes(s.projectId) || !matchesWorkspace(pr,s.workspacePull)) continue;
+      workSessions.push({key:JSON.stringify([host.serverId,s.sessionId]),label:[s.title || t("작업 세션","Work session"),host.label,t("진행 중","Running")].join(" · "),open:()=>onOpenHostSession(host.serverId,s.sessionId)});
+    }
+    return <PullRequestCard key={JSON.stringify([pr.url,projectId])} pr={pr} projectId={projectId} theme={theme} workSessions={workSessions}
+      decision={decision} openCoordinator={openCoordinator} onResult={mergeResult} />;
+  }
   const renderRecord = (item: TrackedDecision) => {
           const native = human.find(card => card.session.id === item.matchedSessionId);
           const pr = item.matchedPull && readyPrs.find(pr => pr.repo === item.matchedPull?.repo && pr.number === item.matchedPull.number);
-          const assigned = !native && !item.sessionHost && item.sessionId && snapshot!.sessions.find(session => session.id === item.sessionId && session.projectId === item.projectId);
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
-            open={assigned && actions.onOpen ? () => actions.onOpen?.(assigned.id) : undefined} onResolved={onRefresh}>
+            recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
+              if (status==="sent") setSentNotice({projectId:item.projectId});
+              onRefresh();
+            }}>
             {native && renderDecision(native)}
-            {pr && <PullRequestCard pr={pr} projectId={pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0]}
-              theme={theme} decision openCoordinator={openCoordinator} onResult={mergeResult} />}
+            {pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true)}
           </TrackedDecisionCard>;
         };
   const c = theme.colors;
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
+    <ScrollView ref={scroll} style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <View style={{ flex: 1, minWidth: 140, gap: 3 }}>
           <Text style={{ color: c.foreground, fontSize: 22, fontWeight: "700" }} accessibilityRole="header">{settings ? t("코디네이터 보드 설정", "Coordinator board settings") : t("세션별 코디네이터 보드", "Session coordinator board")}</Text>
@@ -115,7 +177,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
       {!!error && settings && <Button theme={theme} label={t("세션 다시 조회", "Retry session lookup")} disabled={loading} onPress={onRefresh} />}
       {snapshot && onProject && (pickingProjects || settings) && <View style={{ gap: 7 }}>
         {!pickingProjects
-          ? <Button theme={theme} label={manage ? t("프로젝트 관리 닫기", "Close project selection") : t("관리 프로젝트 변경", "Manage projects")} onPress={() => setManage(!manage)} />
+          ? <Button theme={theme} label={manage ? t("프로젝트 관리 닫기", "Close project selection") : t("보드에서 관리할 프로젝트 선택", "Choose projects to manage")} onPress={() => setManage(!manage)} />
           : <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "600" }}>{t("다이제스트에서 관리할 프로젝트 선택", "Select projects for your digest")}</Text>}
         {(pickingProjects || manage) && <>
           <Text style={{ color: c.foregroundMuted }}>{t("선택한 프로젝트의 최근 대화를 읽어 내 결정을 찾습니다. 코디네이터를 지정하면 그 세션도 선택한 프로젝트의 발췌를 볼 수 있습니다.", "The board reads recent conversations in selected projects to find decisions. The assigned coordinator can also read excerpts from those projects.")}</Text>
@@ -142,32 +204,43 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
         </>}
       </View>}
       {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: total ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
-        <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>
+        <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{filters.length ? t(`내 결정 · ${filteredTotal}건 / 전체 ${total}건`, `My decisions · ${filteredTotal} of ${total}`) : t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>
         {byProject.size > 1 && <View style={{gap: 6}}>
-          <Button theme={theme} label={filter !== undefined ? t("프로젝트 필터", "Project filter") + " · " + (names.get(filter ?? "") ?? t("공통", "Host-wide")) : t("프로젝트로 보기", "Filter by project")}
+          <Button theme={theme} accessibilityLabel={t("프로젝트로 좁혀 보기", "Filter by project")} expanded={showFilters}
+            label={t("프로젝트로 좁혀 보기", "Filter by project") + " · " + (filters.length ? t(`${filters.length}개 선택`,`${filters.length} selected`) : t("전체","All"))}
             onPress={() => setShowFilters(value => !value)} />
           {showFilters && <View style={{flexDirection:"row",flexWrap:"wrap",gap:4}}>
-            <Button theme={theme} label={t(`전체 ${total}`,`All ${total}`)} selected={filter === undefined} onPress={() => setChosenProject(undefined)} />
-            {[...byProject].map(([id,count]) => <Button key={id ?? ""} theme={theme} selected={filter === id}
-              label={`${names.get(id ?? "") ?? t("공통","Host-wide")} · ${count}`} onPress={() => setChosenProject(id)} />)}
+            <Button theme={theme} label={t(`전체 ${total}`,`All ${total}`)} selected={!filters.length} onPress={() => setChosenProjects([])} />
+            {[...byProject].map(([id,count]) => <Button key={JSON.stringify(id)} theme={theme} toggle selected={filters.includes(id)}
+              label={`${projectName(id)} · ${count}`} onPress={() => toggleFilter(id)} />)}
           </View>}
+        </View>}
+        {sentNotice && inFilter(sentNotice.projectId) && <View style={{flexDirection:"row",alignItems:"center",gap:8}}>
+          <Text accessibilityLiveRegion="polite" style={{color:c.statusSuccess}}>{t("전송했습니다.","Message sent.")}</Text>
+          {!!filteredHistory.length && <Button theme={theme} label={t("기록 보기","View activity")} onPress={revealHistory} />}
         </View>}
         {incomplete &&
           <Text accessibilityLiveRegion="polite" style={{ color: c.statusWarning }}>{t("일부 결정 기록을 읽지 못했습니다. 현재 건수에는 확인한 항목만 포함됩니다.", "Some decision records could not be loaded. The count includes the available items.")}</Text>}
+        {filters.length > 0 && !filteredTotal && total > 0 && !incomplete && <Text style={{color:c.foregroundMuted}}>{t("선택한 프로젝트에 결정할 일이 없습니다.","No decisions in the selected projects.")}</Text>}
         {total === 0 && !incomplete && <Text style={{ color: c.foregroundMuted }}>{t("지금 결정할 일이 없습니다.", "No decisions are waiting for you.")}</Text>}
-        {mergeNotice && snapshot.projects.some(p => p.selected && p.id === mergeNotice.projectId) && (mergeNotice.status === "merged" || mergeNotice.status === "already-merged" ||
+        {mergeNotice && inFilter(mergeNotice.projectId) && snapshot.projects.some(p => p.selected && p.id === mergeNotice.projectId) && (mergeNotice.status === "merged" || mergeNotice.status === "already-merged" ||
           !readyPrs.some(pr => pr.repo + " #" + pr.number === mergeNotice.target)) && <MergeFeedback notice={mergeNotice} theme={theme} />}
-        {filteredPrs.slice(0,digestLimit).map(pr => <PullRequestCard key={JSON.stringify([pr.url, pr.projectIds[0]])} projectId={pr.projectIds[0]} pr={pr} theme={theme} decision openCoordinator={openCoordinator} onResult={mergeResult} />)}
-        {latestMoved && <ReceiptText receipt={latestMoved} theme={theme} />}
+        {filteredPrs.slice(0,digestLimit).map(pr => renderPull(pr,pr.projectIds.find(inFilter) ?? pr.projectIds[0],true))}
         {filteredRecords.slice(0,digestLimit).map(renderRecord)}
         {filteredSessions.slice(0,digestLimit).map(renderDecision)}
         {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
+      {!settings && configured && filteredHistory.length>0 && <View onLayout={event=>{historyY.current=event.nativeEvent.layout.y;}}>
+        <ReplyHistory entries={filteredHistory} theme={theme} open={actions.onOpen} expanded={showHistory} onToggle={()=>setHistoryOpen(!showHistory)} />
+      </View>}
       {!settings && snapshot && !displayed.size && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
-      {!settings && displayed.size > 0 && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
-      {!settings && [...displayed.values()].map((p) => <Project projectId={p.id} records={records.filter(r => r.projectId === p.id)} renderRecord={renderRecord} decisions={byProject.get(p.id) ?? 0} sessionHostLabel={hostLabel} onMergeResult={mergeResult} requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
-      {!settings && hostId && snapshot && configured && <RemoteRunning current={{ id: hostId, label: hostLabel }}
-        projects={snapshot.projects} repositories={pullRequests?.projects ?? []} open={onOpenHostSession} theme={theme} />}
+      {!settings && (displayed.size > 0 || byProject.has(null)) && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
+      {!settings && byProject.has(null) && <Project projectId="" title={t("공통","Host-wide")} cards={[]} requests={[]} history={history.filter(entry=>entry.projectId === null)}
+        records={records.filter(item=>item.projectId === null)} decisions={byProject.get(null) ?? 0} renderRecord={renderRecord} renderPull={renderPull}
+        openRecord={linkedSession} compact={layout.compact} theme={theme} {...actions} />}
+      {!settings && [...displayed.values()].map((p) => <Project projectId={p.id} history={history.filter(entry=>entry.projectId===p.id)} records={records.filter(r => r.projectId === p.id)} renderRecord={renderRecord} decisions={byProject.get(p.id) ?? 0} sessionHostLabel={hostLabel} renderPull={renderPull} openRecord={linkedSession} requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
+      {!settings && hostId && snapshot && configured && <RemoteRunning groups={peers}
+        projects={snapshot.projects} open={onOpenHostSession} theme={theme} />}
     </ScrollView>
   );
 }

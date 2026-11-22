@@ -8,6 +8,7 @@ type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["ref
 export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean };
 export type Evidence = {
   id: string; turns: Turn[];
+  replies?: Map<string, string>;
   laterInput?: boolean;
   deliveries?: { id: string; sender: string; bodyHash: string }[];
 };
@@ -21,8 +22,11 @@ export function excerpt(page: Page): Evidence {
   const digest = createHash("sha256").update(page.epoch);
   const laterInputs: string[] = [];
   const deliveries: NonNullable<Evidence["deliveries"]> = [];
+  const replies = new Map<string, string>();
+  let messageIds: string[] = [];
   for (const { item, seqEnd } of page.entries) {
     if (item.type === "tool_call" && (item.agentMessage || item.name === "heartbeat")) {
+      messageIds = [];
       laterInputs.push(item.callId);
       const prefix = "paseo-agent-message:";
       if (item.status === "completed" && item.callId.startsWith(prefix) && item.agentMessage?.event === "message") {
@@ -33,6 +37,11 @@ export function excerpt(page: Page): Evidence {
     if (item.type !== "assistant_message" && item.type !== "user_message") continue;
     const role = item.type === "assistant_message" ? "assistant" : "user";
     const text = item.text.trim();
+    if (item.type === "user_message") {
+      messageIds = [item.messageId, item.clientMessageId].filter((id): id is string => !!id);
+    } else if (text) {
+      for (const id of messageIds) replies.set(id, text.length > 1200 ? text.slice(0, 1199) + "…" : text);
+    }
     if (!text) continue;
     laterInputs.length = 0;
     turns.push({ role, text: text.slice(-2000), ...(text.length > 2000 ? { truncated: true } : {}) });
@@ -40,7 +49,7 @@ export function excerpt(page: Page): Evidence {
   }
   if (laterInputs.length) digest.update(JSON.stringify(laterInputs));
   return { id: digest.digest("hex").slice(0, 24), turns: turns.slice(-4),
-    ...(laterInputs.length ? {laterInput:true} : {}), ...(deliveries.length ? {deliveries} : {}) };
+    ...(replies.size ? { replies } : {}), ...(laterInputs.length ? {laterInput:true} : {}), ...(deliveries.length ? {deliveries} : {}) };
 }
 
 const noQuestion = /(?:확인해\s*주실\s*것|결정해\s*주실\s*것|확인\s*요청)(?:은|이|이란)?\s*(?:없|없습니다|없음)/;
@@ -100,7 +109,7 @@ export class ConversationReader {
   }
 
   async decorate(paseo: Sdk, rows: SessionRow[], prefs: Preferences) {
-    this.retain(new Set(rows.map(row => row.id)));
+    this.retain(new Set([...rows.map(row => row.id), ...(prefs.coordinator ? [prefs.coordinator] : [])]));
     const observed = new Map<string, Evidence>();
     let cursor = 0;
     const work = async () => {

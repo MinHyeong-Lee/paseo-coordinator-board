@@ -7,13 +7,15 @@ The board groups existing Paseo sessions by project and shows which decisions ne
 On the computer running Paseo 0.16.2 or later, enable trusted plugins and install the GitHub source directly.
 
 ```sh
-paseo plugin install git:devbrother2024/paseo-coordinator-board --ref feature/decision-requests-and-language
+paseo plugin install git:devbrother2024/paseo-coordinator-board --ref main
 paseo plugin ls coordinator-board
 ```
 
-For a reviewed catalog release, paste the install ID from its directory page into **Settings → Plugins → Plugin source** and select **Install plugin**. The command above installs the development version directly. Replace the branch with a full commit SHA to install a specific revision. The `git:` prefix selects a Git source. Paseo uses the plain `owner/slug` form for registry entries. For a ZIP installation, unzip the package and run `paseo plugin install .` in the folder containing `paseo-plugin.json`. Keep that folder in place. [Source](https://github.com/devbrother2024/paseo-coordinator-board) · [Paseo plugin guide](https://paseo.sh/docs/plugins)
+For a reviewed catalog release, paste the install ID from its directory page into **Settings → Plugins → Plugin source** and select **Install plugin**. The command above installs the default branch directly. Replace the branch with a full commit SHA to install a specific revision. The `git:` prefix selects a Git source. Paseo uses the plain `owner/slug` form for registry entries. For a ZIP installation, unzip the package and run `paseo plugin install .` in the folder containing `paseo-plugin.json`. Keep that folder in place. [Source](https://github.com/devbrother2024/paseo-coordinator-board) · [Paseo plugin guide](https://paseo.sh/docs/plugins)
 
-Open the board from the sidebar and select the projects you want in your digest. To manage just one session from another project, open **Settings → Link an existing session to a project**. Search for the session, check its ID and source workspace, select a managed destination, then click **Link to this project**. The card appears once under its destination. The session keeps its original ID, workspace, files and conversation. **Unlink from project** removes the link. The card returns to its source project if that project is also managed.
+Open the board from the sidebar and select the projects you want in your digest. To manage just one session from another project, open **Settings → Link a session from another project**. Search for the session, check its ID and source workspace, select a managed destination, then click **Link to this project**. The card appears once under its destination. The session keeps its original ID, workspace, files and conversation. **Unlink from project** removes the link. The card returns to its source project if that project is also managed.
+
+After sending an answer, expand **Recent decision activity** below **My decisions** for the exact message, time and recipient. The project’s **Decision follow-up** column keeps the same record. Device-wide actions appear under **Host-wide**. A verified follow-up appears on the card, and the recipient chip opens the conversation.
 
 ## Work with a coordinator
 
@@ -23,13 +25,13 @@ Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn 
 
 Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
 
-Each session decision has an **Open assigned session** button beside the project and session name. It opens the original conversation without sending a reply. The card leads with the question and one suggested reply. Open **View source** for the original text and the reason behind the suggestion. Use **Ask coordinator for a recommendation** to revisit an older card. If a necessary detail is missing, the card asks for that detail. Other actions sit under **Other actions**.
+Each session decision has an **Assigned session** chip beside the project and session name. It opens the original conversation without sending a reply. The card leads with the question and one suggested reply. Open **View source** for the original text and the reason behind the suggestion. Use **Ask coordinator for a recommendation** to revisit an older card. If a necessary detail is missing, the card asks for that detail. Choose options directly on the card. When no suggested reply is available, type your own. Open evidence and history for context.
 
 A worker asking “Which project does this session belong to?” can receive a verified answer from the designated coordinator during a requested digest. The project card shows a record of the response. **Settings → Automatic replies to factual questions** lets you turn this off for the host. Receiving a reply can start the worker's model and use its provider allowance. A decision such as deleting a work folder still requires the person responsible.
 
 - **Reply to a session.** The suggested reply and **Send this reply** appear in a single control. Long replies open in full before you can send. Choose an option to change the proposed message. **Edit reply** and **Write a reply** let you send your own wording.
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
-- **Respond to a native approval.** Choose **Open assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
+- **Respond to a native approval.** Choose **Assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
 
 ## GitHub pull requests
 
@@ -49,3 +51,5 @@ The host stores project selections, session links, judgments, delivery receipts 
 Project progress shows occupied lanes side by side on desktop and stacked on a phone. Session rows show their execution host. Connected, visible remote hosts can show running sessions when their project ID or repository identifies a managed project. Opening a remote session takes you to that host.
 
 Project owners can supply independent records in `tracked-decisions.json` in the plugin data directory, or link existing project ledgers through `tracked-sources.json`. This retains manual checks, multiple questions tied to one session, and release decisions that include a second question. Recording a choice closes that version of the record. Sending a message and confirming a GitHub merge are separate actions. [Configuration example](README.md#프로젝트별-칸반과-결정-원장)
+
+Select multiple projects in the decision filter to see their combined decisions. Shared pull requests count once. A verified workspace match adds a session chip with its host and status to the PR card. For a tracked decision, select the named recipient to send your answer or choose **Save answer on board and close** to keep a local record.

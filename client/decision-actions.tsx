@@ -5,7 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { sendDecision, type DecisionInput } from "../shared/decision-actions";
 import { requestRecommendation } from "../shared/recommendation";
 import { decisionSummary } from "./decision-summary";
-import { Button, type Theme } from "./controls";
+import { Button, SessionChip, type Theme } from "./controls";
 import { useBoardLanguage } from "./language";
 import type { Card } from "./model";
 
@@ -41,6 +41,7 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
   const [requestedFrom, setRequestedFrom] = useState<string | null>(null);
   const recommendationKey = useRef({ recipient: "", key: "" });
   const [selection, setSelection] = useState<number | null>(null);
+  const [draft, setDraft] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<[string, string] | null>(null);
@@ -76,7 +77,7 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
       if (!result.ok || result.recipientId !== recipientId) {
         setError(["영수증의 수신자를 확인할 수 없습니다. 원래 세션을 확인해 주세요.", "The receipt does not confirm the recipient. Check the original session."]); return;
       }
-      delivered.current = payload; setEditor(null);
+      delivered.current = payload; setEditor(null); setDraft("");
       onSent({ projectId: session.projectId, sessionId: session.id, version: decision.version,
         project: session.projectTitle, source: session.title, recipient: action === "coordinate" ? coordinatorTitle || recipientId : session.title, action });
     } catch {
@@ -111,16 +112,20 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
       <Text style={{ color: c.foregroundMuted, fontSize: 13, textDecorationLine: "underline" }}>{label}</Text>
     </Pressable>;
   return <View style={{ gap: 7, paddingTop: 10, borderTopWidth: 1, borderColor: c.border }}>
-    <Text accessibilityRole="header" selectable numberOfLines={hasEvidence ? 1 : undefined} style={{ color: c.foreground, fontSize: 15, fontWeight: "600" }}>{headline}</Text>
+    <Text accessibilityRole="header" selectable style={{ color: c.foreground, fontSize: 15, fontWeight: "600" }}>{headline}</Text>
     <View style={{ ...wrap, alignItems: "center" }}>
       <Text selectable style={{ color: c.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{marker}</Text>
-      <Button theme={theme} {...named(t("담당 세션 열기", "Open assigned session"))} disabled={!open} onPress={() => open?.(session.id)} />
+      {open && <SessionChip theme={theme} label={t("담당 세션", "Assigned session")} accessibilityLabel={named(t("담당 세션 열기", "Open assigned session")).accessibilityLabel} onPress={() => open(session.id)} />}
     </View>
     {formal || !decision ? formal && <Text style={{ color: c.foregroundMuted }}>
       {t("승인 요청은 담당 세션에서 확인해 주세요.", "Review the approval request in the assigned session.")}
     </Text> : <>
       {!editor && <>
         {!proposed && !!decision.needsInput && decision.needsInput !== headline && <Text selectable style={{ color: c.foreground }}>{decision.needsInput}</Text>}
+          {!!decision.options?.length && <View style={wrap}>{decision.options.map((option, index) =>
+            <Button key={index} theme={theme} label={option.label} selected={selection === index}
+              accessibilityLabel={`${session.title} · ${t("선택", "Choose")} · ${option.label}`} disabled={busy}
+              onPress={() => { setSelection(index); setShowMethods(false); setReviewedReply(null); setError(null); }} />)}</View>}
         {proposed && <Pressable accessibilityRole="button" disabled={busy}
           accessibilityState={{ disabled: busy }}
           accessibilityLabel={named(reviewReply ? t("답장 전문 확인", "Review full reply")
@@ -133,24 +138,26 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
             {reviewReply ? t("답장 전문 보기", "View full reply") : t("이대로 보내기", "Send this reply")}
           </Text>
         </Pressable>}
+        {!proposed && <View style={{ gap: 6 }}>
+          <TextInput multiline accessibilityLabel={session.title + " · " + t("답장 내용", "reply text")} value={draft}
+            maxLength={24000} editable={!busy} onChangeText={setDraft} placeholder={t("담당 세션에 보낼 답을 입력하세요", "Write a reply to the assigned session")}
+            placeholderTextColor={c.foregroundMuted} style={{ minHeight: 48, padding: 8, color: c.foreground, borderColor: c.border, borderWidth: 1, borderRadius: 7, backgroundColor: c.surface0 }} />
+          <View style={wrap}><Button theme={theme} {...named(t("담당 세션에 답장 보내기", "Send reply to assigned session"))}
+            disabled={!draft.trim() || busy} selected={!!draft.trim()} onPress={() => void submit("reply", draft, session.id)} /></View>
+        </View>}
         <View style={{ ...wrap, alignItems: "center" }}>
           {proposed ? <Button theme={theme} {...named(t("고쳐 보내기", "Edit reply"))} disabled={busy} onPress={() => begin("reply", proposed)} />
-            : decision.needsInput ? <Button theme={theme} {...named(t("필요한 정보 답하기", "Provide requested information"))} selected disabled={busy} onPress={() => begin("reply")} />
-            : coordinator ? adviceSent
+            : !decision.needsInput && coordinator ? adviceSent
               ? <Text accessibilityLiveRegion="polite" style={{ color: c.statusSuccess }}>{t("추천 요청됨 · 코디네이터 답변 대기", "Recommendation requested · Awaiting coordinator")}</Text>
               : <Button theme={theme} {...named(t("코디네이터에 추천 요청", "Ask coordinator for a recommendation"))} selected disabled={busy} onPress={() => void requestAdvice()} />
             : null}
           {disclose(showMethods ? t("다른 방법 접기", "Hide alternatives") : t("다른 방법", "Other actions"), showMethods, () => setShowMethods(v => !v))}
         </View>
         {showMethods && <View style={{ gap: 7 }}>
-          {!!decision.options?.length && <View style={wrap}>{decision.options.map((option, index) =>
-            <Button key={index} theme={theme} label={option.label} selected={selection === index}
-              accessibilityLabel={`${session.title} · ${t("선택", "Choose")} · ${option.label}`} disabled={busy}
-              onPress={() => { setSelection(index); setShowMethods(false); setReviewedReply(null); setError(null); }} />)}</View>}
           <View style={wrap}>
             {chosen && decision.recommendation && <Button theme={theme} {...named(t("추천 답장으로 돌아가기", "Restore suggested reply"))} disabled={busy}
               onPress={() => { setSelection(null); setReviewedReply(null); setShowMethods(false); }} />}
-            <Button theme={theme} {...named(t("직접 답장", "Write a reply"))} disabled={busy} onPress={() => begin("reply")} />
+            {proposed && <Button theme={theme} {...named(t("직접 답장", "Write a reply"))} disabled={busy} onPress={() => begin("reply", draft)} />}
             <Button theme={theme} {...named(t("질문하기", "Ask a question"))} disabled={busy} onPress={() => begin("question")} />
             {!!coordinator && coordinator !== session.id && <Button theme={theme} {...named(t("코디네이터에 조율 요청", "Ask coordinator to coordinate"))} disabled={busy} onPress={() => begin("coordinate")} />}
           </View>

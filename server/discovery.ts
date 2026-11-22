@@ -3,6 +3,8 @@ export { readPages } from "../shared/pages";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { reportingKey, type SessionRow } from "../shared/contract";
 
+import { workspacePull } from "../shared/workspace-pull";
+
 type Sdk = PluginHandlerContext["paseo"];
 type AgentPage = Awaited<ReturnType<Sdk["agents"]["list"]>>;
 type Entry = AgentPage["entries"][number];
@@ -47,7 +49,9 @@ export async function discoverSessions(paseo: Pick<Sdk, "agents" | "workspaces">
       rows.delete(agent.id);
       continue;
     }
+    const work = workspace && !workspace.internal ? workspacePull(workspace) : undefined;
     rows.set(agent.id, {
+      ...(work ? { workspacePull: work } : {}),
       id: agent.id,
       title: agent.title?.trim() || `세션 ${agent.id.slice(0, 8)}`,
       projectId: workspace?.projectId || project.projectKey || "unassigned",

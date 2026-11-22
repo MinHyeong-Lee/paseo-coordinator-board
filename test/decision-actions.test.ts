@@ -171,3 +171,14 @@ test("a recommendation refresh targets just one card and leaves its answer open"
   await expect(invoke({...input, language:"ko", requestKey:"different-recommendation-03"})).rejects.toThrow();
   expect(f.sent).toHaveLength(1);
 });
+
+test("a native card keeps a single durable record with the original question, recipient, and sent text", async () => {
+  const f = await fixture();
+  const original = await f.row();
+  const delivered = await f.send({text:"Use two lines"});
+  await f.send({text:"Use two lines", requestKey:"repeat-0000001"});
+  const owned = Object.entries(f.prefs.read().decisionReceipts).filter(([id,r])=>!r.messageId || r.messageId === id);
+  expect(owned).toHaveLength(1);
+  expect(owned[0][0]).toBe(delivered.messageId);
+  expect(owned[0][1]).toMatchObject({status:"sent",activity:{projectId:"project",title:original.decision.question,answer:"Use two lines",recipientId:"worker",coordinator:false}});
+});

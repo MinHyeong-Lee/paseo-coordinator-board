@@ -2,7 +2,7 @@ import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { useRef, useState } from "react";
 import { Platform, Text, TextInput, View } from "react-native";
 import { confirmPullRequestMerge, previewPullRequestMerge, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
-import { Button, type Theme } from "./controls";
+import { Button, SessionChip, type Theme } from "./controls";
 import { useBoardLanguage, type Translate } from "./language";
 
 type PullRequest = PullRequestView["items"][number];
@@ -51,8 +51,10 @@ export function MergeFeedback({ notice, theme }: { notice: MergeNotice; theme: T
   </Text>;
 }
 
-export function PullRequestCard({ pr, projectId, theme, decision = false, openCoordinator, onResult }: {
-  pr: PullRequest; projectId: string; theme: Theme; decision?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void;
+export type WorkSessionLink = { key: string; label: string; open: () => void };
+
+export function PullRequestCard({ pr, projectId, theme, decision = false, openCoordinator, workSessions, onResult }: {
+  pr: PullRequest; projectId: string; theme: Theme; workSessions: WorkSessionLink[]; decision?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void;
 }) {
   const { t } = useBoardLanguage();
   const c = theme.colors;
@@ -108,6 +110,10 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
         {target}
       </Text>
       <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>· {t(status[0], status[1])}</Text>
+      {workSessions.map(link => <SessionChip key={link.key} label={link.label} theme={theme}
+        accessibilityLabel={target + " · " + link.label} onPress={link.open} />)}
+      {!workSessions.length && <Text style={{color:c.foregroundMuted,fontSize:12}}>{t("작업 세션 미확인", "No verified work session")}</Text>}
+      {decision && openCoordinator && <SessionChip theme={theme} label={t("코디네이터 세션", "Coordinator session")} accessibilityLabel={named(t("코디네이터 세션 열기", "Open coordinator session")).accessibilityLabel} onPress={openCoordinator} />}
     </View>
     <Text selectable style={{color: c.foreground, fontSize: 15, fontWeight: "600"}}>{preview?.title || pr.title}</Text>
     {preview && ready && <View style={{gap: 7, padding: 10, borderWidth: 1, borderRadius: 7, borderColor: c.border, backgroundColor: c.surface0}}>
@@ -122,9 +128,8 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
         <Button theme={theme} {...named(t("취소", "Cancel"))} disabled={!!busy} onPress={() => { setPreview(null); setMethod(null); }} />
       </View>
     </View>}
-    {((ready && !preview) || (decision && openCoordinator)) && <View style={wrap}>
-      {ready && !preview && <Button theme={theme} {...named(busy === "read" ? t("병합 정보 조회 중…", "Loading merge details…") : t("보드에서 병합", "Merge on board"))} selected={decision} disabled={!!busy} onPress={() => void inspect()} />}
-      {decision && openCoordinator && <Button theme={theme} {...named(t("코디네이터 세션 열기", "Open coordinator session"))} onPress={openCoordinator} />}
+    {ready && !preview && <View style={wrap}>
+      <Button theme={theme} {...named(busy === "read" ? t("병합 정보 조회 중…", "Loading merge details…") : t("보드에서 병합", "Merge on board"))} selected={decision} disabled={!!busy} onPress={() => void inspect()} />
     </View>}
     {lookupError && <Text accessibilityLiveRegion="polite" style={{color:c.statusWarning}}>{t("병합 정보를 불러오지 못했습니다. 다시 조회하거나 GitHub에서 확인하세요.", "Could not load merge details. Try again or open GitHub.")}</Text>}
     {notice && notice.status !== "merged" && notice.status !== "already-merged" && <MergeFeedback notice={notice} theme={theme} />}

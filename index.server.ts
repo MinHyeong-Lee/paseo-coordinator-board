@@ -1,3 +1,5 @@
+import type { ReplyEntry } from "./shared/reply-history";
+import { trackedRecipient } from "./shared/tracked-decisions";
 import { boardReadiness } from "./shared/readiness";
 import { SnapshotReads } from "./server/snapshot-reads";
 import { readProjectDecisionSources } from "./server/project-decision-sources";
@@ -37,7 +39,11 @@ export default function contribute(server: PluginServerContext) {
   registerSessionLinks(server, prefs);
   const decisions = new DecisionSender(prefs, notes, reader);
   registerRecommendation(server, decisions);
-  server.handle(sendDecision, (input, { paseo }) => decisions.send(paseo, input));
+  server.handle(sendDecision, async (input, { paseo }) => {
+    const result = await decisions.send(paseo, input);
+    invalidateCount();
+    return result;
+  });
   const prs = new ProjectPullRequests(prefs);
   const tracked = new TrackedDecisionStore(join(dataDir, "tracked-decisions.json"),
     selected => {
@@ -60,7 +66,7 @@ export default function contribute(server: PluginServerContext) {
       })(),
       catalogRead.then(({ projects }) => prs.read(paseo, { projects })),
     ]);
-    const { choices, sessions, evidence } = sessionView;
+    const { choices, sessions, evidence, coordinatorRow } = sessionView;
     const latest = prefs.read();
     const visible = sessions.filter(row => isCurrentMembership(row, latest));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
@@ -71,8 +77,31 @@ export default function contribute(server: PluginServerContext) {
       projects: fetched.projects.filter(p => selected.has(p.projectId)),
       items: fetched.items.map(pr => ({ ...pr, projectIds: pr.projectIds.filter(id => selected.has(id)) })).filter(pr => pr.projectIds.length),
     };
-    const trackedDecisions = tracked.read(selected, visible, pullRequests);
-    return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions,
+    const targets = new Map(visible.map(row => [row.id, row]));
+    if (coordinatorRow && coordinatorRow.id === latest.coordinator) targets.set(coordinatorRow.id, coordinatorRow);
+    for (const id of evidence.keys()) if (!targets.has(id)) evidence.delete(id);
+    const {history = [], ...trackedDecisions} = tracked.read(selected, visible, pullRequests, evidence);
+    const activity: ReplyEntry[] = [...history];
+    const updates = new Map<string,string>();
+    for (const [id, receipt] of Object.entries(latest.decisionReceipts)) {
+      const detail = receipt.activity;
+      if (!detail?.projectId || !selected.has(detail.projectId) || (receipt.messageId && receipt.messageId !== id)) continue;
+      const reply = detail.recipientId && receipt.status === "sent" ? evidence.get(detail.recipientId)?.replies?.get(id) : undefined;
+      if (reply && reply !== receipt.response) updates.set(id, reply);
+      activity.push({...detail, key:id, status:receipt.status, messageId:id, response:reply ?? receipt.response});
+    }
+    if (updates.size) prefs.change(current => {
+      for (const [id,text] of updates) if (current.decisionReceipts[id]) current.decisionReceipts[id].response = text;
+    });
+    for (const entry of activity) {
+      const target = entry.recipientId && targets.get(entry.recipientId);
+      if (!target) { delete entry.response; continue; }
+      entry.canOpen = true;
+      entry.recipientTitle = target.title;
+      entry.recipientState = target.lane === "running" ? "running" : target.status === "idle" || target.status === "closed" || target.status === "error" ? target.status : "unknown";
+    }
+    const replyHistory = activity.sort((a,b) => b.at.localeCompare(a.at));
+    return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory,
       projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
   }
   async function buildSessionView(paseo: PluginHandlerContext["paseo"],
@@ -89,7 +118,12 @@ export default function contribute(server: PluginServerContext) {
     const titles = new Map([...choices].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
     const evidence = await reader.decorate(paseo, sessions, scope);
-    return { choices, sessions, evidence };
+    const coordinatorRow = rows.find(row => row.id === scope.coordinator);
+    if (coordinatorRow && !sessions.some(row => row.id === coordinatorRow.id)) {
+      const observed = await reader.read(paseo, coordinatorRow).catch(() => null);
+      if (observed) evidence.set(coordinatorRow.id, observed);
+    }
+    return { choices, sessions, evidence, coordinatorRow };
   }
   const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
     const { projects, sessionLinks, coordinator, projectRepositories } = prefs.read();
@@ -97,7 +131,30 @@ export default function contribute(server: PluginServerContext) {
   }, decisionCount);
   const invalidateCount = () => reads.invalidate();
   prs.register(server, invalidateCount);
-  tracked.register(server, () => new Set(prefs.read().projects), invalidateCount);
+  tracked.register(server, () => new Set(prefs.read().projects), invalidateCount, async (item,targetId,{paseo}) => {
+    const rows=await discoverSessions(paseo);
+    const current=()=>{
+      const scope=prefs.read();
+      return scope.projects.length>0 && (!item.projectId || scope.projects.includes(item.projectId)) &&
+        trackedRecipient(item,scope.coordinator,managedSessions(rows,scope))===targetId;
+    };
+    if (!current()) return null;
+    const handle=paseo.agents.ref(targetId);
+    const agent=(await handle.refresh())?.agent;
+    if (!current() || !agent || agent.id!==targetId || agent.internal || agent.archivedAt) return null;
+    return {
+      stillCurrent:current,
+      send:async (answer,messageId)=>{
+        await handle.send(answer,{messageId,activeTurnBehavior:"steer"});
+      },
+      accepted:async (answer,messageId)=>{
+        const page=await handle.timeline.refetch({direction:"tail",projection:"projected",limit:128});
+        return !page.error && !page.gap && !page.staleCursor && page.entries.some(({item:m})=>m.type==="user_message" &&
+          (m.messageId===messageId || m.clientMessageId===messageId) && m.text===answer);
+      },
+      ready:agent.status==="idle" && !agent.activeTurn && !agent.pendingPermissions.length && agent.attentionReason!=="permission",
+    };
+  });
   server.handle(boardSnapshot, (input, { paseo }) => reads.read(() => buildSnapshot(paseo), input.fresh));
   server.handle(boardDecisionCount, async (_input, { paseo }) => ({
     count: await reads.count(() => buildSnapshot(paseo)),

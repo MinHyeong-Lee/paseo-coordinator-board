@@ -6,6 +6,7 @@ import { sessionLinkSchema } from "../shared/session-links";
 import { decisionFields } from "../shared/decision-actions";
 import { routePolicySchema } from "../shared/dispatch";
 import { repositoryOverride } from "../shared/prs";
+import { replyDetails } from "../shared/reply-history";
 import { factSchema } from "../shared/board-facts";
 
 export const judgment = z.object({
@@ -31,6 +32,7 @@ const schema = z.object({
   routingRevision: z.number().int().nonnegative().default(0),
   answers: z.record(z.string(), z.object({ version: z.string(), noteRevision: z.number().optional() })).default({}),
   decisionReceipts: z.record(z.string(), z.object({
+    activity: replyDetails.optional(), response: z.string().optional(),
     fingerprint: z.string(), sessionId: z.string(), version: z.string(), status: z.enum(["pending", "sent"]),
     evidenceId: z.string().optional(),
     noteRevision: z.number().optional(), beforeAnswer: z.string().optional(), messageId: z.string().optional(),

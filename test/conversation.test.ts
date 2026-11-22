@@ -65,3 +65,19 @@ test("a coordinator digest does not repeat a worker question as its own decision
   expect(classify(evidence(["assistant_message",report+"\nPlease choose a project."]),row,undefined,true).lane).toBe("human");
   expect(classify(evidence(["assistant_message",report]),row).lane).toBe("human");
 });
+
+test("a follow-up belongs to the exact sent message and stops at the next independent input",()=>{
+  const items=[
+    {type:"assistant_message",text:"Earlier response"},
+    {type:"user_message",text:"Signed in",clientMessageId:"expected"},
+    {type:"assistant_message",text:"Checking access"},
+    {type:"assistant_message",text:"Access restored"},
+    {type:"user_message",text:"Signed in",messageId:"unrelated"},
+    {type:"assistant_message",text:"Unrelated response"},
+    {type:"tool_call",name:"heartbeat",callId:"heartbeat"},
+    {type:"assistant_message",text:"Separate background work"},
+  ];
+  const result=excerpt({epoch:"one",entries:items.map((item,seqEnd)=>({item,seqEnd}))});
+  expect(result.replies?.get("expected")).toBe("Access restored");
+  expect(result.replies?.get("unrelated")).toBe("Unrelated response");
+});

@@ -3,13 +3,15 @@ import { githubRepository } from "../shared/github-repository";
 import { readPages } from "../shared/pages";
 import type { PullRequestView } from "../shared/prs";
 
+import { workspacePull, type WorkspacePull } from "../shared/workspace-pull";
+
 type Client = ReturnType<typeof getPaseoClient>;
 type AgentEntry = Awaited<ReturnType<Client["agents"]["list"]>>["entries"][number];
 type Workspace = Awaited<ReturnType<Client["workspaces"]["list"]>>["entries"][number];
 export type LocalProject = { id: string; title: string; selected: boolean };
 export type Repository = Pick<PullRequestView["projects"][number],"projectId"|"repo"|"mode">;
 export type RemoteScope = { selected: string[]; known: string[]; repos: [string,string][] };
-export type RemoteSession = { sessionId: string; projectId: string; title: string };
+export type RemoteSession = { sessionId: string; projectId: string; title: string; workspacePull?: WorkspacePull };
 
 export function remoteScope(projects: LocalProject[], repositories: Repository[]): RemoteScope {
   const selected = projects.filter(p => p.selected).map(p => p.id).sort();
@@ -65,7 +67,8 @@ export function matchRemoteSessions(entries: AgentEntry[], workspaces: Workspace
       if (local.length !== 1) continue;
       matched = local[0][0];
     }
-    result.set(agent.id, {sessionId: agent.id, projectId: matched, title: agent.title?.trim() ?? ""});
+    const work = workspacePull(ws);
+    result.set(agent.id, {...(work ? {workspacePull:work} : {}),sessionId: agent.id, projectId: matched, title: agent.title?.trim() ?? ""});
   }
   return [...result.values()];
 }

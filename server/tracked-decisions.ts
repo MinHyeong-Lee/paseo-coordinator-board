@@ -4,6 +4,8 @@ import { dirname, join, parse } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import type { SessionRow } from "../shared/contract";
+import type { ReplyEntry } from "../shared/reply-history";
+import type { Evidence } from "./conversation";
 import type { PullRequestView } from "../shared/prs";
 import {
   resolveTrackedDecision, trackedDecisionInputSchema, trackedKey, trackedMatches,
@@ -12,10 +14,12 @@ import {
 
 const maxBytes = 8 * 1024 * 1024;
 const feed = z.union([z.object({version:z.literal(1),items:z.array(z.unknown())}).transform(v=>v.items),z.array(z.unknown())]);
-const receipt = z.object({key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional()});
+const receipt = z.object({title:z.string().optional(), coordinator:z.boolean().optional(), response:z.string().optional(),key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
 const receipts = z.object({version:z.literal(1),items:z.array(receipt)});
 type SourceStatus = TrackedDecisionView["status"];
 type InputRow = {key:string;fingerprint:string;item:TrackedDecisionInput};
+type Receipt = z.output<typeof receipt>;
+type PendingDelivery = { ready:boolean; send:(answer:string,messageId:string)=>Promise<void>; accepted:(answer:string,messageId:string)=>Promise<boolean>; stillCurrent:()=>boolean };
 type Attempt = z.output<typeof resolveTrackedDecision.output>;
 type AdditionalSources = unknown[] | {items:unknown[];partial:boolean};
 type ReadSources = (selected:Set<string>)=>AdditionalSources;
@@ -88,19 +92,43 @@ export class TrackedDecisionStore {
     return rows.size===parsed.data.items.length?rows:null;
   }
 
-  read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView):TrackedDecisionView {
+  read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView, evidence: ReadonlyMap<string,Evidence> = new Map()):TrackedDecisionView & { history?:ReplyEntry[] } {
     const {status,rows}=this.load(selected);
-    if(status!=="ok" && status!=="partial")return {items:[],status};
     const resolved=this.recorded();
     if(!resolved)return {items:[],status:"unavailable"};
+    const history: ReplyEntry[] = [];
+    let updated = false;
+    for (const [version, receipt] of resolved) {
+      let reference: unknown;
+      try { reference = JSON.parse(receipt.key); } catch { continue; }
+      if (!Array.isArray(reference) || reference.length !== 3) continue;
+      const [, projectId, id] = reference;
+      if (typeof id !== "string" || !(projectId === null ? selected.size > 0 : selected.has(projectId))) continue;
+      const source = rows.get(receipt.key);
+      const original = source?.fingerprint === receipt.fingerprint ? source.item : undefined;
+      const title = receipt.title ?? original?.title ?? id;
+      const coordinator = receipt.coordinator ?? (original ? original.where === "manager" || original.where === "human" : undefined);
+      const response = receipt.recipientId && receipt.messageId && !receipt.pending
+        ? evidence.get(receipt.recipientId)?.replies?.get(receipt.messageId) : undefined;
+      // Preserve the old format's title while the original card is still available.
+      if ((!receipt.title && original && receipt.recipientId) || (response && response !== receipt.response)) {
+        Object.assign(receipt, {title, coordinator, response:response ?? receipt.response});
+        updated = true;
+      }
+      history.push({key:version, title, projectId, coordinator, at:receipt.at, answer:receipt.answer,
+        recipientId:receipt.recipientId, messageId:receipt.messageId, response:receipt.response,
+        status:receipt.pending ? "pending" : receipt.recipientId ? "sent" : receipt.answer ? "recorded" : "closed"});
+    }
+    if (updated) this.save(resolved);
     const scopedSessions=sessions.filter(s=>selected.has(s.projectId));
     const scopedPrs={...prs,items:prs.items.filter(p=>p.projectIds.some(id=>selected.has(id)))};
     const items=[];
     for(const {key,fingerprint,item} of rows.values()){
-      if(resolved.has(receiptKey(key,fingerprint)))continue;
+      const previous=resolved.get(receiptKey(key,fingerprint));
+      if(previous && !previous.pending)continue;
       items.push({...item,key,fingerprint,...trackedMatches(item,scopedSessions,scopedPrs)});
     }
-    return {items,status};
+    return {items,status,...(history.length ? {history} : {})};
   }
 
   resolve(input:TrackedResolution,getScope:()=>Set<string>):Attempt {
@@ -117,25 +145,66 @@ export class TrackedDecisionStore {
     if(!allowed(getScope()))return {status:"out-of-scope"};
     const version=receiptKey(row.key,row.fingerprint);
     const previous=records.get(version);
+    if(previous?.pending || input.recipientId)return {status:"unconfirmed"};
     if(previous)
       return {status:input.answer && input.answer!==previous.answer?"changed":"already-closed"};
-    records.set(version,{key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),...(input.answer?{answer:input.answer}:{})});
+    records.set(version,{title:row.item.title,key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),...(input.answer?{answer:input.answer}:{})});
+    return this.save(records) ? {status:"closed"} : {status:"unavailable"};
+  }
+
+  private save(records:Map<string,Receipt>) {
     const body=JSON.stringify({version:1,items:[...records.values()]});
-    if(Buffer.byteLength(body)>maxBytes)return {status:"unavailable"};
+    if(Buffer.byteLength(body)>maxBytes)return false;
     const tmp=this.resolutionPath+"."+randomUUID()+".tmp";
     try {
       mkdirSync(dirname(this.resolutionPath),{recursive:true,mode:0o700});
       writeFileSync(tmp,body,{flag:"wx",mode:0o600});
       renameSync(tmp,this.resolutionPath);
-    }catch{return {status:"unavailable"};}
+    }catch{return false;}
     finally{rmSync(tmp,{force:true});}
-    return {status:"closed"};
+    return true;
   }
 
-  register(server:PluginServerContext,getScope:()=>Set<string>,onChange?:()=>void) {
-    server.handle(resolveTrackedDecision,async input=>{
-      const result=this.resolve(input,getScope);
-      if(result.status==="closed")onChange?.();
+  async deliver(input:TrackedResolution, getScope:()=>Set<string>, prepare:(row:TrackedDecisionInput)=>Promise<PendingDelivery|null>):Promise<Attempt> {
+    const selected=getScope();
+    if (!selected.size || (input.projectId && !selected.has(input.projectId))) return {status:"out-of-scope"};
+    const key=trackedKey(input), version=receiptKey(key,input.fingerprint);
+    const current=()=>this.load(getScope()).rows.get(key);
+    const row=current();
+    if (!row || row.fingerprint!==input.fingerprint || !input.answer || !input.recipientId) return {status:"changed"};
+    const target=await prepare(row.item);
+    if (!target || !target.stillCurrent() || current()?.fingerprint!==input.fingerprint) return {status:"changed"};
+    const records=this.recorded();
+    if (!records) return {status:"unavailable"};
+    const previous=records.get(version);
+    if (previous && (previous.recipientId!==input.recipientId || previous.answer!==input.answer)) return {status:"changed"};
+    if (previous && !previous.pending) return {status:"sent"};
+    const messageId=previous?.messageId ?? randomUUID();
+    const receipt:Receipt={title:row.item.title,coordinator:row.item.where==="human" || row.item.where==="manager",key,fingerprint:input.fingerprint,at:previous?.at ?? new Date().toISOString(),answer:input.answer,recipientId:input.recipientId,messageId,pending:true};
+    try {
+      if (previous) {
+        if (!(await target.accepted(input.answer,messageId))) return {status:"unconfirmed"};
+      } else {
+        if (!target.ready) return {status:"busy"};
+        records.set(version,receipt);
+        if (!this.save(records)) return {status:"unavailable"};
+        await target.send(input.answer,messageId);
+      }
+    } catch { return {status:"unconfirmed"}; }
+    // Other decisions can be answered while the session receives this message.
+    const latest=this.recorded();
+    if (!latest || latest.get(version)?.messageId!==messageId) return {status:"unconfirmed"};
+    latest.set(version,{...receipt,pending:false});
+    return {status:this.save(latest) ? "sent" : "unconfirmed"};
+  }
+
+  register(server:PluginServerContext,getScope:()=>Set<string>,onChange?:()=>void,
+    prepare?: (row:TrackedDecisionInput, target:string, ctx:import("@getpaseo/plugin/server").PluginHandlerContext)=>Promise<PendingDelivery|null>) {
+    server.handle(resolveTrackedDecision,async (input,ctx)=>{
+      const result=input.recipientId && prepare
+        ? await this.deliver(input,getScope,row=>prepare(row,input.recipientId!,ctx))
+        : this.resolve(input,getScope);
+      if(result.status==="closed" || result.status==="sent")onChange?.();
       return result;
     });
   }
