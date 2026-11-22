@@ -1,6 +1,6 @@
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
 import { useRef, useState } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Platform, Text, TextInput, View } from "react-native";
 import { confirmPullRequestMerge, previewPullRequestMerge, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
 import { Button, type Theme } from "./controls";
 import { useBoardLanguage, type Translate } from "./language";
@@ -100,7 +100,15 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
     try { await openExternalUrl(pr.url); setLinkError(false); } catch { setLinkError(true); }
   }
   return <View style={{gap: 6, borderTopColor: c.border, borderTopWidth: 1, paddingVertical: 8}}>
-    <Text selectable style={{color: c.foregroundMuted, fontSize: 12}}>{target} · {t(status[0], status[1])}</Text>
+    <View style={{ ...wrap, alignItems: "baseline" }}>
+      <Text accessibilityRole="link" accessibilityLabel={target + " · " + t("GitHub에서 보기", "View on GitHub")}
+        {...(Platform.OS === "web" && { href: pr.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } })}
+        onPress={event => { event.preventDefault(); void github(); }}
+        style={{ maxWidth: "100%", color: c.foreground, textDecorationLine: "underline", fontSize: 13 }}>
+        {target}
+      </Text>
+      <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>· {t(status[0], status[1])}</Text>
+    </View>
     <Text selectable style={{color: c.foreground, fontSize: 15, fontWeight: "600"}}>{preview?.title || pr.title}</Text>
     {preview && ready && <View style={{gap: 7, padding: 10, borderWidth: 1, borderRadius: 7, borderColor: c.border, backgroundColor: c.surface0}}>
       <Text selectable style={{color: c.foreground, fontWeight: "600"}}>{preview.baseRef} ← {preview.headRef}</Text>
@@ -114,11 +122,10 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
         <Button theme={theme} {...named(t("취소", "Cancel"))} disabled={!!busy} onPress={() => { setPreview(null); setMethod(null); }} />
       </View>
     </View>}
-    <View style={wrap}>
+    {((ready && !preview) || (decision && openCoordinator)) && <View style={wrap}>
       {ready && !preview && <Button theme={theme} {...named(busy === "read" ? t("병합 정보 조회 중…", "Loading merge details…") : t("보드에서 병합", "Merge on board"))} selected={decision} disabled={!!busy} onPress={() => void inspect()} />}
-      <Button theme={theme} {...named(t("GitHub에서 보기", "View on GitHub"))} onPress={() => void github()} />
       {decision && openCoordinator && <Button theme={theme} {...named(t("코디네이터 세션 열기", "Open coordinator session"))} onPress={openCoordinator} />}
-    </View>
+    </View>}
     {lookupError && <Text accessibilityLiveRegion="polite" style={{color:c.statusWarning}}>{t("병합 정보를 불러오지 못했습니다. 다시 조회하거나 GitHub에서 확인하세요.", "Could not load merge details. Try again or open GitHub.")}</Text>}
     {notice && notice.status !== "merged" && notice.status !== "already-merged" && <MergeFeedback notice={notice} theme={theme} />}
     {linkError && <Text selectable style={{color:c.foregroundMuted}}>{pr.url}</Text>}
