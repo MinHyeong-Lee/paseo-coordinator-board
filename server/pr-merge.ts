@@ -6,8 +6,10 @@ import {
   type MergeMethod,
   type MergePreview,
   type MergeReason,
+  type MergeNotification,
   type MergeResult,
   type MergeTarget,
+  type PullMergeActivity,
 } from "../shared/prs";
 
 const query = `query BoardMergePreview($owner:String!, $name:String!, $number:Int!) {
@@ -269,6 +271,7 @@ type Voucher = {
   target: MergeTarget;
   fingerprint: string;
   pullId: string;
+  title: string;
   head: string;
   baseRef: string;
   expires: number;
@@ -287,7 +290,20 @@ export class PullMerges {
     private readonly api: Api,
     private readonly now: () => number,
     private readonly invalidate: (repo: string) => void,
+    private readonly record: (entry: PullMergeActivity) => void,
   ) {}
+
+  private recordMerge(target: MergeTarget, title: string, status: "merged" | "already-merged", mergeSha: string | null) {
+    try {
+      this.record({
+        projectId: target.projectId, title, at: new Date(this.now()).toISOString(),
+        pullMerge: { repo: target.repo, number: target.number, status, mergeSha },
+      });
+    } catch {
+      // GitHub's confirmed outcome must still reach the person who clicked Merge.
+      console.warn("Could not save the confirmed PR merge to board history.");
+    }
+  }
 
   async preview(target: MergeTarget, scope: () => Promise<() => boolean>): Promise<MergePreview> {
     let current: () => boolean;
@@ -306,6 +322,9 @@ export class PullMerges {
     if (!current()) return blank("scope");
     const result = view(state);
     if (result.status !== "ready") {
+      if (result.status === "merged") {
+        this.recordMerge(target, result.title, "already-merged", state.repo.pullRequest.mergeCommit?.oid ?? null);
+      }
       this.invalidate(target.repo);
       return result;
     }
@@ -316,6 +335,7 @@ export class PullMerges {
       target: { ...target },
       fingerprint: fingerprint(state, result),
       pullId: state.repo.pullRequest.id,
+      title: result.title,
       head: result.headSha,
       baseRef: result.baseRef,
       expires: this.now() + 300_000,
@@ -323,7 +343,8 @@ export class PullMerges {
     return { ...result, token };
   }
 
-  async confirm(request: Request, scope: () => Promise<() => boolean>): Promise<MergeResult> {
+  async confirm(request: Request, scope: () => Promise<() => boolean>,
+    notify?: (entry: PullMergeActivity) => Promise<MergeNotification>): Promise<MergeResult> {
     const v = this.vouchers.get(request.token);
     if (!v || v.expires <= this.now()) return outcome("changed", "expired");
     if (!sameTarget(request, v.target) || (v.method && v.method !== request.method))
@@ -341,13 +362,23 @@ export class PullMerges {
     if (this.busy.has(key)) return outcome("unconfirmed", "unconfirmed");
     this.busy.add(key);
     v.method = request.method;
-    const attempt = this.apply(v, request, current);
+    const attempt = this.apply(v, request, current).then(async result => {
+      if (result.status === "merged" && notify) {
+        // Only this fresh, successful mutation can create a notification.
+        const entry = {projectId:request.projectId, title:v.title, at:new Date(this.now()).toISOString(),
+          pullMerge:{repo:request.repo,number:request.number,status:result.status,mergeSha:result.mergeSha}};
+        try { result.notification = await notify(entry); }
+        catch { result.notification = {status:"unavailable"}; }
+      } else if (result.status === "merged" || result.status === "already-merged") {
+        this.recordMerge(request, v.title, result.status, result.mergeSha);
+      }
+      v.result = result;
+      this.invalidate(request.repo);
+      return result;
+    });
     v.attempt = attempt;
     try {
-      const r = await attempt;
-      v.result = r;
-      this.invalidate(request.repo);
-      return r;
+      return await attempt;
     } finally {
       this.busy.delete(key);
       delete v.attempt;

@@ -43,6 +43,20 @@ const mergeTarget = z.strictObject({
   projectId: z.string().min(1).max(4096), repo: repositorySlug, number: z.number().int().positive().max(2147483647),
 });
 export type MergeTarget = z.infer<typeof mergeTarget>;
+export const mergeNotification = z.object({
+  status: z.enum(["sent", "queued", "unavailable", "unconfirmed"]),
+  recipientId: z.string().optional(),
+});
+export type MergeNotification = z.infer<typeof mergeNotification>;
+export const pullMergeEvidence = mergeTarget.omit({projectId:true}).extend({
+  status: z.enum(["merged", "already-merged"]),
+  mergeSha: z.string().regex(/^[a-f0-9]{40}$/).nullable(),
+  notification: mergeNotification.optional(),
+});
+export const pullMergeActivity = z.object({
+  projectId: z.string(), title: z.string(), at: z.string().datetime(), pullMerge: pullMergeEvidence,
+});
+export type PullMergeActivity = z.infer<typeof pullMergeActivity>;
 export const pullLifecycle = z.enum(["OPEN", "CLOSED", "MERGED", "UNKNOWN"]);
 export const readPullLifecycle = defineRpc({
   name: "board.read-pull-lifecycle", input: mergeTarget, output: z.object({ state: pullLifecycle }),
@@ -56,7 +70,7 @@ const mergePreview = z.object({
 export type MergePreview = z.infer<typeof mergePreview>;
 const mergeResult = z.object({
   status: z.enum(["merged", "already-merged", "changed", "blocked", "unconfirmed"]),
-  reason: mergeReason, mergeSha: z.string().nullable(),
+  reason: mergeReason, mergeSha: z.string().nullable(), notification: mergeNotification.optional(),
 });
 export type MergeResult = z.infer<typeof mergeResult>;
 export const previewPullRequestMerge = defineRpc({ name: "board.preview-pull-request-merge", input: mergeTarget, output: mergePreview });
