@@ -19,7 +19,7 @@ export function Clarification({card,title,theme,recipientId,recipientTitle,entri
   const ask = useRpc(askClarification);
   const photos = usePhotoDraft();
   const [expanded, setExpanded] = useState(false);
-  const [target, setTarget] = useState<string | null>(null);
+  const [draftTarget, setDraftTarget] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -36,25 +36,27 @@ export function Clarification({card,title,theme,recipientId,recipientTitle,entri
   const hasDraft = !!text.trim() || photos.photos.length > 0;
   const editing = hasDraft || photos.reading || busy;
   useEffect(() => { onDraftChange?.(editing); }, [editing,onDraftChange]);
-  const changed = target !== recipientId;
+  // The conversation stays on the ledger card, while each new question binds its current source revision.
+  const target = JSON.stringify([card,recipientId]);
+  const changed = draftTarget !== target;
   function toggle() {
     if (sending.current || photos.readPending.current) return;
-    if (!expanded && !hasDraft) setTarget(recipientId);
+    if (!expanded && !hasDraft) setDraftTarget(target);
     setExpanded(!expanded);
   }
   async function submit() {
-    if (!card || !target || target !== recipientId || sending.current || photos.readPending.current) return;
+    if (!card || !recipientId || changed || sending.current || photos.readPending.current) return;
     const attachments = photos.latest.current;
     const question = text.trim();
     if (!question && !attachments.length) return;
-    const signature = JSON.stringify([key,target,question,attachments.map(p => p.id)]);
+    const signature = JSON.stringify([target,question,attachments.map(p => p.id)]);
     if (retry.current.signature !== signature) retry.current = {signature,key:"ask-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2)};
     sending.current = true; setBusy(true); setError(false);
     try {
-      const result = await ask({card,recipientId:target,question,requestKey:retry.current.key,
+      const result = await ask({card,recipientId,question,requestKey:retry.current.key,
         ...(attachments.length ? {images:attachments.map(p => p.image)} : {})});
-      if (!result.ok || result.recipientId !== target) throw Error("unconfirmed");
-      setSent(previous => [...previous,{cardKey:key,messageId:result.messageId,recipientId:target,question,at:new Date().toISOString(),status:"sent",imageCount:attachments.length || undefined}]);
+      if (!result.ok || result.recipientId !== recipientId) throw Error("unconfirmed");
+      setSent(previous => [...previous,{cardKey:key,messageId:result.messageId,recipientId,question,at:new Date().toISOString(),status:"sent",imageCount:attachments.length || undefined}]);
       retry.current = {signature:"",key:""}; setText(""); photos.clear(); setExpanded(false);
     } catch { setError(true); }
     finally { sending.current = false; setBusy(false); onRefresh(); }
@@ -65,7 +67,8 @@ export function Clarification({card,title,theme,recipientId,recipientTitle,entri
     {expanded && <View style={{width:"100%",gap:6}}>
       {!card || !recipientId ? <Text style={{color:c.foregroundMuted}}>{t("질문을 보낼 세션을 확인할 수 없습니다.", "No verified session is available for this question.")}</Text> : <>
         <Text selectable style={{color:c.foregroundMuted,fontSize:12}}>{t("질문 받을 세션", "Question recipient")} · {recipientTitle || recipientId}</Text>
-        {changed && <Button theme={theme} label={t("바뀐 수신자 확인", "Use updated recipient")} onPress={() => setTarget(recipientId)} />}
+        {changed && <Button theme={theme} label={t("바뀐 질문과 수신자 확인", "Confirm updated question and recipient")}
+          onPress={() => { setDraftTarget(target); setError(false); }} />}
         <PhotoComposer theme={theme} disabled={busy || changed} draft={photos}><TextInput multiline maxLength={4000} editable={!busy}
           accessibilityLabel={label("질문 내용", "Question text")} value={text} onChangeText={setText}
           placeholder={t("결정하기 전에 궁금한 점을 적어 주세요", "What would you like to ask before deciding?")} placeholderTextColor={c.foregroundMuted}

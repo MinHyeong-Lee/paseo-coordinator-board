@@ -3,6 +3,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import {
   clarificationKey,
   clarificationTarget,
+  sourceQuestion,
   type ClarificationCard,
   type ClarificationEntry,
   type ClarificationInput,
@@ -73,13 +74,15 @@ export function restoreClarifiedDecision(
     return;
   for (const id of evidence.lastInputIds ?? []) {
     const record = prefs.clarifications?.[id];
+    const original = record && sourceQuestion(record.card);
     if (
       !record?.savedDecision ||
-      record.card.kind !== "session" ||
-      record.card.projectId !== row.projectId ||
-      record.card.sessionId !== row.id ||
+      !original ||
+      original.projectId !== row.projectId ||
+      original.sessionId !== row.id ||
+      original.version !== record.savedDecision.version ||
       record.recipientId !== row.id ||
-      prefs.answers[row.id]?.version === record.card.version ||
+      prefs.answers[row.id]?.version === original.version ||
       (note?.revision ?? 0) !== record.noteRevision
     )
       continue;
@@ -143,9 +146,12 @@ export class ClarificationSender {
   send(sdk: Sdk, input: ClarificationInput) {
     const id = requestId(input.requestKey);
     const key = clarificationKey(input.card);
-    const fingerprint = hash(
-      JSON.stringify([key, input.recipientId, input.question, describePhotos(input.images)]),
-    );
+    const identity = [key, input.recipientId, input.question, describePhotos(input.images)];
+    if (input.card.kind === "tracked" && input.card.sessionQuestion) {
+      const { projectId, sessionId, version } = input.card.sessionQuestion;
+      identity.push(JSON.stringify([projectId, sessionId, version]));
+    }
+    const fingerprint = hash(JSON.stringify(identity));
     const running = this.active.get(id);
     if (running) {
       if (running.fingerprint !== fingerprint) throw Error("같은 요청 키로 다른 질문을 보낼 수 없습니다.");
@@ -212,11 +218,12 @@ export class ClarificationSender {
       const view = await this.getView(sdk, input.card);
       const target = clarificationTarget(input.card, view);
       if (!target || target.recipientId !== input.recipientId) throw Error(changed);
+      const original = sourceQuestion(input.card);
       const source = target.sourceHost ? undefined : view.sessions.find((s) =>
-        s.id === target.sourceSessionId && s.projectId === input.card.projectId
+        s.id === target.sourceSessionId && s.projectId === (original?.projectId ?? input.card.projectId)
       );
       const recipient = view.sessions.find((s) => s.id === input.recipientId);
-      const ids = new Set([input.recipientId, ...(input.card.kind === "session" ? [input.card.sessionId] : [])]);
+      const ids = new Set([input.recipientId, ...(original ? [original.sessionId] : [])]);
       for (const sessionId of ids) {
         const live = (await sdk.agents.ref(sessionId).refresh())?.agent;
         if (!live || live.id !== sessionId || live.archivedAt || live.internal) throw Error(changed);
@@ -229,8 +236,7 @@ export class ClarificationSender {
         )
           throw Error(changed);
         if (
-          input.card.kind === "session" &&
-          sessionId === input.card.sessionId &&
+          sessionId === original?.sessionId &&
           (source?.nativePending ? permissionVersion(live) !== source.permissionVersion : live.updatedAt !== source?.activityAt)
         )
           throw Error(changed);
@@ -249,9 +255,8 @@ export class ClarificationSender {
         question: input.question,
         status: "pending",
         ...(input.images?.length ? { imageCount: input.images.length } : {}),
-        ...(input.card.kind === "session" &&
-        source?.decision?.source !== "permission" &&
-        source?.id === input.recipientId
+        ...(original && source?.decision && source.decision.version === original.version &&
+        source.decision.source !== "permission" && source.id === input.recipientId
           ? {
               savedDecision: source.decision,
               sourceEvidenceId: source.evidenceId,
@@ -263,7 +268,7 @@ export class ClarificationSender {
         if (
           !inScope(current, input.card) ||
           current.coordinator !== view.coordinator ||
-          (input.card.kind === "session" && current.answers[input.card.sessionId]?.version === input.card.version) ||
+          (original && current.answers[original.sessionId]?.version === original.version) ||
           (source && !isCurrentMembership(source, current)) ||
           !(
             (recipient && isCurrentMembership(recipient, current)) ||

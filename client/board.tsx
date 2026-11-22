@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { DecisionActions, type DecisionReceipt } from "./decision-actions";
 import { Clarification } from "./clarification";
-import { clarificationKey, clarificationRecipient, sessionClarificationCard, type ClarificationCard } from "../shared/clarifications";
+import { clarificationKey, clarificationRecipient, sessionClarificationCard, trackedClarificationCard, type ClarificationCard } from "../shared/clarifications";
 import { SessionLinks } from "./session-links";
 import { useRemoteRunning, RemoteRunning } from "./remote-running";
 import { BoardHosts } from "./hosts";
@@ -163,7 +163,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
             pr.repo === item.mergeTarget?.repo && pr.number === item.mergeTarget.number &&
             (!item.projectId || pr.projectIds.includes(item.projectId)) && (pr.reason !== "ready" || item.matchedPull));
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
-            renderClarification={onDraftChange => questionFor({kind:"tracked",source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint},item.title,item.qa,onDraftChange)}
+            renderClarification={onDraftChange => questionFor(trackedClarificationCard(item,snapshot!.sessions),item.title,item.qa,onDraftChange)}
             pull={pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item),true)}
             recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
               if (status==="sent") setSentNotice({projectId:item.projectId});

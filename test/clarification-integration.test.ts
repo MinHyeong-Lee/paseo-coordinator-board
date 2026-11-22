@@ -5,17 +5,20 @@ import {join} from "node:path";
 import contribute from "../index.server";
 import {boardScope,boardSnapshot} from "../shared/contract";
 import {sendDecision} from "../shared/decision-actions";
-import {askClarification,clarificationKey, type ClarificationCard} from "../shared/clarifications";
+import {askClarification,clarificationKey,trackedClarificationCard, type ClarificationCard} from "../shared/clarifications";
 
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0)) rmSync(root,{recursive:true,force:true});});
 
-async function fixture() {
+async function fixture(matchedQuestion?: string) {
   const root=mkdtempSync(join(tmpdir(),"board-qa-integration-"));roots.push(root);
   const data=join(root,"plugin-data","coordinator-board");mkdirSync(data,{recursive:true});
   const workers=["editor","writer"];
   const items=workers.map(sessionId=>({source:"studio-ledger",projectId:"studio",projectTitle:"Studio",id:"timing-"+sessionId,
-    title:"Timing · "+sessionId,where:"manager",sessionId,questions:[{id:"Q3",text:"How much padding?"}]}));
+    title:"Timing · "+sessionId,where:"manager",sessionId,questions:[{id:"Q3",text:"How much padding?"}],
+    ...(matchedQuestion && sessionId === "editor"
+      ? {sessionMatch:{sessionId,projectId:"studio",question:matchedQuestion},questions:[]}
+      : {})}));
   writeFileSync(join(data,"tracked-decisions.json"),JSON.stringify({version:1,items}));
   const timelines=new Map<string,any[]>([...workers,"coordinator"].map(id=>[id,[]]));
   const stamp=new Map([...timelines.keys()].map(id=>[id,1]));
@@ -117,4 +120,50 @@ test("an explanation in the source session keeps the original choice answerable 
   expect(final.recipientId).toBe("editor");
   expect(f.sent.map(m=>m.id)).toEqual(["editor","writer","editor"]);
   expect((await f.snapshot()).replyHistory?.some(r=>r.answer==="Use 0.10 seconds.")).toBe(true);
+});
+
+test("a clarification on a tracked card with inline native controls keeps the thread and the original native answer",async()=>{
+  const originalQuestion="Q3. Shall I keep the original cutoff?";
+  const f=await fixture(originalQuestion);
+  f.append("editor",{type:"assistant_message",text:originalQuestion});
+  const initial=await f.snapshot();
+  const item=initial.trackedDecisions.items.find(entry=>entry.id==="timing-editor");
+  expect(item.matchedSessionId).toBe("editor");
+  expect(item.questions).toHaveLength(0);
+  const original=initial.sessions.find(session=>session.id===item.matchedSessionId).decision;
+  expect(original.question).toBe(originalQuestion);
+  const card=trackedClarificationCard(item,initial.sessions);
+  expect(card.sessionQuestion).toEqual({projectId:"studio",sessionId:"editor",version:original.version});
+  const input={card,recipientId:"editor",question:"Which take preserves the final consonant?",requestKey:"fixture-matched-question"};
+  const sent=await f.ask(input);
+  expect(f.sent[0].text).toContain(original.question);
+  expect(f.sent[0].text).toContain(original.version);
+  const response="The second take preserves the final consonant.";
+  f.append("editor",{type:"assistant_message",text:response});
+
+  const explained=await f.snapshot();
+  const tracked=explained.trackedDecisions.items.find(entry=>entry.key===item.key);
+  expect(tracked.matchedSessionId).toBe("editor");
+  const session=explained.sessions.find(row=>row.id===tracked.matchedSessionId);
+  expect(session.lane).toBe("human");
+  expect(session.decision).toEqual(original);
+  expect(explained.clarifications).toHaveLength(1);
+  expect(explained.clarifications[0]).toMatchObject({cardKey:clarificationKey(card),messageId:sent.messageId,recipientId:"editor",question:input.question,response});
+  expect(explained.replyHistory ?? []).toBeEmpty();
+
+  const result=await f.answer({projectId:"studio",sessionId:"editor",recipientId:"editor",version:original.version,
+    action:"reply",text:"Use the second take.",requestKey:"fixture-matched-final"});
+  expect(result.recipientId).toBe("editor");
+  expect(f.sent.map(message=>message.id)).toEqual(["editor","editor"]);
+  expect(f.sent[1].text).toContain("Use the second take.");
+  expect((await f.snapshot()).replyHistory?.some(entry=>entry.answer==="Use the second take.")).toBe(true);
+
+  f.append("editor",{type:"user_message",text:"Review today's revised cut.",clientMessageId:"new-edit-request"});
+  f.append("editor",{type:"assistant_message",text:originalQuestion});
+  const updated=await f.snapshot();
+  const next=updated.sessions.find(row=>row.id==="editor").decision;
+  expect(next.question).toBe(original.question);
+  expect(next.version).not.toBe(original.version);
+  await expect(f.ask({...input,requestKey:"fixture-matched-request-after-revision"})).rejects.toThrow();
+  expect(f.sent).toHaveLength(2);
 });

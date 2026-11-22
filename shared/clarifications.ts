@@ -1,13 +1,14 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import type { SessionRow, Note } from "./contract";
-import type { TrackedDecisionView } from "./tracked-decisions";
+import type { TrackedDecision, TrackedDecisionView } from "./tracked-decisions";
 import { repositorySlug, type PullRequestView } from "./prs";
 import { matchesWorkspace } from "./workspace-pull";
 import { workImages } from "./work-images";
 
 const id = z.string().min(1).max(256);
 const project = z.string().min(1).max(4096);
+const sessionQuestion = z.strictObject({ projectId: project, sessionId: id, version: z.string().min(1).max(64) });
 export const clarificationCard = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("tracked"),
@@ -15,6 +16,7 @@ export const clarificationCard = z.discriminatedUnion("kind", [
     projectId: project.nullable(),
     id,
     fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    sessionQuestion: sessionQuestion.optional(),
   }),
   z.strictObject({
     kind: z.literal("session"),
@@ -75,6 +77,23 @@ export function sessionClarificationCard(row: SessionRow, note?: Note): Clarific
   const version = row.decision?.version || (note?.kind === "question" ? "note:" + note.revision : null);
   return version ? { kind: "session", projectId: row.projectId, sessionId: row.id, version } : null;
 }
+export function trackedClarificationCard(item: TrackedDecision, sessions: readonly SessionRow[]) {
+  const match = item.sessionMatch;
+  const row = match && item.matchedSessionId === match.sessionId && !item.sessionHost
+    ? sessions.find(s => s.id === match.sessionId && s.projectId === match.projectId &&
+        !s.nativePending && !s.decisionAnswered && s.lane === "human" && s.decision?.question === match.question)
+    : undefined;
+  return {
+    kind: "tracked" as const, source: item.source, projectId: item.projectId, id: item.id, fingerprint: item.fingerprint,
+    ...(row?.decision ? { sessionQuestion: { projectId: row.projectId, sessionId: row.id, version: row.decision.version } } : {}),
+  };
+}
+
+export function sourceQuestion(card: ClarificationCard) {
+  if (card.kind === "session") return card;
+  if (card.kind === "tracked") return card.sessionQuestion;
+}
+
 export type ClarificationView = {
   sessions: SessionRow[];
   notes?: Record<string, Note>;
@@ -114,9 +133,14 @@ export function clarificationTarget(card: ClarificationCard, view: Clarification
         r.fingerprint === card.fingerprint,
     );
     if (!item) return null;
-    const sourceSessionId = item.sessionId || item.matchedSessionId;
-    const row = item.sessionHost ? undefined : session(sourceSessionId);
+    const current = trackedClarificationCard(item, view.sessions).sessionQuestion;
+    if (card.sessionQuestion?.version !== current?.version || card.sessionQuestion?.sessionId !== current?.sessionId ||
+        card.sessionQuestion?.projectId !== current?.projectId) return null;
+    const sourceSessionId = current?.sessionId ?? item.sessionId ?? item.matchedSessionId;
+    const row = current ? view.sessions.find(s => s.id === current.sessionId && s.projectId === current.projectId)
+      : item.sessionHost ? undefined : session(sourceSessionId);
     const parts = item.questions.map((q) => [q.id, q.text].filter(Boolean).join(" · "));
+    if (current && row?.decision) parts.push(row.decision.question);
     return {
       recipientId: target(row),
       sourceSessionId,

@@ -23,7 +23,7 @@ import { sendDecision } from "./shared/decision-actions";
 import { isCurrentMembership, managedSessions, registerSessionLinks, releaseUnmanagedCoordinator } from "./server/session-links";
 import { registerRecommendation } from "./server/recommendation";
 import { NoteStore } from "./server/notes";
-import { askClarification, clarificationTarget } from "./shared/clarifications";
+import { askClarification, sourceQuestion } from "./shared/clarifications";
 import { ClarificationSender, clarificationHistory, restoreClarifiedDecision } from "./server/clarifications";
 import { BoardFacts } from "./server/board-facts";
 
@@ -130,10 +130,11 @@ export default function contribute(server: PluginServerContext) {
       const observed = await reader.read(paseo, coordinatorRow).catch(() => null);
       if (observed) evidence.set(coordinatorRow.id, observed);
     }
-    const clarifying = new Set(Object.values(scope.clarifications)
-      .filter(entry => entry.savedDecision && entry.card.kind === "session" &&
-        entry.card.version !== scope.answers[entry.card.sessionId]?.version)
-      .map(entry => entry.recipientId));
+    const clarifying = new Set(Object.values(scope.clarifications).flatMap(entry => {
+      const original = sourceQuestion(entry.card);
+      return original && entry.savedDecision && original.version !== scope.answers[original.sessionId]?.version
+        ? [entry.recipientId] : [];
+    }));
     // The regular reader skips running sessions. Their original question may
     // remain open while the worker is explaining a choice.
     for (const row of sessions) {
@@ -153,14 +154,16 @@ export default function contribute(server: PluginServerContext) {
   }, decisionCount);
   const invalidateCount = () => reads.invalidate();
   const clarifications = new ClarificationSender(prefs, (sdk, card) => buildSnapshot(sdk, card.kind === "pull"), (card, view) => {
-    if (card.kind === "session") {
-      const latest = notes.visible(new Set([card.sessionId]))[card.sessionId];
-      return latest?.revision === view.notes[card.sessionId]?.revision;
+    const original = sourceQuestion(card);
+    if (original) {
+      const latest = notes.visible(new Set([original.sessionId]))[original.sessionId];
+      if (latest?.revision !== view.notes[original.sessionId]?.revision) return false;
     }
     if (card.kind !== "tracked") return true;
     const scope = prefs.read();
     const records = tracked.read(new Set(scope.projects), [], { items: [], projects: [] });
-    return !!clarificationTarget(card, { coordinator: scope.coordinator, sessions: [], trackedDecisions: records });
+    return records.items.some(item => item.source === card.source && item.projectId === card.projectId &&
+      item.id === card.id && item.fingerprint === card.fingerprint);
   });
   server.handle(askClarification, async (input, { paseo }) => {
     try {
