@@ -3,7 +3,7 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {TrackedDecisionStore} from "../server/tracked-decisions";
-import {resolveTrackedDecision, trackedRecipient, trackedCoverage, trackedDecisionViewSchema} from "../shared/tracked-decisions";
+import {mentionsSecurityGate, resolveTrackedDecision, suggestedTrackedReply, trackedAnswerText, trackedPullTarget, trackedRecipient, trackedCoverage, trackedDecisionViewSchema} from "../shared/tracked-decisions";
 import type {SessionRow} from "../shared/contract";
 import type {PullRequestView} from "../shared/prs";
 
@@ -216,4 +216,27 @@ test("local-only and no-answer resolutions remain distinct and scoped to their p
   expect(f.read().history?.map(x=>x.status)).toEqual(["recorded","closed"]);
   f.selected.clear();f.selected.add("unrelated");
   expect(f.read().history).toBeUndefined();
+});
+
+test("merge follow-up choices carry only their own answers, including after the PR leaves the review list",()=>{
+  const f=fixture();
+  const url="https://github.com/demo/repo/pull/42";
+  const merge = row("merge",{kind:"merge", ask:[url+" 보안 게이트 통과 뒤 병합할까요?"], recommend:["병합, Q1 A"],
+    howToAnswer:"42 병합해, Q1 A", questions:[{id:"Q1",text:"글 작성 시점",options:[{key:"A",text:"첫 실행",recommended:true}]}]});
+  f.write([merge]);
+  const [item]=f.read([],[]).items;
+  expect(item.matchedPull).toBeNull();
+  expect(trackedPullTarget(item)).toEqual(target);
+  expect(mentionsSecurityGate(item)).toBe(true);
+  expect(suggestedTrackedReply(item)).toBe("");
+  expect(suggestedTrackedReply({...item,questions:[]})).toBe("");
+  expect(trackedAnswerText(item, ["A · 첫 실행"], "")).toBe("Q1 · 글 작성 시점 — A · 첫 실행");
+  expect(trackedAnswerText(item, [""], "")).toBe("");
+  expect(suggestedTrackedReply({...item,kind:"check",questions:[],howToAnswer:"Reviewed"})).toBe("Reviewed");
+  for (const ask of [[url+" "+url+"/extra "+url+"0"],["https://github.com.evil.invalid/demo/repo/pull/42"],
+    [url+"?sensitive=value"],["https://github.com/demo/../pull/42"]]) {
+    expect(trackedPullTarget({...item,ask})).toBeNull();
+  }
+  expect(trackedPullTarget({...item,ask:[url+" "+url],kind:"answer"})).toBeNull();
+  expect(trackedPullTarget({...item,ask:[url+"0"],mergeTarget:target})).toEqual(target);
 });

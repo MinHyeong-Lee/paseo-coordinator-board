@@ -1,7 +1,7 @@
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Platform, Text, TextInput, View } from "react-native";
-import { confirmPullRequestMerge, previewPullRequestMerge, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
+import { confirmPullRequestMerge, previewPullRequestMerge, pullUrl, readPullLifecycle, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
 import { Button, SessionChip, type Theme } from "./controls";
 import { useBoardLanguage, type Translate } from "./language";
 
@@ -53,8 +53,55 @@ export function MergeFeedback({ notice, theme }: { notice: MergeNotice; theme: T
 
 export type WorkSessionLink = { key: string; label: string; open: () => void };
 
-export function PullRequestCard({ pr, projectId, theme, decision = false, openCoordinator, workSessions, onResult }: {
-  pr: PullRequest; projectId: string; theme: Theme; workSessions: WorkSessionLink[]; decision?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void;
+function GitHubPullLink({repo, number, theme}: {repo:string; number:number; theme:Theme}) {
+  const {t} = useBoardLanguage();
+  const [failed, setFailed] = useState(false);
+  const url = pullUrl(repo, number);
+  const label = repo + " #" + number;
+  return <>
+    <Text accessibilityRole="link" accessibilityLabel={label + " · " + t("GitHub에서 보기", "View on GitHub")}
+      {...(Platform.OS === "web" && { href:url, hrefAttrs:{target:"_blank", rel:"noopener noreferrer"} })}
+      onPress={event => { event.preventDefault(); void openExternalUrl(url).then(() => setFailed(false), () => setFailed(true)); }}
+      style={{ maxWidth:"100%", color:theme.colors.foreground, textDecorationLine:"underline", fontSize:13 }}>{label}</Text>
+    {failed && <Text selectable style={{color:theme.colors.foregroundMuted}}>{url}</Text>}
+  </>;
+}
+
+type Lifecycle = ReturnType<typeof readPullLifecycle.output.parse>["state"];
+export function TrackedPullStatus({repo, number, projectId, theme, securityGate}: {repo:string; number:number; projectId:string|null; theme:Theme; securityGate:boolean}) {
+  const {t} = useBoardLanguage();
+  const lookup = useRpc(readPullLifecycle);
+  const [state, setState] = useState<Lifecycle | null>(null);
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    setState(null);
+    async function refresh() {
+      let current: Lifecycle = "UNKNOWN";
+      if (projectId) {
+        try { current = (await lookup({repo, number, projectId})).state; } catch { /* Show the link when GitHub is unavailable. */ }
+      }
+      if (!active) return;
+      setState(current);
+      if (projectId && current !== "MERGED") timer = setTimeout(() => void refresh(), 60_000);
+    }
+    void refresh();
+    return () => { active = false; clearTimeout(timer); };
+  }, [repo, number, projectId, lookup]);
+  const message = state === "MERGED" ? t("병합 완료", "Merged")
+    : state === "CLOSED" ? t("병합 없이 닫힘", "Closed without merging")
+    : state === "OPEN" && securityGate ? t("열린 PR · 보안 게이트 통과 여부 확인 필요", "Open · Security gate unverified")
+    : state === "OPEN" ? t("열린 PR · 병합 조건 미확인", "Open · Merge requirements unverified")
+    : state === "UNKNOWN" ? t("PR 상태 미확인", "Pull request status unavailable")
+    : t("GitHub 상태 확인 중…", "Checking GitHub status…");
+  return <View style={{...wrap, alignItems:"baseline"}}>
+    <GitHubPullLink repo={repo} number={number} theme={theme} />
+    <Text selectable accessibilityLiveRegion="polite" style={{color:state === "MERGED" ? theme.colors.statusSuccess : theme.colors.foregroundMuted}}>{message}</Text>
+  </View>;
+}
+
+export function PullRequestCard({ pr, projectId, theme, decision = false, securityGate = false, openCoordinator, workSessions, onResult }: {
+  pr: PullRequest; projectId: string; theme: Theme; workSessions: WorkSessionLink[]; decision?: boolean; securityGate?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void;
 }) {
   const { t } = useBoardLanguage();
   const c = theme.colors;
@@ -64,13 +111,12 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
   const [method, setMethod] = useState<MergeMethod | null>(null);
   const [notice, setNotice] = useState<MergeNotice | null>(null);
   const [lookupError, setLookupError] = useState(false);
-  const [linkError, setLinkError] = useState(false);
   const [busy, setBusy] = useState<"read" | "merge" | null>(null);
   const locked = useRef(false);
   const target = pr.repo + " #" + pr.number;
   const named = (label: string) => ({label, accessibilityLabel: target + " · " + label});
-  const ready = !!projectId && pr.lane === "review" && pr.reason === "ready" && notice?.status !== "merged" && notice?.status !== "already-merged";
-  const status = labels[pr.reason];
+  const ready = !securityGate && !!projectId && pr.lane === "review" && pr.reason === "ready" && notice?.status !== "merged" && notice?.status !== "already-merged";
+  const status = securityGate && pr.reason === "ready" ? t("열린 PR · 보안 게이트 통과 여부 확인 필요", "Open · Security gate unverified") : t(labels[pr.reason][0], labels[pr.reason][1]);
   const args = { projectId, repo: pr.repo, number: pr.number };
 
   async function inspect() {
@@ -98,18 +144,10 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
     finally { locked.current = false; setBusy(null); setPreview(null); setMethod(null); }
     setNotice(feedback); onResult(feedback);
   }
-  async function github() {
-    try { await openExternalUrl(pr.url); setLinkError(false); } catch { setLinkError(true); }
-  }
   return <View style={{gap: 6, borderTopColor: c.border, borderTopWidth: 1, paddingVertical: 8}}>
     <View style={{ ...wrap, alignItems: "baseline" }}>
-      <Text accessibilityRole="link" accessibilityLabel={target + " · " + t("GitHub에서 보기", "View on GitHub")}
-        {...(Platform.OS === "web" && { href: pr.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } })}
-        onPress={event => { event.preventDefault(); void github(); }}
-        style={{ maxWidth: "100%", color: c.foreground, textDecorationLine: "underline", fontSize: 13 }}>
-        {target}
-      </Text>
-      <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>· {t(status[0], status[1])}</Text>
+      <GitHubPullLink repo={pr.repo} number={pr.number} theme={theme} />
+      <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>· {status}</Text>
       {workSessions.map(link => <SessionChip key={link.key} label={link.label} theme={theme}
         accessibilityLabel={target + " · " + link.label} onPress={link.open} />)}
       {!workSessions.length && <Text style={{color:c.foregroundMuted,fontSize:12}}>{t("작업 세션 미확인", "No verified work session")}</Text>}
@@ -133,7 +171,6 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, openCo
     </View>}
     {lookupError && <Text accessibilityLiveRegion="polite" style={{color:c.statusWarning}}>{t("병합 정보를 불러오지 못했습니다. 다시 조회하거나 GitHub에서 확인하세요.", "Could not load merge details. Try again or open GitHub.")}</Text>}
     {notice && notice.status !== "merged" && notice.status !== "already-merged" && <MergeFeedback notice={notice} theme={theme} />}
-    {linkError && <Text selectable style={{color:c.foregroundMuted}}>{pr.url}</Text>}
   </View>;
 }
 

@@ -43,6 +43,11 @@ const mergeTarget = z.strictObject({
   projectId: z.string().min(1).max(4096), repo: repositorySlug, number: z.number().int().positive().max(2147483647),
 });
 export type MergeTarget = z.infer<typeof mergeTarget>;
+export const pullLifecycle = z.enum(["OPEN", "CLOSED", "MERGED", "UNKNOWN"]);
+export const readPullLifecycle = defineRpc({
+  name: "board.read-pull-lifecycle", input: mergeTarget, output: z.object({ state: pullLifecycle }),
+});
+export const pullUrl = (repo: string, number: number) => `https://github.com/${repo}/pull/${number}`;
 const mergePreview = z.object({
   status: z.enum(["ready", "blocked", "merged"]), reason: mergeReason, title: z.string(),
   headSha: z.string(), headRef: z.string(), baseRef: z.string(), baseSha: z.string(), checks: z.number().int().nonnegative(),
