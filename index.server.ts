@@ -4,6 +4,7 @@ import { boardReadiness } from "./shared/readiness";
 import { SnapshotReads } from "./server/snapshot-reads";
 import { readProjectDecisionSources } from "./server/project-decision-sources";
 import { TrackedDecisionStore } from "./server/tracked-decisions";
+import { MergeNotifications } from "./server/merge-notifications";
 import { ProjectPullRequests } from "./server/prs";
 import { decisionCount } from "./shared/decision-count";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -54,6 +55,8 @@ export default function contribute(server: PluginServerContext) {
       const items = readProjectDecisionSources(join(dataDir, "tracked-sources.json"), selected, () => { partial = true; });
       return {items,partial};
     });
+  const mergeNotifications = new MergeNotifications(prefs,(target,coordinator)=>tracked.mergeRecipient(target,coordinator),
+    (sdk,target)=>prs.mergeScope(sdk,target));
   server.handle(boardReadiness, async () => {
     const scope = prefs.read();
     return { configured: scope.projects.length > 0, coordinator: scope.coordinator, decisionTitles: tracked.previewTitles(new Set(scope.projects)) };
@@ -71,6 +74,10 @@ export default function contribute(server: PluginServerContext) {
     ]);
     const { choices, sessions, evidence, coordinatorRow } = sessionView;
     const latest = prefs.read();
+    // Loading the board should not wait on an idle check or a provider turn.
+    if (Object.values(latest.pullMergeHistory).some(entry => entry.pullMerge.notification?.status === "queued")) {
+      void mergeNotifications.resume(paseo).catch(() => console.warn("Could not resume queued merge notifications."));
+    }
     const visible = sessions.filter(row => isCurrentMembership(row, latest));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
     facts.decorate(visible, evidence, visibleNotes);
@@ -88,6 +95,9 @@ export default function contribute(server: PluginServerContext) {
     for (const id of evidence.keys()) if (!targets.has(id)) evidence.delete(id);
     const {history = [], ...trackedDecisions} = tracked.read(selected, visible, pullRequests, evidence);
     const activity: ReplyEntry[] = [...history];
+    for (const [key, receipt] of Object.entries(latest.pullMergeHistory)) {
+      if (selected.has(receipt.projectId)) activity.push({...receipt, key, status:"recorded"});
+    }
     const updates = new Map<string,string>();
     for (const [id, receipt] of Object.entries(latest.decisionReceipts)) {
       const detail = receipt.activity;
@@ -180,7 +190,12 @@ export default function contribute(server: PluginServerContext) {
       invalidateCount();
     }
   });
-  prs.register(server, invalidateCount);
+  prs.register(server, invalidateCount,mergeNotifications);
+  const onRecipientAvailable = async (event: {agent?: {id:string}}, context: PluginHandlerContext) => {
+    if (event.agent?.id) await mergeNotifications.resume(context.paseo,event.agent.id);
+  };
+  const removeMergeTurn = server.addHook("agent.turn.after",onRecipientAvailable);
+  const removeMergePermission = server.addHook("agent.permission.after",onRecipientAvailable);
   tracked.register(server, () => new Set(prefs.read().projects), invalidateCount, async (item,targetId,{paseo}) => {
     let rows = await discoverSessions(paseo);
     const owned = usesSourceCoordinator(item);
@@ -262,5 +277,5 @@ export default function contribute(server: PluginServerContext) {
   });
   const removeReport = attachReportTool(server, notes);
   const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool, trackedReviewTool(prefs, tracked, prs, reader, invalidateCount)]);
-  return () => { removeCoordinator(); removeReport(); };
+  return () => { removeMergeTurn(); removeMergePermission(); removeCoordinator(); removeReport(); };
 }

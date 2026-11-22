@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Platform, Text, TextInput, View } from "react-native";
 import { confirmPullRequestMerge, previewPullRequestMerge, pullUrl, readPullLifecycle, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
 import { Button, SessionChip, type Theme } from "./controls";
+import { mergeNotificationLabel } from "./merge-notification";
 import { useBoardLanguage, type Translate } from "./language";
 
 type PullRequest = PullRequestView["items"][number];
@@ -14,7 +15,7 @@ const labels = {
   "auto-merge": ["자동 병합 대기", "Auto-merge enabled"],
 } as const;
 
-export type MergeNotice = { projectId: string; target: string; status: MergeResult["status"]; reason?: MergeReason; mergeSha?: string | null };
+export type MergeNotice = { projectId: string; target: string; status: MergeResult["status"]; reason?: MergeReason; mergeSha?: string | null; notification?: MergeResult["notification"] };
 const wrap = { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 };
 
 const resultWords = {
@@ -46,8 +47,12 @@ export function MergeFeedback({ notice, theme }: { notice: MergeNotice; theme: T
   const { t } = useBoardLanguage();
   const words = resultWords[notice.status];
   const reason = reasonText(notice.reason, t);
+  const delivery = mergeNotificationLabel(notice.notification, t);
+  const deliveryColor = notice.notification?.status === "unavailable" || notice.notification?.status === "unconfirmed"
+    ? theme.colors.statusWarning : theme.colors.foregroundMuted;
   return <Text accessibilityLiveRegion="polite" selectable style={{ color: ["merged", "already-merged"].includes(notice.status) ? theme.colors.statusSuccess : theme.colors.statusWarning }}>
     {[notice.target, t(words[0], words[1]), reason, notice.mergeSha?.slice(0, 12)].filter(Boolean).join(" · ")}
+    {delivery && <Text style={{ color: deliveryColor }}>{" · "}{delivery}</Text>}
   </Text>;
 }
 
@@ -159,6 +164,9 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, securi
       <Text selectable style={{color: c.foregroundMuted, fontSize: 12}}>{t("검토한 HEAD", "Reviewed HEAD")} · {preview.headSha}</Text>
       <Text selectable style={{color: c.foregroundMuted, fontSize: 12}}>{t("대상 브랜치 SHA", "Base SHA")} · {preview.baseSha}</Text>
       <Text selectable style={{color: c.foreground}}>{t("검사 상태", "Checks")} · {preview.checks ? t(`${preview.checks}건 완료`, `${preview.checks} completed`) : t("보고된 검사 없음", "No reported checks")}</Text>
+      {openCoordinator && <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>
+        {t("병합되면 코디네이터에 후속 작업을 요청합니다.", "After the merge, the board asks the coordinator to follow up.")}
+      </Text>}
       <Text style={{color: c.foreground, fontWeight: "600"}}>{t("병합 방식", "Merge method")}</Text>
       <View style={wrap}>{preview.methods.map(option => <Button key={option} theme={theme} {...named(option)} selected={method === option} disabled={!!busy} onPress={() => setMethod(option)} />)}</View>
       <View style={wrap}>

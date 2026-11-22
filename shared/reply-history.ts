@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineRpc } from "@getpaseo/plugin";
+import { pullMergeEvidence } from "./prs";
 import { MAX_WORK_IMAGES, workImage } from "./work-images";
 
 export const replyOrigin = z.object({
@@ -16,6 +17,7 @@ export const replyDetails = z.object({
 });
 
 export const replyEntry = replyDetails.extend({
+  pullMerge: pullMergeEvidence.optional(),
   key: z.string(), status: z.enum(["sent", "pending", "recorded", "closed"]),
   messageId: z.string().optional(), response: z.string().optional(),
   recipientTitle: z.string().optional(), recipientState: z.enum(["running","idle","closed","error","unknown"]).optional(),

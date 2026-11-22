@@ -9,9 +9,9 @@ import { MAX_WORK_IMAGES, WORK_IMAGE_MIME_TYPES, type WorkImage } from "../share
 import { describePhotos, readLocalPhoto, saveLocalPhotos } from "./reply-photos";
 import { trackedReplyMessage, trackedReplyOrigin } from "./decision-message";
 import type { Evidence } from "./conversation";
-import type { PullRequestView } from "../shared/prs";
+import type { MergeTarget, PullRequestView } from "../shared/prs";
 import {
-  resolveTrackedDecision, trackedDecisionInputSchema, trackedKey, trackedMatches, usesSourceCoordinator,
+  resolveTrackedDecision, trackedDecisionInputSchema, trackedPullTarget, trackedKey, trackedMatches, usesSourceCoordinator,
   type RoutedTrackedDecision, type TrackedDecisionInput, type TrackedDecisionView, type TrackedResolution,
 } from "../shared/tracked-decisions";
 
@@ -111,6 +111,21 @@ export class TrackedDecisionStore {
     if(!parsed.success)return null;
     const rows=new Map(parsed.data.items.map(r=>[receiptKey(r.key,r.fingerprint),r]));
     return rows.size===parsed.data.items.length?rows:null;
+  }
+
+  mergeRecipient(target: MergeTarget, coordinator: string | null): string | null {
+    // Include rows just archived by a simultaneous refresh. Approval belongs to
+    // the configured importer, never a session ID written into a decision.
+    const {status,rows} = this.load(new Set([target.projectId]));
+    if (status !== "ok" && status !== "absent") return null;
+    const owners = new Set<string | null>();
+    for (const {item} of rows.values()) {
+      const pull = trackedPullTarget(item);
+      if (pull?.repo === target.repo && pull.number === target.number) {
+        owners.add(item.sourceCoordinatorId === undefined ? coordinator : item.sourceCoordinatorId);
+      }
+    }
+    return owners.size ? (owners.size === 1 ? [...owners][0] : null) : coordinator;
   }
 
   // First paint can show local titles while Paseo and GitHub resolve the actionable cards.

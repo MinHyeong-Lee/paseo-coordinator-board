@@ -6,6 +6,8 @@ import { confirmPullRequestMerge, previewPullRequestMerge } from "../shared/prs"
 import { githubMergeApi } from "../server/pr-merge";
 import { ProjectPullRequests } from "../server/prs";
 import { PreferenceStore } from "../server/preferences";
+import contribute from "../index.server";
+import { boardSnapshot } from "../shared/contract";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -18,7 +20,7 @@ const head = "a".repeat(40),
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "coord-merge-"));
   dirs.push(directory);
-  const store = new PreferenceStore(join(directory, "prefs.json"));
+  const store = new PreferenceStore(join(directory, "plugin-data", "coordinator-board", "scope.json"));
   store.change((s) => {
     s.projects = [target.projectId];
     s.projectRepositories.selected = { mode: "manual", repo: target.repo };
@@ -98,10 +100,10 @@ function fixture() {
       return { status: "ok", items: [] };
     },
   };
-  function load() {
+  function load(notifications?: any) {
     const service = new ProjectPullRequests(store, deps, api),
       handlers = new Map();
-    service.register({ handle: (rpc, fn) => handlers.set(rpc.name, fn) }, () => behavior.invalidations++);
+    service.register({ handle: (rpc, fn) => handlers.set(rpc.name, fn) }, () => behavior.invalidations++,notifications);
     const call = async (def, input) =>
       def.output.parse(await handlers.get(def.name)(def.input.parse(input), { paseo: sdk }));
     return {
@@ -111,6 +113,7 @@ function fixture() {
     };
   }
   return {
+    directory,
     store,
     p,
     repo,
@@ -331,4 +334,79 @@ test("a protected branch rejects the mutation; another PR, another project, a re
   g.behavior.now += 300_001;
   expect(await g.confirm(next.token)).toMatchObject({ reason: "expired" });
   expect(g.mutations()).toBe(0);
+});
+
+test("confirmed board merges survive a fresh read; repeats keep their original time and attribution", async () => {
+  const f = fixture();
+  const ready = await f.preview();
+  await f.confirm(ready.token);
+  const first = f.store.read().pullMergeHistory;
+  const entries = Object.values(first);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    title: f.p.title, projectId: target.projectId,
+    pullMerge: {repo:target.repo, number:target.number, status:"merged", mergeSha:merged},
+  });
+  f.behavior.now += 200;
+  expect(await f.load().preview()).toMatchObject({status:"merged"});
+  expect(f.store.read().pullMergeHistory).toEqual(first);
+
+  // Reopen the board with a new plugin instance, after the PR left GitHub's open list.
+  const oldHome = process.env.PASEO_HOME;
+  process.env.PASEO_HOME = f.directory;
+  const handlers = new Map();
+  try {
+    contribute({handle:(definition, handler) => handlers.set(definition.name, handler), registerSettings(){}, addHook:()=>()=>{}});
+  } finally {
+    if (oldHome === undefined) delete process.env.PASEO_HOME;
+    else process.env.PASEO_HOME = oldHome;
+  }
+  const page = {entries:[], pageInfo:{hasMore:false, nextCursor:null}};
+  const paseo = {agents:{list:async()=>page}, workspaces:{list:async()=>page}, projects:{list:async()=>({projects:[]})}};
+  const snapshot = async () => boardSnapshot.output.parse(await handlers.get(boardSnapshot.name)({fresh:true}, {paseo}));
+  f.store.change(scope => {scope.projectRepositories[target.projectId] = {mode:"off"};});
+  expect((await snapshot()).replyHistory).toEqual([{...entries[0], key:"merge:org/site#7", status:"recorded"}]);
+  f.store.change(scope => {scope.projects = [];});
+  expect((await snapshot()).replyHistory).toEqual([]);
+});
+
+test("observing an externally merged PR records its confirmed state; blocked or uncertain actions do not", async () => {
+  const f = fixture();
+  const ready = await f.preview();
+  f.behavior.merge = async () => { throw Error("timeout"); };
+  expect((await f.confirm(ready.token)).status).toBe("unconfirmed");
+  expect(f.store.read().pullMergeHistory).toEqual({});
+  f.p.state = "MERGED";
+  f.p.mergeCommit = {oid:merged};
+  await f.load().preview();
+  expect(Object.values(f.store.read().pullMergeHistory)[0].pullMerge).toMatchObject({status:"already-merged", mergeSha:merged});
+  expect(f.mutations()).toBe(1);
+});
+
+test("history storage failure preserves the successful GitHub result", async () => {
+  const f = fixture();
+  const ready = await f.preview();
+  f.store.change = () => { throw Error("storage is read-only"); };
+  expect(await f.confirm(ready.token)).toMatchObject({status:"merged",mergeSha:merged});
+  expect(f.mutations()).toBe(1);
+});
+
+test("only the confirmed mutation, never polling, stale confirmations or an externally merged PR, calls the notifier", async () => {
+  const f = fixture();
+  const delivered = [];
+  const service = f.load({owner: () => ({coordinator:"c",recipientId:"c"}),
+    confirmed: async (_, entry, expected) => {
+      delivered.push({entry, expected});
+      return {status:"sent",recipientId:"c"};
+    }});
+  const [one,two] = await Promise.all([service.preview(),service.preview()]);
+  const both = await Promise.all([service.confirm(one.token),service.confirm(one.token)]);
+  expect(both[0]).toEqual(both[1]);
+  expect(both[0].notification).toEqual({status:"sent",recipientId:"c"});
+  expect((await service.confirm(two.token)).status).toBe("already-merged");
+  await service.preview();
+  await service.confirm(one.token);
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0].entry.pullMerge).toEqual({status:"merged",repo:target.repo,number:7,mergeSha:merged});
+  expect(f.mutations()).toBe(1);
 });

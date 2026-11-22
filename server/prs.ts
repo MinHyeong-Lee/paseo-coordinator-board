@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { confirmPullRequestMerge, previewPullRequestMerge, pullLifecycle, pullReason, pullUrl, readPullLifecycle, repositorySlug, setProjectRepository,
   type MergeTarget, type PullRequestItem, type PullRequestView } from "../shared/prs";
+import { mergeHistoryKey, type MergeNotifications } from "./merge-notifications";
 import { githubMergeApi, PullMerges } from "./pr-merge";
 import { githubRepository } from "../shared/github-repository";
 export { githubRepository } from "../shared/github-repository";
@@ -130,11 +131,29 @@ export class ProjectPullRequests {
     } catch { return "UNKNOWN" as const; }
   }
 
-  register(server:PluginServerContext,onInvalidated?:()=>void) {
-    const merges=new PullMerges(this.mergeApi,this.deps.now,repo=>{this.sources.delete(repo);onInvalidated?.();});
+  register(server:PluginServerContext,onInvalidated?:()=>void,notifications?:MergeNotifications) {
+    const merges = new PullMerges(this.mergeApi, this.deps.now, repo => {
+      this.sources.delete(repo);
+      onInvalidated?.();
+    }, entry => {
+      const {repo, number, status, mergeSha} = entry.pullMerge;
+      const key = mergeHistoryKey(repo,number);
+      this.store.change(scope => {
+        const previous = scope.pullMergeHistory[key];
+        if (!previous || (status === "merged" && previous.pullMerge.status !== "merged")) {
+          scope.pullMergeHistory[key] = entry;
+        } else if (!previous.pullMerge.mergeSha && mergeSha) {
+          previous.pullMerge.mergeSha = mergeSha;
+        }
+      });
+    });
     server.handle(readPullLifecycle, async (input, {paseo}) => ({state: await this.lifecycle(paseo, input)}));
     server.handle(previewPullRequestMerge,(input,{paseo})=>merges.preview(input,()=>this.mergeScope(paseo,input)));
-    server.handle(confirmPullRequestMerge,(input,{paseo})=>merges.confirm(input,()=>this.mergeScope(paseo,input)));
+    server.handle(confirmPullRequestMerge,(input,{paseo})=>{
+      const owner = notifications?.owner(input);
+      return merges.confirm(input,()=>this.mergeScope(paseo,input),notifications && owner
+        ? entry => notifications.confirmed(paseo,entry,owner) : undefined);
+    });
     server.handle(setProjectRepository,async input=>{
       this.store.change(s=>{
         if (!s.projects.includes(input.projectId)) throw Error("관리할 프로젝트를 먼저 선택하세요.");
@@ -149,7 +168,7 @@ export class ProjectPullRequests {
     });
   }
 
-  private async mergeScope(paseo:Sdk,target:MergeTarget) {
+  async mergeScope(paseo:Sdk,target:MergeTarget) {
     const saved=this.store.read(), config=mapping(saved,target.projectId);
     if(!saved.projects.includes(target.projectId) || config.mode==="off") throw Error("scope");
     const current=()=>{

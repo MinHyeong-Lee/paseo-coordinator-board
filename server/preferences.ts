@@ -6,7 +6,7 @@ import { sessionLinkSchema } from "../shared/session-links";
 import {clarificationCard, clarificationEntry} from "../shared/clarifications";
 import { decisionSchema, decisionFields } from "../shared/decision-actions";
 import { routePolicySchema, workerModeProvider } from "../shared/dispatch";
-import { repositoryOverride } from "../shared/prs";
+import { pullMergeActivity, repositoryOverride } from "../shared/prs";
 import { replyDetails } from "../shared/reply-history";
 import { factSchema } from "../shared/board-facts";
 
@@ -18,6 +18,9 @@ const coordinatorConfig = z.object({ provider: z.string(), thinkingOptionId: z.s
 const schema = z.object({
   projects: z.array(z.string()), coordinator: z.string().nullable(),
   workerModeOverrides: z.record(workerModeProvider, z.string().min(1).max(256)).default({}),
+  pullMergeHistory: z.record(z.string(), pullMergeActivity.extend({
+    notificationCoordinator: z.string().nullable().optional(),
+  })).default({}),
   projectRepositories: z.record(z.string(), repositoryOverride).default({}),
   autoPinCoordinatorWorkspace: z.boolean().default(true),
   autoReplyToBoardFacts: z.boolean().default(true),

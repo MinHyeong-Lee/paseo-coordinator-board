@@ -3,11 +3,14 @@ import { ReplyHistory } from "./reply-history";
 import { TrackedDecisionCard } from "./tracked-decisions";
 import { mentionsSecurityGate, trackedCoverage, trackedRecipient, usesSourceCoordinator, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
 import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice, type WorkSessionLink } from "./pull-requests";
-import { decisionCount } from "../shared/decision-count";
+import { pullRowKey, recordRowKey, sessionRowKey, withReceiptPositions, type CompletedAction, type InlineReceipt } from "./decision-receipts";
+import { InlineDecisionReceipt } from "./inline-receipt";
+import { latestMergeNotification } from "./merge-notification";
+import { decisionSummary } from "./decision-summary";
 import { matchesWorkspace } from "../shared/workspace-pull";
 import type { PullRequestItem } from "../shared/prs";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { DecisionActions, type DecisionReceipt } from "./decision-actions";
 import { Clarification } from "./clarification";
@@ -39,21 +42,24 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     return [...snapshot?.trackedDecisions?.items ?? []].sort((a,b) => priority(a.urgency) - priority(b.urgency) ||
       (a.where === "human" ? 0 : 1) - (b.where === "human" ? 0 : 1) || (a.since ?? "~").localeCompare(b.since ?? "~"));
   }, [snapshot?.trackedDecisions]);
-  const total = snapshot ? decisionCount(snapshot) : 0;
+  const [inlineReceipts, setInlineReceipts] = useState<InlineReceipt[]>([]);
+  const completed = new Set(inlineReceipts.map(receipt => receipt.actionKey));
   const names = new Map(snapshot?.projects.map(project => [project.id, project.title]));
   const displayed = new Map(projects.map(project => [project.id, project]));
   for (const pr of pullRequests?.items ?? []) for (const id of pr.projectIds) {
     if (!displayed.has(id)) displayed.set(id, {id,title:names.get(id) ?? id,cards:[]});
   }
   function decisionsFor(inScope:(id:string|null)=>boolean) {
-    const visibleRecords=records.filter(item=>inScope(item.projectId));
+    const visibleRecords=records.filter(item=>inScope(item.projectId) && !completed.has(recordRowKey(item)));
     const covered=trackedCoverage(visibleRecords);
     return {
       records:visibleRecords,
-      sessions:human.filter(card=>inScope(card.session.projectId) && !covered.sessionIds.has(card.session.id)),
-      prs:readyPrs.filter(pr=>pr.projectIds.some(inScope) && !covered.pullKeys.has(pullKey(pr.repo,pr.number))),
+      sessions:human.filter(card=>inScope(card.session.projectId) && !completed.has(sessionRowKey(card)) && !covered.sessionIds.has(card.session.id)),
+      prs:readyPrs.filter(pr=>pr.projectIds.some(inScope) && !completed.has(pullRowKey(pr)) && !covered.pullKeys.has(pullKey(pr.repo,pr.number))),
     };
   }
+  const allPending = decisionsFor(() => true);
+  const total = allPending.prs.length + allPending.records.length + allPending.sessions.length;
   const byProject=new Map<string|null,number>();
   const projectIds=new Set<string|null>(snapshot?.projects.filter(p=>p.selected).map(p=>p.id));
   for (const item of records) {
@@ -61,10 +67,24 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     if (item.projectId && !displayed.has(item.projectId)) displayed.set(item.projectId,{id:item.projectId,title:names.get(item.projectId) ?? item.projectTitle ?? item.projectId,cards:[]});
   }
   const history = snapshot?.replyHistory ?? [];
+  useEffect(() => {
+    const stored = new Map(snapshot?.replyHistory?.flatMap(entry => entry.pullMerge?.status === "merged" && entry.pullMerge.notification
+      ? [[JSON.stringify([entry.projectId, pullRowKey(entry.pullMerge)]), entry.pullMerge.notification] as const] : []));
+    if (!stored.size) return;
+    setInlineReceipts(previous => {
+      const next = previous.map(receipt => {
+        if (receipt.status !== "merged") return receipt;
+        const notification = latestMergeNotification(receipt.notification, stored.get(JSON.stringify([receipt.mergeProjectId, receipt.actionKey])));
+        return notification === receipt.notification ? receipt : { ...receipt, notification };
+      });
+      return next.some((receipt, index) => receipt !== previous[index]) ? next : previous;
+    });
+  }, [snapshot?.replyHistory, inlineReceipts.length]);
   for (const entry of history) {
     projectIds.add(entry.projectId);
     if (entry.projectId && !displayed.has(entry.projectId)) displayed.set(entry.projectId,{id:entry.projectId,title:names.get(entry.projectId) ?? entry.projectId,cards:[]});
   }
+  if (inlineReceipts.some(receipt => !receipt.hidden && receipt.projectIds.includes(null))) projectIds.add(null);
   for (const id of projectIds) {
     const list=decisionsFor(projectId=>projectId===id);
     byProject.set(id,list.records.length+list.sessions.length+list.prs.length);
@@ -78,19 +98,6 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const filteredTotal=filteredRecords.length+filteredSessions.length+filteredPrs.length;
   const filteredHistory=history.filter(entry=>inFilter(entry.projectId));
   const [historyOpen,setHistoryOpen]=useState<boolean|null>(null);
-  const showHistory=historyOpen ?? (filteredTotal===0);
-  const scroll=useRef<ScrollView>(null);
-  const historyY=useRef(0);
-  const [sentNotice,setSentNotice]=useState<{projectId:string|null}|null>(null);
-  useEffect(()=>{
-    if (!sentNotice) return;
-    const timer=setTimeout(()=>setSentNotice(null),10000);
-    return ()=>clearTimeout(timer);
-  },[sentNotice]);
-  function revealHistory() {
-    setHistoryOpen(true);
-    requestAnimationFrame(()=>scroll.current?.scrollTo({y:Math.max(0,historyY.current-12),animated:true}));
-  }
   const filterNames = projectFilterNames(snapshot?.projects.filter(project => byProject.has(project.id)) ?? []);
   const projectName=(id:string|null)=>filterNames.get(id ?? "") ?? displayed.get(id ?? "")?.title ?? id ?? t("공통","Host-wide");
   function toggleFilter(id:string|null) {
@@ -112,10 +119,23 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const openCoordinator = coordinatorId && actions.onOpen ? () => actions.onOpen?.(coordinatorId) : undefined;
   const [digestLimit, setDigestLimit] = useState(5);
   const [mergeNotice, setMergeNotice] = useState<MergeNotice | null>(null);
-  const mergeResult = (notice: MergeNotice) => { setMergeNotice(notice); onRefresh(); };
+
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
+  const shownPrs = filteredPrs.slice(0, digestLimit);
+  const shownRecords = filteredRecords.slice(0, digestLimit);
+  const shownSessions = filteredSessions.slice(0, digestLimit);
+  const scopedReceipts = inlineReceipts.filter(receipt => receipt.projectIds.some(id => byProject.has(id) && inFilter(id)));
+  const showHistory = historyOpen ?? (filteredTotal === 0 && !scopedReceipts.some(receipt => !receipt.hidden));
+  const orderedKeys = withReceiptPositions([
+    ...shownPrs.map(pullRowKey), ...shownRecords.map(recordRowKey), ...shownSessions.map(sessionRowKey),
+  ], scopedReceipts);
+  function remember(action: CompletedAction) {
+    // The callback captures the order at the time the person pressed the button.
+    setInlineReceipts(previous => previous.some(entry => entry.actionKey === action.actionKey && entry.rowKey === action.rowKey)
+      ? previous : [...previous, { ...action, order: orderedKeys }]);
+  }
   function questionFor(card: ClarificationCard | null, title: string, prior?: TrackedDecision["qa"], onDraftChange?: (active:boolean) => void, ownerId?: string | null) {
     if (!snapshot) return null;
     const recipientId = card ? clarificationRecipient(card, snapshot) : null;
@@ -124,12 +144,15 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     return <Clarification key={card ? clarificationKey(card) : title} title={title} card={card} theme={theme}
       recipientId={recipientId} recipientTitle={recipientTitle} entries={snapshot.clarifications ?? []} prior={prior} onRefresh={onRefresh} onDraftChange={onDraftChange} />;
   }
-  const renderDecision = (card: Card, embedded = false) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
+  const renderDecision = (card: Card, embedded = false, rowKey?: string) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
           clarification={!embedded && questionFor(sessionClarificationCard(card.session,card.note),card.session.title)}
           card={card} hostLabel={hostLabel} theme={theme} coordinator={snapshot!.coordinator} coordinatorTitle={snapshot!.sessions.find(s => s.id === snapshot!.coordinator)?.title}
           open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
           onSent={result => {
-            setSentNotice({projectId:result.projectId});
+            if (rowKey && result.action === "reply") remember({
+              rowKey, actionKey: sessionRowKey(card), projectIds: [result.projectId], status: "sent",
+              title: decisionSummary(card, t).headline, detail: result.answer || result.recipient || undefined,
+            });
             setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
             onRefresh();
           }} />;
@@ -143,7 +166,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     const local = snapshot?.sessions.find(s => s.id === id && (s.projectId === item.projectId || s.id === item.matchedSessionId));
     return local && actions.onOpen ? () => actions.onOpen!(local.id) : undefined;
   }
-  function renderPull(pr:PullRequestItem, projectId:string, decision=false, securityGate=false, embedded=false) {
+  function renderPull(pr:PullRequestItem, projectId:string, decision=false, securityGate=false, embedded=false, rowKey?: string, scope: (string | null)[] = pr.projectIds) {
     const workSessions:WorkSessionLink[] = [];
     for (const s of snapshot?.sessions ?? []) {
       if (!inFilter(s.projectId) || !pr.projectIds.includes(s.projectId) || !actions.onOpen || !matchesWorkspace(pr,s.workspacePull)) continue;
@@ -156,26 +179,47 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     }
     return <PullRequestCard key={JSON.stringify([pr.url,projectId])} pr={pr} projectId={projectId} theme={theme} workSessions={workSessions}
       clarification={decision && !embedded && questionFor({kind:"pull",projectId,repo:pr.repo,number:pr.number,updatedAt:pr.updatedAt},pr.repo + " #" + pr.number)}
-      decision={decision} securityGate={securityGate} openCoordinator={openCoordinator} onResult={mergeResult} />;
+      decision={decision} securityGate={securityGate} openCoordinator={openCoordinator} onResult={notice => {
+        const { status } = notice;
+        const merged = status === "merged" || status === "already-merged";
+        if (rowKey && merged) {
+          remember({ rowKey, actionKey: pullRowKey(pr), projectIds: scope, status,
+            title: pr.title, detail: notice.target, mergeProjectId: projectId, notification: notice.notification });
+        }
+        setMergeNotice(rowKey && merged ? null : notice);
+        onRefresh();
+      }} />;
   }
-  const renderRecord = (item: TrackedDecision) => {
+  const renderRecord = (item: TrackedDecision, rowKey?: string) => {
           const native = human.find(card => card.session.id === item.matchedSessionId);
           const pr = item.kind === "merge" && item.mergeTarget && pullRequests?.items.find(pr =>
             pr.repo === item.mergeTarget?.repo && pr.number === item.mergeTarget.number &&
             (!item.projectId || pr.projectIds.includes(item.projectId)) && (pr.reason !== "ready" || item.matchedPull));
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
             renderClarification={onDraftChange => questionFor(trackedClarificationCard(item,snapshot!.sessions),item.title,item.qa,onDraftChange,usesSourceCoordinator(item) ? item.sourceCoordinatorId : undefined)}
-            pull={pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item),true)}
-            recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
-              if (status==="sent") setSentNotice({projectId:item.projectId});
+            pull={rowKey && item.mergeTarget && scopedReceipts.some(receipt => receipt.rowKey === rowKey && receipt.actionKey === pullRowKey(item.mergeTarget!)) ? <></>
+              : pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item), true, rowKey, [item.projectId])}
+            recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={(status,mode,answer)=>{
+              if (rowKey && mode && (status === "sent" || status === "closed" || status === "already-closed")) {
+                remember({ rowKey, actionKey: recordRowKey(item), projectIds: [item.projectId],
+                  status: status === "closed" ? (mode === "save" ? "saved" : "reviewed") : status,
+                  title: item.title, detail: answer || item.projectTitle || projectName(item.projectId) });
+              }
               onRefresh();
             }}>
-            {native && renderDecision(native,true)}
+            {native && (!rowKey || !completed.has(sessionRowKey(native))) && renderDecision(native,true,rowKey)}
           </TrackedDecisionCard>;
         };
+  const activeRows = new Map<string, ReactNode>();
+  for (const pr of shownPrs) {
+    const key = pullRowKey(pr);
+    activeRows.set(key, renderPull(pr, pr.projectIds.find(inFilter) ?? pr.projectIds[0], true, false, false, key));
+  }
+  for (const item of shownRecords) activeRows.set(recordRowKey(item), renderRecord(item, recordRowKey(item)));
+  for (const card of shownSessions) activeRows.set(sessionRowKey(card), renderDecision(card, false, sessionRowKey(card)));
   const c = theme.colors;
   return (
-    <ScrollView ref={scroll} style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
+    <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <View style={{ flex: 1, minWidth: 140, gap: 3 }}>
           <Text style={{ color: c.foreground, fontSize: 22, fontWeight: "700" }} accessibilityRole="header">{settings ? t("코디네이터 보드 설정", "Coordinator board settings") : t("세션별 코디네이터 보드", "Session coordinator board")}</Text>
@@ -233,22 +277,21 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
       </View>}
       {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: total ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
         <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{filters.length ? t(`내 결정 · ${filteredTotal}건 / 전체 ${total}건`, `My decisions · ${filteredTotal} of ${total}`) : t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>
-        {sentNotice && inFilter(sentNotice.projectId) && <View style={{flexDirection:"row",alignItems:"center",gap:8}}>
-          <Text accessibilityLiveRegion="polite" style={{color:c.statusSuccess}}>{t("전송했습니다.","Message sent.")}</Text>
-          {!!filteredHistory.length && <Button theme={theme} label={t("기록 보기","View activity")} onPress={revealHistory} />}
-        </View>}
         {incomplete &&
           <Text accessibilityLiveRegion="polite" style={{ color: c.statusWarning }}>{t("일부 결정 기록을 읽지 못했습니다. 현재 건수에는 확인한 항목만 포함됩니다.", "Some decision records could not be loaded. The count includes the available items.")}</Text>}
         {filters.length > 0 && !filteredTotal && total > 0 && !incomplete && <Text style={{color:c.foregroundMuted}}>{t("선택한 프로젝트에 결정할 일이 없습니다.","No decisions in the selected projects.")}</Text>}
         {total === 0 && !incomplete && <Text style={{ color: c.foregroundMuted }}>{t("지금 결정할 일이 없습니다.", "No decisions are waiting for you.")}</Text>}
         {mergeNotice && inFilter(mergeNotice.projectId) && snapshot.projects.some(p => p.selected && p.id === mergeNotice.projectId) && (mergeNotice.status === "merged" || mergeNotice.status === "already-merged" ||
           !readyPrs.some(pr => pr.repo + " #" + pr.number === mergeNotice.target)) && <MergeFeedback notice={mergeNotice} theme={theme} />}
-        {filteredPrs.slice(0,digestLimit).map(pr => renderPull(pr,pr.projectIds.find(inFilter) ?? pr.projectIds[0],true))}
-        {filteredRecords.slice(0,digestLimit).map(renderRecord)}
-        {filteredSessions.slice(0,digestLimit).map(card => renderDecision(card))}
+        {orderedKeys.map(key => <Fragment key={key}>
+          {scopedReceipts.filter(receipt => receipt.rowKey === key && !receipt.hidden).map(receipt =>
+            <InlineDecisionReceipt key={receipt.actionKey} receipt={receipt} theme={theme} onDismiss={() =>
+              setInlineReceipts(prior => prior.map(entry => entry === receipt ? { ...entry, hidden: true } : entry))} />)}
+          {activeRows.get(key)}
+        </Fragment>)}
         {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
-      {!settings && configured && filteredHistory.length>0 && <View onLayout={event=>{historyY.current=event.nativeEvent.layout.y;}}>
+      {!settings && configured && filteredHistory.length>0 && <View>
         <ReplyHistory entries={filteredHistory} theme={theme} open={actions.onOpen} expanded={showHistory} onToggle={()=>setHistoryOpen(!showHistory)} />
       </View>}
       {!settings && snapshot && !visibleProjects.length && !showHostWide && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}

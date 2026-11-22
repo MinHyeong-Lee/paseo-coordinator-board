@@ -43,13 +43,15 @@ A worker asking “Which project does this session belong to?” can receive a v
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
 - **Respond to a native approval.** Choose **Assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
 
-Decision replies include the original project, session when known, card, question, and revision alongside the answer. A saved local reply can retain photos. Personal checks have a **I checked this** checkbox. During a digest, the coordinator can archive a verified merge-only record or a completed source-session check. Review evidence is visible in recent activity.
+Decision replies include the original project, session when known, card, question, and revision alongside the answer. A saved local reply can retain photos. Personal checks have a **I checked this** checkbox. During a digest, the coordinator can archive a verified merge-only record or a completed source-session check. After you send a reply, mark a decision as reviewed, or merge a PR, the result stays where you acted in **My decisions**. You can dismiss it when you are ready. Open **Recent decision activity** to look up the result later.
 
 Open Settings to see the remaining quota and reset times for accounts that report them to this host. Usage-aware routing compares fresh, matching quota windows for eligible providers at the requested grade. An explicitly saved model order takes precedence.
 
 ## GitHub pull requests
 
 The sidebar count combines session questions, pull requests ready for review, and decisions from configured project records. Entries referring to the same pull request or verified session question appear together. A pull request shared by several managed projects counts once. Choose **Merge on board** to review the repository, branches, commit, and allowed merge methods. Confirm to merge with the host’s authenticated GitHub account. Select the underlined repository and PR number at the top of the card to read the diff on GitHub. A changed commit or failed requirement requires another review. Drafts and pull requests waiting for checks appear in project progress. The board reads open pull requests with the host’s authenticated GitHub CLI. In **Settings → GitHub repositories by project**, choose automatic detection, enter an explicit repository, or turn off lookup for a project.
+
+When GitHub confirms a merge performed on the board, the board sends the PR link and the available merge commit to the responsible coordinator. This can start a model turn to assess follow-up work. The board queues the notification while the recipient is busy and shows delivery status separately from the merge result. Viewing a PR that was already merged does not start a turn.
 
 ## Models, hosts and tools
 

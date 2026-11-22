@@ -9,10 +9,11 @@ import { useBoardLanguage } from "./language";
 import { PhotoComposer, usePhotoDraft } from "./photo-composer";
 
 type Resolution = ReturnType<typeof resolveTrackedDecision.output.parse>["status"];
+type ResolutionMode = "send" | "save" | "review";
 type Props = {
   item: TrackedDecision; theme: Theme; recipientId?:string|null; open?: () => void; children?: ReactNode; pull?: ReactNode;
   renderClarification?: (onDraftChange:(active:boolean) => void) => ReactNode;
-  onResolved: (result: Resolution) => Promise<void> | void;
+  onResolved: (result: Resolution, mode?: ResolutionMode, answer?: string) => Promise<void> | void;
 };
 const kinds = {
   check: ["확인", "Check"], answer: ["질문", "Question"], merge: ["병합 검토", "Merge review"],
@@ -121,7 +122,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
     catch { setRefreshFailed(true); }
     finally { pending.current = false; setBusy(false); }
   }
-  async function acknowledge(mode: "send" | "save" | "review") {
+  async function acknowledge(mode: ResolutionMode) {
     const send = mode === "send";
     if (send && (!recipientId || changedOwner)) return;
     const text = send ? sendText : answer;
@@ -139,7 +140,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
       if (status === "sent" || status === "closed" || status === "already-closed") attachments.clear();
     } catch { status = send ? "unconfirmed" : "unavailable"; }
     setResult(status); setConfirming(false);
-    try { await onResolved(status); } catch { setRefreshFailed(true); }
+    try { await onResolved(status, mode, text.trim() || undefined); } catch { setRefreshFailed(true); }
     finally { pending.current = false; setBusy(false); }
   }
 

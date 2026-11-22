@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Image, Text, View } from "react-native";
+import { pullUrl } from "../shared/prs";
+import { mergeNotificationLabel } from "./merge-notification";
 import { readReplyPhoto, type ReplyEntry } from "../shared/reply-history";
 import { Button, SessionChip, type Theme } from "./controls";
 import { HistoryMarkdown } from "./history-markdown";
@@ -44,7 +46,10 @@ export function ReplyCard({entry, theme, open}:Props) {
   const [photoIndex,setPhotoIndex] = useState<number | null>(null);
   const origin = entry.origin;
   const long = [entry.answer,entry.response].some(text => text && (text.length > 160 || text.split("\n").length > 3));
-  const status = {
+  const merge = entry.pullMerge;
+  const status = merge
+    ? (merge.status === "merged" ? t("보드에서 병합함", "Merged from board") : t("이미 병합됨", "Already merged"))
+    : {
     sent:t("전송됨","Sent"), pending:t("전송 확인 중","Delivery unconfirmed"),
     recorded:t("보드에 기록함","Saved on board"), closed:entry.reviewedBy ? t("코디네이터가 확인함","Reviewed by coordinator") : t("기록 닫음","Record closed"),
   }[entry.status];
@@ -54,8 +59,11 @@ export function ReplyCard({entry, theme, open}:Props) {
     {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
   const recipient = entry.recipientTitle ?? (entry.coordinator ? t("코디네이터","Coordinator") : entry.recipientId);
   return <View style={{gap:5,padding:9,borderRadius:7,backgroundColor:colors.surface0,borderWidth:1,borderColor:colors.border}}>
-    <HistoryMarkdown theme={theme} source={entry.title} heading />
-    <Text selectable style={{color:colors.foregroundMuted,fontSize:12}}>{[status, date, recipient].filter(Boolean).join(" · ")}</Text>
+    {merge ? <>
+      <Text selectable style={{color:colors.foreground,fontWeight:"600"}}>{entry.title}</Text>
+      <HistoryMarkdown theme={theme} source={`[${merge.repo} #${merge.number}](${pullUrl(merge.repo,merge.number)})`} />
+    </> : <HistoryMarkdown theme={theme} source={entry.title} heading />}
+    <Text selectable style={{color:colors.foregroundMuted,fontSize:12}}>{[status, mergeNotificationLabel(merge?.notification, t), date, recipient, merge?.mergeSha?.slice(0, 12)].filter(Boolean).join(" · ")}</Text>
     {!!entry.reviewReason && <HistoryMarkdown theme={theme} source={entry.reviewReason} />}
     {!!entry.answer && <HistoryMarkdown theme={theme} source={entry.answer} preview={long && !full} />}
     {!!entry.imageCount && <View style={{gap:4}}>
