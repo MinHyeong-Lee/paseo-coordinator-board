@@ -1,6 +1,6 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { TextInput } from "@getpaseo/plugin/client/ui";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { sendDecision, type DecisionInput } from "../shared/decision-actions";
 import { requestRecommendation } from "../shared/recommendation";
@@ -26,9 +26,9 @@ export function ReceiptText({ receipt, theme }: { receipt: DecisionReceipt; them
   </Text>;
 }
 
-export function DecisionActions({ card, theme, hostLabel, coordinator, coordinatorTitle, open, onSent, receipt }: {
+export function DecisionActions({ card, theme, hostLabel, coordinator, coordinatorTitle, open, onSent, receipt, clarification }: {
   card: Card; theme: Theme; hostLabel?: string; coordinator: string | null; coordinatorTitle?: string; open?: (id: string) => void;
-  onSent: (result: DecisionReceipt) => void; receipt?: DecisionReceipt;
+  onSent: (result: DecisionReceipt) => void; receipt?: DecisionReceipt; clarification?: ReactNode;
 }) {
   const { t, language } = useBoardLanguage();
   const { session } = card;
@@ -148,12 +148,9 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
           <PhotoComposer theme={theme} disabled={busy} draft={replyPhotos}><TextInput multiline accessibilityLabel={session.title + " · " + t("답장 내용", "reply text")} value={draft}
             maxLength={24000} editable={!busy} onChangeText={setDraft} placeholder={t("담당 세션에 보낼 답을 입력하세요", "Write a reply to the assigned session")}
             placeholderTextColor={c.foregroundMuted} style={{ minHeight: 48, padding: 8, color: c.foreground, borderColor: c.border, borderWidth: 1, borderRadius: 7, backgroundColor: c.surface0 }} /></PhotoComposer>
-          <View style={wrap}><Button theme={theme} {...named(t("담당 세션에 답장 보내기", "Send reply to assigned session"))}
-            disabled={(!draft.trim() && !replyPhotos.photos.length) || busy || replyPhotos.reading} selected={!!draft.trim() || !!replyPhotos.photos.length} onPress={() => void submit("reply", draft, session.id, replyPhotos)} /></View>
         </View>}
         <View style={{ ...wrap, alignItems: "center" }}>
-          {proposed ? <Button theme={theme} {...named(t("고쳐 보내기", "Edit reply"))} disabled={busy} onPress={() => begin("reply", proposed)} />
-            : !decision.needsInput && coordinator ? adviceSent
+          {!proposed && !decision.needsInput && coordinator ? adviceSent
               ? <Text accessibilityLiveRegion="polite" style={{ color: c.statusSuccess }}>{t("추천 요청됨 · 코디네이터 답변 대기", "Recommendation requested · Awaiting coordinator")}</Text>
               : <Button theme={theme} {...named(t("코디네이터에 추천 요청", "Ask coordinator for a recommendation"))} selected disabled={busy} onPress={() => void requestAdvice()} />
             : null}
@@ -164,7 +161,6 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
             {chosen && decision.recommendation && <Button theme={theme} {...named(t("추천 답장으로 돌아가기", "Restore suggested reply"))} disabled={busy}
               onPress={() => { setSelection(null); setReviewedReply(null); setShowMethods(false); }} />}
             {proposed && <Button theme={theme} {...named(t("직접 답장", "Write a reply"))} disabled={busy} onPress={() => begin("reply", draft)} />}
-            <Button theme={theme} {...named(t("질문하기", "Ask a question"))} disabled={busy} onPress={() => begin("question")} />
             {!!coordinator && coordinator !== session.id && <Button theme={theme} {...named(t("코디네이터에 조율 요청", "Ask coordinator to coordinate"))} disabled={busy} onPress={() => begin("coordinate")} />}
           </View>
         </View>}
@@ -183,6 +179,13 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
         </View>
       </View>}
     </>}
+    <View style={{...wrap,alignItems:"center"}}>
+      {decision && !formal && !editor && (proposed
+        ? <Button theme={theme} {...named(t("고쳐 보내기", "Edit reply"))} disabled={busy} onPress={() => begin("reply", proposed)} />
+        : <Button theme={theme} {...named(t("담당 세션에 답장 보내기", "Send reply to assigned session"))}
+          disabled={(!draft.trim() && !replyPhotos.photos.length) || busy || replyPhotos.reading} selected={!!draft.trim() || !!replyPhotos.photos.length} onPress={() => void submit("reply", draft, session.id, replyPhotos)} />)}
+      {clarification}
+    </View>
     {hasEvidence && <View style={{ alignItems: "flex-start", gap: 4 }}>
       {disclose(showEvidence ? t("근거 접기", "Hide source") : t("근거 보기", "View source"), showEvidence, () => setShowEvidence(v => !v))}
       {showEvidence && decision?.recommendationReason && <Text selectable style={{ color: c.foreground }}>{t("추천 이유", "Reason for recommendation")} · {decision.recommendationReason}</Text>}

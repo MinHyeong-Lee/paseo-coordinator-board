@@ -11,6 +11,7 @@ import { PhotoComposer, usePhotoDraft } from "./photo-composer";
 type Resolution = ReturnType<typeof resolveTrackedDecision.output.parse>["status"];
 type Props = {
   item: TrackedDecision; theme: Theme; recipientId?:string|null; open?: () => void; children?: ReactNode; pull?: ReactNode;
+  renderClarification?: (onDraftChange:(active:boolean) => void) => ReactNode;
   onResolved: (result: Resolution) => Promise<void> | void;
 };
 const kinds = {
@@ -41,7 +42,7 @@ export function TrackedDecisionCard(props: Props) {
   return <DecisionRecord key={JSON.stringify([props.item.key, props.item.fingerprint])} {...props} />;
 }
 
-function DecisionRecord({ item, theme, open, recipientId, onResolved, children, pull }: Props) {
+function DecisionRecord({ item, theme, open, recipientId, onResolved, children, pull, renderClarification }: Props) {
   const { t } = useBoardLanguage();
   const resolve = useRpc(resolveTrackedDecision);
   const [expanded, setExpanded] = useState(false);
@@ -53,6 +54,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
   const [result, setResult] = useState<Resolution | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [hasQuestionDraft, setHasQuestionDraft] = useState(false);
   const attachments = usePhotoDraft();
   const pending = useRef(false);
   const c = theme.colors;
@@ -90,7 +92,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
   const sendText = answer || (hasPhotos ? "" : quickReply);
   const tooLong = answer.length > 4000;
   const humanCheck = item.kind === "check" && item.where === "human" && !item.questions.length && !item.matchedSessionId;
-  const hasDraft = hasAnswer || freeReply.length > 0 || Object.values(typed).some(value => value.length > 0);
+  const hasDraft = hasQuestionDraft || hasAnswer || freeReply.length > 0 || Object.values(typed).some(value => value.length > 0);
   const checkLabel = t("확인했어요", "I checked this");
 
   function choose(index: number, choice: number, multi: boolean) {
@@ -210,6 +212,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
             <View style={{ width: 15, height: 15, borderRadius: 3, borderWidth: 1, borderColor: c.foregroundMuted }} />
             <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{checkLabel}</Text>
           </Pressable>)}
+          {renderClarification?.(setHasQuestionDraft)}
         </View>
       </View>
     </View>}
@@ -230,7 +233,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
       <Lines theme={theme} title={t("진행 단계", "Steps")} lines={item.steps} />
       <Lines theme={theme} title={t("근거", "Evidence")} lines={item.why} />
       <Lines theme={theme} title={t("위험", "Risks")} lines={item.risk} />
-      {!!item.qa.length && <View style={{ gap: 5 }}>
+      {!renderClarification && !!item.qa.length && <View style={{ gap: 5 }}>
         <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("이전 문답", "Question history")}</Text>
         {item.qa.map((entry, i) => <View key={i} style={{ gap: 3 }}>
           <Text selectable style={{ color: c.foreground }}>{[t("질문", "Question"), entry.askedAt, entry.q].filter(Boolean).join(" · ")}</Text>

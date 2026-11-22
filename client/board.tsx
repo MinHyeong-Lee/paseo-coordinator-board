@@ -10,6 +10,8 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { DecisionActions, type DecisionReceipt } from "./decision-actions";
+import { Clarification } from "./clarification";
+import { clarificationKey, clarificationRecipient, sessionClarificationCard, type ClarificationCard } from "../shared/clarifications";
 import { SessionLinks } from "./session-links";
 import { useRemoteRunning, RemoteRunning } from "./remote-running";
 import { BoardHosts } from "./hosts";
@@ -114,7 +116,15 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
-  const renderDecision = (card: Card) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
+  function questionFor(card: ClarificationCard | null, title: string, prior?: TrackedDecision["qa"], onDraftChange?: (active:boolean) => void) {
+    if (!snapshot) return null;
+    const recipientId = card ? clarificationRecipient(card, snapshot) : null;
+    const recipientTitle = snapshot.sessions.find(row => row.id === recipientId)?.title;
+    return <Clarification key={card ? clarificationKey(card) : title} title={title} card={card} theme={theme}
+      recipientId={recipientId} recipientTitle={recipientTitle} entries={snapshot.clarifications ?? []} prior={prior} onRefresh={onRefresh} onDraftChange={onDraftChange} />;
+  }
+  const renderDecision = (card: Card, embedded = false) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
+          clarification={!embedded && questionFor(sessionClarificationCard(card.session,card.note),card.session.title)}
           card={card} hostLabel={hostLabel} theme={theme} coordinator={snapshot!.coordinator} coordinatorTitle={snapshot!.sessions.find(s => s.id === snapshot!.coordinator)?.title}
           open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
           onSent={result => {
@@ -132,7 +142,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
     const local = snapshot?.sessions.find(s => s.id === id && (s.projectId === item.projectId || s.id === item.matchedSessionId));
     return local && actions.onOpen ? () => actions.onOpen!(local.id) : undefined;
   }
-  function renderPull(pr:PullRequestItem, projectId:string, decision=false, securityGate=false) {
+  function renderPull(pr:PullRequestItem, projectId:string, decision=false, securityGate=false, embedded=false) {
     const workSessions:WorkSessionLink[] = [];
     for (const s of snapshot?.sessions ?? []) {
       if (!inFilter(s.projectId) || !pr.projectIds.includes(s.projectId) || !actions.onOpen || !matchesWorkspace(pr,s.workspacePull)) continue;
@@ -144,6 +154,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
       workSessions.push({key:JSON.stringify([host.serverId,s.sessionId]),label:[s.title || t("작업 세션","Work session"),host.label,t("진행 중","Running")].join(" · "),open:()=>onOpenHostSession(host.serverId,s.sessionId)});
     }
     return <PullRequestCard key={JSON.stringify([pr.url,projectId])} pr={pr} projectId={projectId} theme={theme} workSessions={workSessions}
+      clarification={decision && !embedded && questionFor({kind:"pull",projectId,repo:pr.repo,number:pr.number,updatedAt:pr.updatedAt},pr.repo + " #" + pr.number)}
       decision={decision} securityGate={securityGate} openCoordinator={openCoordinator} onResult={mergeResult} />;
   }
   const renderRecord = (item: TrackedDecision) => {
@@ -152,12 +163,13 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
             pr.repo === item.mergeTarget?.repo && pr.number === item.mergeTarget.number &&
             (!item.projectId || pr.projectIds.includes(item.projectId)) && (pr.reason !== "ready" || item.matchedPull));
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
-            pull={pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item))}
+            renderClarification={onDraftChange => questionFor({kind:"tracked",source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint},item.title,item.qa,onDraftChange)}
+            pull={pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true, mentionsSecurityGate(item),true)}
             recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
               if (status==="sent") setSentNotice({projectId:item.projectId});
               onRefresh();
             }}>
-            {native && renderDecision(native)}
+            {native && renderDecision(native,true)}
           </TrackedDecisionCard>;
         };
   const c = theme.colors;
@@ -227,7 +239,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
           !readyPrs.some(pr => pr.repo + " #" + pr.number === mergeNotice.target)) && <MergeFeedback notice={mergeNotice} theme={theme} />}
         {filteredPrs.slice(0,digestLimit).map(pr => renderPull(pr,pr.projectIds.find(inFilter) ?? pr.projectIds[0],true))}
         {filteredRecords.slice(0,digestLimit).map(renderRecord)}
-        {filteredSessions.slice(0,digestLimit).map(renderDecision)}
+        {filteredSessions.slice(0,digestLimit).map(card => renderDecision(card))}
         {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
       {!settings && configured && filteredHistory.length>0 && <View onLayout={event=>{historyY.current=event.nativeEvent.layout.y;}}>

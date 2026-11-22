@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { dirname } from "node:path";
 import { z } from "zod";
 import { sessionLinkSchema } from "../shared/session-links";
-import { decisionFields } from "../shared/decision-actions";
+import {clarificationCard, clarificationEntry} from "../shared/clarifications";
+import { decisionSchema, decisionFields } from "../shared/decision-actions";
 import { routePolicySchema } from "../shared/dispatch";
 import { repositoryOverride } from "../shared/prs";
 import { replyDetails } from "../shared/reply-history";
@@ -33,6 +34,10 @@ const schema = z.object({
   usageRouting: z.boolean().default(true),
   routingRevision: z.number().int().nonnegative().default(0),
   answers: z.record(z.string(), z.object({ version: z.string(), noteRevision: z.number().optional() })).default({}),
+  clarifications:z.record(z.string(),clarificationEntry.extend({
+    card:clarificationCard,fingerprint:z.string(),bodyHash:z.string(),sourceSessionId:z.string().nullable(),
+    savedDecision:decisionSchema.optional(),noteRevision:z.number().optional(),sourceEvidenceId:z.string().optional(),
+  })).default({}),
   decisionReceipts: z.record(z.string(), z.object({
     activity: replyDetails.optional(), response: z.string().optional(),
     messageHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),

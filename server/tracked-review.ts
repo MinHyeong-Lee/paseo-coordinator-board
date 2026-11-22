@@ -70,6 +70,8 @@ export function trackedReviewTool(prefs: PreferenceStore, tracked: TrackedDecisi
         const again = await managedRowsForCoordinator(paseo,prefs,agent.id);
         const current = again.find(s => s.id === source.id && s.projectId === source.projectId && !s.nativePending && s.status === "idle");
         if (!current || current.activityAt !== source.activityAt || !isCurrentMembership(current,prefs.read())) return {text:"Source session changed."};
+        const clarifications = prefs.read().clarifications;
+        if (evidence?.lastInputIds?.some(id => clarifications[id])) return {text:"A clarification is not completion evidence."};
         if (!matchesReviewEvidence(item,evidence ?? null,review.evidenceId,review.quote)) return {text:"The completion evidence has changed or does not identify this record."};
         return {text:close(item, review.quote)};
       }

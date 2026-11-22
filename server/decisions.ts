@@ -1,3 +1,4 @@
+import { restoreClarifiedDecision } from "./clarifications";
 import { describePhotos } from "./reply-photos";
 import { sessionReplyMessage } from "./decision-message";
 import { createHash } from "node:crypto";
@@ -37,7 +38,7 @@ export function decorateDecision(row: SessionRow, note: Note | undefined, prefs:
     if (answeredNote && !row.nativePending) row.decisionAnswered = true;
     return;
   }
-  const version = hash([row.projectId, row.id, row.evidenceId, note?.revision ?? 0, content]);
+  const version = hash([row.projectId, row.id, row.nativePending ? row.permissionVersion : row.evidenceId, note?.revision ?? 0, content]);
   if (content.source !== "permission" && answer?.version === version) {
     row.decisionAnswered = true;
     row.lane = "review";
@@ -146,6 +147,7 @@ export class DecisionSender {
       if (verifiedBoardFact(row, evidence, current, note)) throw Error(changed);
       Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === current.coordinator), { evidenceId: evidence.id });
       decorateDecision(row, note, current);
+      restoreClarifiedDecision(row, note, current, evidence);
       if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
       text = sessionReplyMessage(row,input);
       current.decisionReceipts[messageId] = {
