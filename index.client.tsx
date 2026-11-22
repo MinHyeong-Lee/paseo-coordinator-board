@@ -1,3 +1,5 @@
+import { DecisionBadge, publishDecisionCount } from "./client/decision-badge";
+import { decisionCount } from "./shared/decision-count";
 import type { z } from "zod";
 import { useRpc, type PluginClientContext, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
@@ -35,6 +37,7 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
       const next = await read.current({});
       if (active.current && request === latest.current) {
         setSnapshot(next);
+        publishDecisionCount(host.id, decisionCount(next));
         setError(null);
         setUpdatedAt(new Date());
       }
@@ -46,7 +49,7 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
         setLoading(false);
       }
     }
-  }, []);
+  }, [host.id]);
 
   useEffect(() => {
     active.current = true;
@@ -87,9 +90,10 @@ function BoardScreen(props: PluginScreenProps) {
 const boardTitle = "세션별 코디네이터 보드";
 const englishBoardTitle = "Session Coordinator Board";
 
-function LocalSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
+function LocalSidebarItem({ host, theme, currentScreen, openScreen }: PluginSidebarItemProps) {
   const { language, t } = useBoardLanguage();
   return <SidebarRow icon="LayoutDashboard" label={t(boardTitle, englishBoardTitle)} active={currentScreen?.screenId === "board"}
+    trailing={<DecisionBadge key={host.id} host={host.id} theme={theme} />}
     onPress={() => openScreen({ screenId: "board", params: { language } })} />;
 }
 

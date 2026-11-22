@@ -1,3 +1,6 @@
+import { PullRequestCard, PullRequestSettings } from "./pull-requests";
+import { decisionCount } from "../shared/decision-count";
+import type { PullRequestView } from "../shared/prs";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -82,24 +85,29 @@ function Column({ lane, cards, theme, ...actions }: { lane: Lane; cards: Card[];
   );
 }
 
-function Project({ cards, title, theme, compact, ...actions }: { cards: Card[]; title: string; theme: Theme; compact: boolean } & Actions) {
+function Project({ cards, requests, title, theme, compact, ...actions }: { cards: Card[]; requests: PullRequestView["items"]; title: string; theme: Theme; compact: boolean } & Actions) {
   const { t } = useBoardLanguage();
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useState<Lane | null>(null);
+  const [prLimit, setPrLimit] = useState(4);
   const grouped = useMemo(() => {
     const groups: Record<Lane, Card[]> = { human: [], running: [], review: [], idle: [], done: [], unknown: [] };
     for (const card of cards) groups[card.lane].push(card);
     return groups;
   }, [cards]);
   const narrow = compact || (width > 0 && width < 720);
+  const decisions = grouped.human.length + requests.filter(pr => pr.lane === "review").length;
   const current = selected ?? lanes.find((lane) => grouped[lane].length > 0) ?? "running";
   const size = columnWidth(width, lanes.length);
   const c = theme.colors;
   return (
     <View style={{ gap: 8 }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
       <Text accessibilityRole="header" style={{ fontSize: 18, fontWeight: "600", color: c.foreground }}>{title}</Text>
-      <Text style={{ fontSize: 13, color: c.foregroundMuted }}>{t(`세션 ${cards.length}개 · 진행 중 ${grouped.running.length} · 내 결정 ${grouped.human.length}건`, `Sessions ${cards.length} · In progress ${grouped.running.length} · My decisions ${grouped.human.length}`)}</Text>
-      {width === 0 && !compact ? null : narrow ? <>
+      <Text style={{ fontSize: 13, color: c.foregroundMuted }}>{t(`세션 ${cards.length}개 · 진행 중 ${grouped.running.length} · 내 결정 ${decisions}건`, `Sessions ${cards.length} · In progress ${grouped.running.length} · My decisions ${decisions}`)}</Text>
+      {requests.slice(0, prLimit).map(pr => <PullRequestCard key={pr.url} pr={pr} theme={theme} />)}
+      {requests.length > prLimit && <Button theme={theme} label={t(`PR ${requests.length - prLimit}건 더 보기`, `Show more pull requests (${requests.length - prLimit})`)}
+        onPress={() => setPrLimit(n => n + 10)} />}
+      {!cards.length || width === 0 && !compact ? null : narrow ? <>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
           {lanes.map((lane) => <Button theme={theme} key={lane} selected={lane === current} label={`${laneLabel(lane, t)} ${grouped[lane].length}`} onPress={() => setSelected(lane)} />)}
         </View>
@@ -122,12 +130,22 @@ export type BoardViewProps = Actions & {
 export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHostSession, error, loading, updatedAt, onRefresh, onProject, ...actions }: BoardViewProps) {
   const { t, language } = useBoardLanguage();
   const { human, projects } = useMemo(() => snapshot ? projectCards(snapshot) : { human: [], projects: [] }, [snapshot]);
+  const pullRequests = snapshot?.pullRequests;
+  const readyPrs = pullRequests?.items.filter(pr => pr.lane === "review") ?? [];
+  const total = snapshot ? decisionCount(snapshot) : 0;
+  const names = new Map(snapshot?.projects.map(project => [project.id, project.title]));
+  const displayed = new Map(projects.map(project => [project.id, project]));
+  for (const pr of pullRequests?.items ?? []) for (const id of pr.projectIds) {
+    if (!displayed.has(id)) displayed.set(id, {id,title:names.get(id) ?? id,cards:[]});
+  }
   const [settings, setSettings] = useState(false);
   const [showError, setShowError] = useState(false);
   const [manage, setManage] = useState(false);
   const [pickSession, setPickSession] = useState(false);
   const configured = snapshot?.projects?.some(p => p.selected);
   const pickingProjects = !configured || (!settings && !snapshot?.coordinator);
+  const coordinatorId = snapshot?.coordinator;
+  const openCoordinator = coordinatorId && actions.onOpen ? () => actions.onOpen?.(coordinatorId) : undefined;
   const [digestLimit, setDigestLimit] = useState(5);
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const visible = human.slice(0, digestLimit);
@@ -164,7 +182,11 @@ export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHo
         </>}
       </View>}
       {settings && snapshot && configured && <SessionLinks projects={snapshot.projects} theme={theme} onChange={onRefresh} />}
-      {settings && hostId && <BoardHosts current={{ id: hostId, label: hostLabel }} settings theme={theme} open={onOpenHostSession} />}
+      {settings && pullRequests && !!configured && <PullRequestSettings view={pullRequests} names={names} theme={theme} refresh={onRefresh} />}
+      {settings && hostId && <>
+        <BoardHosts current={{ id: hostId, label: hostLabel }} settings theme={theme} open={onOpenHostSession} />
+        <BoardHosts current={{ id: hostId, label: hostLabel }} settings={false} theme={theme} open={onOpenHostSession} />
+      </>}
       {snapshot && <OperationsPanel settings={settings} theme={theme} coordinator={snapshot.coordinator} configured={!!configured}
         refreshBoard={onRefresh} openCoordinator={actions.onOpen} />}
       {settings && snapshot && actions.onCoordinator && <View style={{ gap: 8 }}>
@@ -176,9 +198,10 @@ export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHo
           {!snapshot.sessions.length && <Text style={{ color: c.foregroundMuted }}>{t("관리할 프로젝트를 선택하면 지정할 수 있는 세션이 표시됩니다.", "Select a project to see its available sessions.")}</Text>}
         </>}
       </View>}
-      {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: human.length ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
-        <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{t(`내 결정 · ${human.length}건`, `My decisions · ${human.length}`)}</Text>
-        {human.length === 0 && <Text style={{ color: c.foregroundMuted }}>{t("내 답을 기다리는 세션이 없습니다.", "No sessions are waiting for your decision.")}</Text>}
+      {!settings && snapshot && configured && <View style={{ gap: 10, padding: 14, borderWidth: 1, borderColor: total ? c.statusWarning : c.border, borderRadius: 10, backgroundColor: c.surface1 }}>
+        <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 17, fontWeight: "700" }}>{t(`내 결정 · ${total}건`, `My decisions · ${total}`)}</Text>
+        {total === 0 && <Text style={{ color: c.foregroundMuted }}>{t("지금 결정할 일이 없습니다.", "No decisions are waiting for you.")}</Text>}
+        {readyPrs.slice(0,digestLimit).map(pr => <PullRequestCard key={pr.url} pr={pr} theme={theme} decision openCoordinator={openCoordinator} />)}
         {latestMoved && <ReceiptText receipt={latestMoved} theme={theme} />}
         {visible.map(card => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
           card={card} theme={theme} coordinator={snapshot.coordinator} coordinatorTitle={snapshot.sessions.find(s => s.id === snapshot.coordinator)?.title}
@@ -187,12 +210,11 @@ export function BoardView({ snapshot, theme, layout, hostLabel, hostId, onOpenHo
             setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
             onRefresh();
           }} />)}
-        {human.length > digestLimit && <Button theme={theme} label={t(`결정 ${human.length - digestLimit}건 더 보기`, `Show ${human.length - digestLimit} more decisions`)} onPress={() => setDigestLimit(human.length)} />}
+        {(human.length > digestLimit || readyPrs.length > digestLimit) && <Button theme={theme} label={t(`결정 ${Math.max(0,human.length - digestLimit) + Math.max(0,readyPrs.length - digestLimit)}건 더 보기`, `Show ${Math.max(0,human.length - digestLimit) + Math.max(0,readyPrs.length - digestLimit)} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
-      {!settings && snapshot && !projects.length && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
-      {!settings && hostId && snapshot && <BoardHosts current={{ id: hostId, label: hostLabel }} settings={false} theme={theme} open={onOpenHostSession} />}
-      {!settings && projects.length > 0 && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
-      {!settings && projects.map((p) => <Project key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
+      {!settings && snapshot && !displayed.size && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
+      {!settings && displayed.size > 0 && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
+      {!settings && [...displayed.values()].map((p) => <Project requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
     </ScrollView>
   );
 }

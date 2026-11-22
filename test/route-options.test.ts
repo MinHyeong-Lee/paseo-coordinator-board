@@ -37,9 +37,10 @@ test("실행기 포함 여부·등급·연결 상태를 기준으로 빈 추천�
     return explainEmptyRoute({ providers, catalog: [], routing: {} }, grade);
   }
   expect(message([])).toMatch(/연결/);
-  for (const grade of ["A", "B", "M"] as const) {
-    expect(message([provider("cursor")], grade)).toMatch(/Claude Code.*Codex/);
+  for (const grade of ["A", "B"] as const) {
+    expect(message([provider("cursor", { status: "empty" })], grade)).toMatch(/모델.*없/);
   }
+  expect(message([provider("cursor")], "M")).toMatch(/기존|지정/);
   expect(message([provider("codex", { included: false })], "M")).toMatch(/포함/);
   expect(message([provider("codex", { available: false, status: "unavailable" })], "D")).toMatch(/연결/);
   expect(message([provider("codex", { status: "error" })])).toMatch(/조회.*실패/);
@@ -82,4 +83,21 @@ test("영어 경고를 표시하면서 실행기 이름과 모델 ID를 보존�
   expect(found.providers[0].label).toBe("팀 실행기");
   expect(found.choices[0].model).toBe("팀-모델");
   expect(data.routing.C).toEqual([row]);
+});
+
+test("접힌 목록에도 적용할 추천이 먼저 보이고, 수동 검색과 실행기 필터는 그대로 적용된다", () => {
+  const later = model("codex", "late-model");
+  const data = {
+    providers: [provider("codex"), provider("cursor")],
+    catalog: [model("codex", "first"), model("cursor", "second"), later], routing: {},
+  };
+  const effective = { ...later, effort: "high" };
+  const browse = (id: string | null, query: string, limit: number) => browseModels(data, "C", id, query, limit, undefined, effective);
+  expect(browse(null, "", 1).choices).toEqual([later]);
+  expect(browse(null, "", 20).choices.map(m => m.model)).toEqual(["late-model", "first", "second"]);
+  expect(browse("cursor", "", 1).choices.map(m => m.model)).toEqual(["second"]);
+  expect(browse(null, "first", 1).choices.map(m => m.model)).toEqual(["first"]);
+  expect(browse(null, "missing", 5).choices).toEqual([]);
+  expect(browse(null, "", 0).choices).toEqual([]);
+  expect(data.catalog.map(m => m.model)).toEqual(["first", "second", "late-model"]);
 });

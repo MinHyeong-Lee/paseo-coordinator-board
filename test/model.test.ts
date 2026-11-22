@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { decisionCount } from "../shared/decision-count";
+import type { PullRequestItem } from "../shared/prs";
 import { projectCards } from "../client/model";
 import type { Note, SessionRow } from "../shared/contract";
 
@@ -29,4 +31,17 @@ test("a delivered reply takes the same question out of the digest while preservi
   const { projects, human } = projectCards({ sessions, notes, projects: [], coordinator: null });
   expect(projects[0].cards.map(c => c.lane)).toEqual(["review", "running", "unknown", "human"]);
   expect(human.map(c => c.session.id)).toEqual(["3"]);
+});
+
+test("사이드바에서 네이티브 승인, 사용자 질문과 여러 프로젝트가 공유하는 준비된 PR을 한 번씩 집계한다", () => {
+  const base: SessionRow = { id: "s", title: "title", projectId: "p", projectTitle: "project", workspaceTitle: "workspace", lane: "idle", detail: "", model: null };
+  const sessions = [{ ...base, nativePending: true }, { ...base, id: "question" }, { ...base, id: "answered", lane: "human" as const, decisionAnswered: true }];
+  const notes = { question: { sessionId: "question", kind: "question" as const, text: "review", revision: 1 } };
+  const ready: PullRequestItem = { number: 1, repo: "example/shop", title: "one", url: "https://github.com/example/shop/pull/1",
+    projectIds: ["one", "two"], lane: "review", reason: "ready", updatedAt: "2026-01-01" };
+  const draft: PullRequestItem = { ...ready, number: 2, reason: "draft", lane: "progress" };
+  expect(decisionCount({ sessions, notes, pullRequests: { projects: [], items: [ready, draft] } })).toBe(3);
+  expect(decisionCount({ sessions, notes })).toBe(2);
+  expect(decisionCount({ sessions: [], notes: {}, pullRequests: { projects: [], items: [ready] } })).toBe(1);
+  expect(decisionCount({ sessions: [], notes: {} })).toBe(0);
 });

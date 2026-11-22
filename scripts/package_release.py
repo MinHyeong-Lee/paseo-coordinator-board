@@ -25,6 +25,7 @@ required = {
     "server/board-facts.ts", "shared/board-facts.ts", "client/fact-reply-controls.tsx",
     "server/recommendation.ts", "shared/recommendation.ts", "client/decision-summary.ts",
     "server/session-links.ts", "shared/session-links.ts", "client/session-links.tsx", "client/language.tsx",
+    "client/pull-requests.tsx", "client/decision-badge.tsx", "shared/decision-count.ts", "shared/prs.ts", "server/prs.ts",
     "package.json", "LICENSE", "OVERVIEW.md", "README.md", "templates/coordinator-session.md",
     "third-party/better-paseo/LICENSE", "THIRD_PARTY_NOTICES.md", "assets/preview.png",
 }

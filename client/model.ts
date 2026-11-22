@@ -1,3 +1,4 @@
+import { displayLane } from "../shared/decision-count";
 import type { z } from "zod";
 import type { boardSnapshot, saveNote } from "../shared/contract";
 
@@ -55,23 +56,6 @@ export function factStatus({ delivery, kind }: Pick<NonNullable<Session["boardFa
     unconfirmed: t("사실 답변 전달 미확인", "Fact delivery unconfirmed"),
   };
   return words[delivery];
-}
-
-function displayLane(session: Session, note: Note | undefined): Lane {
-  if (session.nativePending) return "human";
-  if (session.evidenceId && session.evidenceId === note?.evidenceId && note.origin === "person") {
-    if (note.kind === "done") return "done";
-    if (note.kind === "review") return "review";
-    if (note.kind === "clear" && session.lane === "human") return "idle";
-  }
-  if (session.decisionAnswered) {
-    return session.lane === "running" || session.lane === "unknown" ? session.lane : "review";
-  }
-  if (session.lane === "human" || note?.kind === "question") return "human";
-  if (session.lane === "running") return "running";
-  if (session.lane === "review" || note?.kind === "review" || (note?.kind === "done" && note.origin === "agent")) return "review";
-  if (note?.kind === "done") return "done";
-  return session.lane;
 }
 
 export function projectCards(snapshot: Snapshot) {

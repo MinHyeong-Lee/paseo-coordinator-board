@@ -1,4 +1,4 @@
-import { defineAgentTool, type PluginHandlerContext, type PluginServerContext } from "@getpaseo/plugin/server";
+import { defineAgentTool, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { askDigest, operationState, requestWork, setProviderInclusion, setupCoordinator, updateRouting } from "../shared/operations";
 import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
@@ -20,23 +20,6 @@ import type { BoardFacts } from "./board-facts";
 import { sendCoordinatorRequest, digestPrompt, englishDigestPrompt, digestWithFactReplies } from "./digest";
 import { PreferenceStore } from "./preferences";
 
-async function coordinatorPermissionMode(paseo: PluginHandlerContext["paseo"], provider: string) {
-  const ids = provider === "claude" ? ["auto", "default"] : provider === "codex" ? ["auto-review", "auto"] : [];
-  if (!ids.length) return null;
-  try {
-    const result = await paseo.providers.listModes(provider);
-    if (!result.error) {
-      for (const id of ids) {
-        const mode = result.modes?.find(m => m.id === id && m.colorTier !== "dangerous");
-        if (mode) return { id, label: mode.label };
-      }
-    }
-  } catch {
-    // The rest of the board remains usable when a provider cannot report its modes.
-  }
-  return null;
-}
-
 export function createOperations(store: PreferenceStore, workspaceDir: string, facts?: Pick<BoardFacts, "prepareCycle" | "bindMessage">) {
   const lifecycle = new CoordinatorLifecycle(store, workspaceDir);
   function ownerScope(caller: string) {
@@ -55,13 +38,13 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       return { ok: true };
     });
     server.handle(operationState, async (_input, { paseo }) => {
-      const directory = await readProviderDirectory(paseo, undefined, true);
+      const directory = await readProviderDirectory(paseo, undefined, true, true);
       const scope = store.read();
       const catalog = includedCatalog(directory.catalog, scope.excludedProviders);
       const coordinator = resolveRoute("M", scope.routing, catalog);
       return {
         providers: directory.providers.map(p => ({ ...p, included: !scope.excludedProviders.includes(p.id) })),
-        catalog, coordinatorMode: coordinator ? await coordinatorPermissionMode(paseo, coordinator.provider) : null,
+        catalog, coordinatorMode: catalog.find(m => m.provider === coordinator?.provider)?.coordinatorMode ?? null,
         routing: scope.routing, revision: scope.routingRevision,
       };
     });
@@ -81,7 +64,7 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       return { ok: true };
     });
     server.handle(updateRouting, async (input, { paseo }) => {
-      const catalog = input.candidates.length ? await readCatalog(paseo) : [];
+      const catalog = input.candidates.length ? await readCatalog(paseo, undefined, input.grade === "M") : [];
       store.change((scope) => {
         if (scope.routingRevision !== input.expectedRevision)
           throw new Error("다른 화면에서 배정표가 바뀌었습니다. 새로 고친 뒤 다시 선택하세요.");
@@ -94,14 +77,14 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       return { ok: true };
     });
     server.handle(setupCoordinator, async (input, { paseo }) => {
-      const catalog = await readCatalog(paseo);
+      const catalog = await readCatalog(paseo, undefined, true);
       const verifyRoute = (scope: ReturnType<typeof store.read>) => {
         const route = resolveRoute("M", scope.routing, includedCatalog(catalog, scope.excludedProviders));
         if (!route || !sameRoute(route, input.expectedRoute))
-          throw new Error("코디네이터 모델이 바뀌었습니다. 설정을 새로 고쳐 주세요.");
+          throw new Error("코디네이터 모델 또는 권한 모드가 바뀌었습니다. 설정을 새로 고쳐 주세요.");
       };
       verifyRoute(store.read());
-      const mode = await coordinatorPermissionMode(paseo, input.expectedRoute.provider);
+      const mode = catalog.find(m => m.provider === input.expectedRoute.provider)?.coordinatorMode;
       if (!mode || (input.expectedModeId !== undefined && input.expectedModeId !== mode.id))
         throw new Error("코디네이터 권한 모드를 확인할 수 없거나 바뀌었습니다. 설정에서 실행기·모델을 새로 고쳐 주세요.");
       return lifecycle.ensure(paseo, {
@@ -126,7 +109,7 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
   const plan = defineAgentTool({
     name: "plan_board_assignment",
     description:
-      "Find eligible model routes and the managed projects, active sessions, and workspaces on this host. Choose the right workspace and grade for the human's request. If the project is ambiguous, ask for clarification. Use needsHooks for work requiring native hooks.",
+      "Find eligible model routes and the managed projects, active sessions, and workspaces on this host. Choose a grade for the task, then use the returned route. When Claude Code and Codex are unavailable, other connected workers can handle high grades. Set needsHooks when native hooks are required in both the plan and assignment. Ask for clarification if the project is ambiguous.",
     input: z.strictObject({ needsHooks: z.boolean().optional() }),
     async execute({ needsHooks }, { paseo, agent }) {
       const first = ownerScope(agent.id);

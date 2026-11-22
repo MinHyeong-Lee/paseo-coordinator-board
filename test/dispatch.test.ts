@@ -17,10 +17,8 @@ test("개인 배정표의 우선·예비·필수 훅을 같은 순서로 판정�
   assert.deepEqual(resolveRoute("C", policy, models, true), sol);
   assert.deepEqual(resolveRoute("C", policy, models.slice(1)), sol);
   assert.equal(resolveRoute("C", { C: [gemini] }, models.slice(1)), null);
-  for (const grade of ["A", "B", "M"] as const) {
-    assert.equal(resolveRoute(grade, {}, [models[0]]), null);
-    assert.throws(() => validateCandidates(grade, [gemini], models), /등급/);
-  }
+  assert.equal(resolveRoute("M", {}, [models[0]]), null);
+  for (const grade of ["A", "B", "M"] as const) assert.throws(() => validateCandidates(grade, [gemini], models), /등급/);
   assert.throws(() => validateCandidates("C", [gemini, gemini], models), /두 번/);
   assert.throws(() => validateCandidates("C", [{ ...gemini, effort: "high" }], models), /추론 강도/);
   assert.deepEqual(resolveRoute("M", {}, models), sol);
@@ -28,7 +26,42 @@ test("개인 배정표의 우선·예비·필수 훅을 같은 순서로 판정�
   assert.equal(resolveRoute("A", {}, [...models, astro])?.effort, "xhigh");
   assert.equal(resolveRoute("B", {}, [...models, astro])?.effort, "high");
   assert.equal(resolveRoute("D", {}, []), null);
-  assert.equal(resolveRoute("C", {}, [{ ...models[0], provider: "grok" }]), null);
+});
+
+test("Claude-only and Codex-only hosts keep their own live models at every grade", () => {
+  const opus = { provider: "claude", model: "claude-opus-5-5", label: "Opus", efforts: ["high", "xhigh", "max"], isDefault: true };
+  const astra = { provider: "codex", model: "gpt-6.2-astra", label: "Astra", efforts: ["high", "xhigh"], isDefault: false };
+  for (const grade of ["A", "B", "C", "D", "M"] as const) {
+    assert.equal(resolveRoute(grade, {}, [opus])?.provider, "claude");
+    assert.equal(resolveRoute(grade, {}, [astra, models[1]])?.provider, "codex");
+    assert.equal(resolveRoute(grade, {}, []), null);
+  }
+  assert.deepEqual(resolveRoute("A", {}, [models[0], astra, opus]), {provider:"claude", model:opus.model, effort:"max"});
+  assert.deepEqual(resolveRoute("B", {}, [models[0], astra, opus]), {provider:"claude", model:opus.model, effort:"xhigh"});
+});
+
+test("only the remaining worker pool can cover otherwise empty grades, preserving hooks, saved routes and full-host priorities", () => {
+  const grok = {...models[0], provider:"grok", model:"grok-latest"};
+  const custom = {...models[0], provider:"claude-looking-alias", model:"vendor/model"};
+  for (const worker of [models[0], grok, custom]) {
+    const choice = {provider:worker.provider, model:worker.model, effort:null};
+    for (const grade of ["A", "B", "C", "D"] as const) {
+      assert.deepEqual(resolveRoute(grade, {}, [worker]), choice);
+      validateCandidates(grade, [choice], [worker]);
+      assert.equal(resolveRoute(grade, {}, [worker], true), null);
+      assert.equal(resolveRoute(grade, {[grade]:[sol]}, [worker]), null);
+    }
+    assert.equal(resolveRoute("M", {}, [worker]), null);
+    const mixed = [worker, models[1]];
+    for (const grade of ["A", "B"] as const) {
+      assert.equal(resolveRoute(grade, {}, mixed)?.provider, "codex");
+      assert.throws(() => validateCandidates(grade, [choice], mixed), /등급/);
+      // Keep a person's saved fallback for when the host returns to a single provider.
+      validateCandidates(grade, [choice, sol], mixed, [choice]);
+      assert.deepEqual(resolveRoute(grade, {[grade]:[choice, sol]}, mixed), sol);
+    }
+  }
+  assert.equal(resolveRoute("C", {}, [grok, custom])?.provider, custom.provider);
 });
 
 type DaemonClient = Parameters<typeof createPaseoApi>[0];

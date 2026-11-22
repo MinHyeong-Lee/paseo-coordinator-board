@@ -1,7 +1,7 @@
 import { useBoardLanguage, type Translate } from "./language";
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { eligibleProvider, workerGradeSchema } from "../shared/dispatch";
+import { eligibleProvider, workerGradeSchema, type CatalogModel } from "../shared/dispatch";
 import type { Operations } from "../shared/operations";
 import { Button, type Theme } from "./controls";
 
@@ -14,17 +14,17 @@ function catalogStatus(provider: Provider, t: Translate) {
   return provider.modelCount === null ? t("모델 수 미확인", "Model count unknown") : t(`모델 ${provider.modelCount}개`, `Models: ${provider.modelCount}`);
 }
 
-function roles(id: string, t: Translate) {
-  const grades = workerGradeSchema.options.filter(grade => eligibleProvider(grade, id));
+function roles(id: string, catalog: CatalogModel[], t: Translate) {
+  const grades = workerGradeSchema.options.filter(grade => eligibleProvider(grade, id, false, catalog));
   const worker = grades.length === 4 ? "A~D" : grades.join("·");
   const scope = [t(`작업 ${worker}`, `Work ${worker}`)];
-  if (eligibleProvider("M", id)) scope.push(t("운영 M", "Coordinator M"));
+  if (eligibleProvider("M", id, false, catalog)) scope.push(t("운영 M", "Coordinator M"));
   if (eligibleProvider("D", id, true)) scope.push(t("필수 훅", "Required hooks"));
   return scope.join(" / ");
 }
 
-export function ProviderSettings({ providers, theme, busy, change }: {
-  providers: Provider[];
+export function ProviderSettings({ providers, catalog, theme, busy, change }: {
+  providers: Provider[]; catalog: CatalogModel[];
   theme: Theme;
   busy: boolean;
   change: (provider: string, included: boolean) => void;
@@ -50,7 +50,7 @@ export function ProviderSettings({ providers, theme, busy, change }: {
       }}>
         <Text selectable style={{ fontWeight: "600", color: c.foreground }}>{provider.label}</Text>
         <Text selectable style={{ fontSize: 12, color: c.foregroundMuted }}>{provider.id} · {catalogStatus(provider, t)}</Text>
-        <Text style={{ fontSize: 12, color: c.foregroundMuted }}>{roles(provider.id, t)}</Text>
+        <Text style={{ fontSize: 12, color: c.foregroundMuted }}>{roles(provider.id, catalog, t)}</Text>
         <View style={{ flexDirection: "row" }}>
           <Button theme={theme} selected={provider.included} disabled={busy}
             label={provider.included ? t("배정에 포함됨", "Included in routing") : t("배정에서 제외됨", "Excluded from routing")}

@@ -66,9 +66,12 @@ export function BoardHosts({ current, settings, theme, open }: {
     {settings && ready && hosts.map(host => {
       const included = !scope.values.hidden.includes(host.serverId);
       return <View key={host.serverId} style={{ ...wrap, alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderColor: c.border, paddingTop: 7 }}>
-        <Text style={{ flexShrink: 1, color: c.foreground }}>{host.label}{host.serverId === current.id ? t(" · 현재 보드", " · Current board") : ""} · {t(statusText[host.status][0], statusText[host.status][1])}</Text>
-        <Button theme={theme} selected={included} disabled={scope.saving}
-          label={included ? t("기기별 세션에 표시", "Shown in host sessions") : t("기기별 세션에서 숨김", "Hidden from host sessions")}
+        <View style={{ flex: 1, minWidth: 120, gap: 3 }}>
+          <Text style={{ color: c.foreground }}>{host.label}{host.serverId === current.id ? t(" · 현재 보드", " · Current board") : ""} · {t(statusText[host.status][0], statusText[host.status][1])}</Text>
+          <Text accessibilityLiveRegion="polite" style={{ fontSize: 13, color: c.foregroundMuted }}>{included ? t("세션 목록에 표시 중", "Shown in the session list") : t("세션 목록에서 숨김", "Hidden from the session list")}</Text>
+        </View>
+        <Button theme={theme} disabled={scope.saving}
+          label={included ? t("숨기기", "Hide") : t("표시하기", "Show")}
           accessibilityLabel={host.label + (included ? t(" · 기기별 세션에서 숨기기", " · Hide from host sessions") : t(" · 기기별 세션에 표시하기", " · Show in host sessions"))}
           onPress={() => void change(host.serverId, !included)} />
       </View>;

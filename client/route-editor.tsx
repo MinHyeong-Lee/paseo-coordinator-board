@@ -1,6 +1,5 @@
 import { useBoardLanguage, type Translate } from "./language";
-import { Text, View } from "react-native";
-import { TextInput } from "@getpaseo/plugin/client/ui";
+import { Text, TextInput, View } from "react-native";
 import { useState } from "react";
 import {
   workerGradeSchema,
@@ -62,12 +61,15 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(6);
   const [provider, setProvider] = useState<string | null>(null);
-  const [selection, setSelection] = useState<RouteChoice | null>(null);
+  const [edit, setSelection] = useState<RouteChoice | null>(null);
   const color = theme.colors.foreground;
-  const browser = browseModels(data, grade, provider, query, limit, t);
-  const model = selection && browser.choices.find(m => m.model === selection.model && m.provider === selection.provider);
-  const saved = data.routing[grade]?.length;
   const route = resolveRoute(grade, data.routing, data.catalog);
+  const saved = data.routing[grade]?.length;
+  const browser = browseModels(data, grade, provider, query, limit, t, route);
+  const editAvailable = edit && data.catalog.some(m => m.provider === edit.provider && m.model === edit.model &&
+    (edit.effort === null || m.efforts.includes(edit.effort)));
+  const selection = editAvailable ? edit : route;
+  const model = selection && browser.choices.find(m => m.model === selection.model && m.provider === selection.provider);
   function filter(id: string | null) {
     setProvider(id);
     setSelection(null);
@@ -114,6 +116,8 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
       <TextInput
         accessibilityLabel={t("모델 검색", "Search models")}
         placeholder={t("실행기 또는 모델 검색", "Search providers or models")}
+        style={{ color, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0, borderRadius: 6, padding: 8 }}
+        placeholderTextColor={theme.colors.foregroundMuted}
         value={query}
         onChangeText={(v) => {
           setQuery(v);
@@ -127,9 +131,11 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
           <Button
             key={JSON.stringify([m.provider, m.model])}
             theme={theme}
-            label={m.provider + " / " + m.model}
+            label={m.provider + " / " + m.model + (route?.provider === m.provider && route.model === m.model
+              ? " · " + (saved ? t("적용 중", "In use") : t("추천", "Recommended")) : "")}
             selected={selection?.provider === m.provider && selection.model === m.model}
-            onPress={() => setSelection({ provider: m.provider, model: m.model, effort: null })}
+            onPress={() => setSelection(route?.provider === m.provider && route.model === m.model
+              ? route : { provider: m.provider, model: m.model, effort: null })}
           />
         ))}
         {browser.choices.length < browser.count && (

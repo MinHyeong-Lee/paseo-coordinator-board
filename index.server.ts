@@ -1,7 +1,9 @@
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { ProjectPullRequests } from "./server/prs";
+import { decisionCount } from "./shared/decision-count";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { boardScope, boardSnapshot, reportingKey, saveNote, setReporting } from "./shared/contract";
+import { boardDecisionCount, boardScope, boardSnapshot, reportingKey, saveNote, setReporting } from "./shared/contract";
 import { discoverSessions } from "./server/discovery";
 import { attachReportTool } from "./server/reporting";
 import { ConversationReader } from "./server/conversation";
@@ -32,8 +34,13 @@ export default function contribute(server: PluginServerContext) {
   const decisions = new DecisionSender(prefs, notes, reader);
   registerRecommendation(server, decisions);
   server.handle(sendDecision, (input, { paseo }) => decisions.send(paseo, input));
-  server.handle(boardSnapshot, async (_input, { paseo }) => {
-    const [rows, catalog] = await Promise.all([discoverSessions(paseo), paseo.projects.list()]);
+  const prs = new ProjectPullRequests(prefs);
+  prs.register(server);
+  async function buildSnapshot(paseo: PluginHandlerContext["paseo"]) {
+    const catalogRead = paseo.projects.list();
+    const [rows, catalog, fetched] = await Promise.all([
+      discoverSessions(paseo), catalogRead, catalogRead.then(({ projects }) => prs.read(paseo, { projects })),
+    ]);
     const scope = prefs.read();
     const choices = new Map(catalog.projects.map(p => {
       const id = p.projectId;
@@ -50,8 +57,33 @@ export default function contribute(server: PluginServerContext) {
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
     facts.decorate(visible, evidence, visibleNotes);
     for (const row of visible) decorateDecision(row, visibleNotes[row.id], latest);
-    return { sessions: visible, notes: visibleNotes,
-      projects: [...choices.values()].map(p => ({ ...p, selected: latest.projects.includes(p.id) })), coordinator: latest.coordinator };
+    const selected = new Set(latest.projects);
+    const pullRequests = {
+      projects: fetched.projects.filter(p => selected.has(p.projectId)),
+      items: fetched.items.map(pr => ({ ...pr, projectIds: pr.projectIds.filter(id => selected.has(id)) })).filter(pr => pr.projectIds.length),
+    };
+    return { sessions: visible, notes: visibleNotes, pullRequests,
+      projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
+  }
+  let cachedCount: { count: number; observed: number } | undefined;
+  let inFlightSnapshot: ReturnType<typeof buildSnapshot> | undefined;
+  let generation = 0;
+  async function readSnapshot(paseo: PluginHandlerContext["paseo"]) {
+    const revision = ++generation;
+    const request = inFlightSnapshot = buildSnapshot(paseo);
+    try {
+      const snapshot = await request;
+      if (revision === generation) cachedCount = { count: decisionCount(snapshot), observed: Date.now() };
+      return snapshot;
+    } finally {
+      if (request === inFlightSnapshot) inFlightSnapshot = undefined;
+    }
+  }
+  server.handle(boardSnapshot, (_input, { paseo }) => readSnapshot(paseo));
+  server.handle(boardDecisionCount, async (_input, { paseo }) => {
+    if (cachedCount && Date.now() - cachedCount.observed < 15_000) return { count: cachedCount.count };
+    const snapshot = await (inFlightSnapshot ?? readSnapshot(paseo));
+    return { count: decisionCount(snapshot) };
   });
   server.handle(boardScope, async (change, { paseo }) => {
     const rows = await discoverSessions(paseo);

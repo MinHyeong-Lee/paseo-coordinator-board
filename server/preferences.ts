@@ -5,6 +5,7 @@ import { z } from "zod";
 import { sessionLinkSchema } from "../shared/session-links";
 import { decisionFields } from "../shared/decision-actions";
 import { routePolicySchema } from "../shared/dispatch";
+import { repositoryOverride } from "../shared/prs";
 import { factSchema } from "../shared/board-facts";
 
 export const judgment = z.object({
@@ -14,6 +15,7 @@ export const judgment = z.object({
 const coordinatorConfig = z.object({ provider: z.string(), thinkingOptionId: z.string().optional(), modeId: z.string().optional() });
 const schema = z.object({
   projects: z.array(z.string()), coordinator: z.string().nullable(),
+  projectRepositories: z.record(z.string(), repositoryOverride).default({}),
   autoPinCoordinatorWorkspace: z.boolean().default(true),
   autoReplyToBoardFacts: z.boolean().default(true),
   factHistory: z.record(z.string(), factSchema).default({}),

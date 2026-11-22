@@ -102,8 +102,6 @@ export function DecisionActions({ card, theme, coordinator, coordinatorTitle, op
   }
 
   const targetChanged = editor?.action === "coordinate" && editor.recipientId !== coordinator;
-  const openLabel = formal ? t("원래 세션에서 승인 확인", "Review approval in original session") : t("담당 세션 열기", "Open assigned session");
-  const openButton = open && <Button theme={theme} {...named(openLabel)} selected={formal} onPress={() => open(session.id)} />;
   const sourceExcerpts = evidence.filter(text => text !== headline || headline.length > 36);
   const hasEvidence = !!decision?.recommendationReason || sourceExcerpts.length > 0;
   const adviceSent = !!coordinator && requestedFrom === coordinator;
@@ -114,10 +112,13 @@ export function DecisionActions({ card, theme, coordinator, coordinatorTitle, op
     </Pressable>;
   return <View style={{ gap: 7, paddingTop: 10, borderTopWidth: 1, borderColor: c.border }}>
     <Text accessibilityRole="header" selectable numberOfLines={hasEvidence ? 1 : undefined} style={{ color: c.foreground, fontSize: 15, fontWeight: "600" }}>{headline}</Text>
-    <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{marker}</Text>
-    {formal || !decision ? <View style={wrap}>{openButton || <Text style={{ color: c.foregroundMuted }}>
-      {formal ? t("원래 세션에서 승인 요청을 확인해 주세요.", "Review the approval request in the original session.") : t("원래 세션에서 요청을 확인해 주세요.", "Review the request in the original session.")}
-    </Text>}</View> : <>
+    <View style={{ ...wrap, alignItems: "center" }}>
+      <Text selectable style={{ color: c.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{marker}</Text>
+      <Button theme={theme} {...named(t("담당 세션 열기", "Open assigned session"))} disabled={!open} onPress={() => open?.(session.id)} />
+    </View>
+    {formal || !decision ? formal && <Text style={{ color: c.foregroundMuted }}>
+      {t("승인 요청은 담당 세션에서 확인해 주세요.", "Review the approval request in the assigned session.")}
+    </Text> : <>
       {!editor && <>
         {!proposed && !!decision.needsInput && decision.needsInput !== headline && <Text selectable style={{ color: c.foreground }}>{decision.needsInput}</Text>}
         {!!proposed && <Text selectable numberOfLines={reviewReply ? 2 : undefined} style={{ color: c.foreground }}>{chosen ? t("선택한 답장", "Selected reply") : t("추천 답장", "Suggested reply")} · {proposed}</Text>}
@@ -128,7 +129,7 @@ export function DecisionActions({ card, theme, coordinator, coordinatorTitle, op
             : coordinator ? adviceSent
               ? <Text accessibilityLiveRegion="polite" style={{ color: c.statusSuccess }}>{t("추천 요청됨 · 코디네이터 답변 대기", "Recommendation requested · Awaiting coordinator")}</Text>
               : <Button theme={theme} {...named(t("코디네이터에 추천 요청", "Ask coordinator for a recommendation"))} selected disabled={busy} onPress={() => void requestAdvice()} />
-            : openButton}
+            : null}
           {disclose(showMethods ? t("다른 방법 접기", "Hide alternatives") : t("다른 방법", "Other actions"), showMethods, () => setShowMethods(v => !v))}
         </View>
         {showMethods && <View style={{ gap: 7 }}>
@@ -143,7 +144,6 @@ export function DecisionActions({ card, theme, coordinator, coordinatorTitle, op
             <Button theme={theme} {...named(t("직접 답장", "Write a reply"))} disabled={busy} onPress={() => begin("reply")} />
             <Button theme={theme} {...named(t("질문하기", "Ask a question"))} disabled={busy} onPress={() => begin("question")} />
             {!!coordinator && coordinator !== session.id && <Button theme={theme} {...named(t("코디네이터에 조율 요청", "Ask coordinator to coordinate"))} disabled={busy} onPress={() => begin("coordinate")} />}
-            {(proposed || coordinator || decision.needsInput) && openButton}
           </View>
         </View>}
       </>}

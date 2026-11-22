@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { decisionSchema } from "./decision-actions";
+import { pullRequestViewSchema } from "./prs";
 import { factSchema } from "./board-facts";
 
 const sessionId = z.string().min(1).max(256);
@@ -50,7 +51,11 @@ export const boardSnapshot = defineRpc({
   input: z.object({}),
   output: z.object({ sessions: z.array(session), notes: z.record(z.string(), noteSchema),
     projects: z.array(z.object({ id: z.string(), title: z.string(), path: z.string(), selected: z.boolean() })),
-    coordinator: sessionId.nullable() }),
+    coordinator: sessionId.nullable(), pullRequests: pullRequestViewSchema.optional() }),
+});
+export const boardDecisionCount = defineRpc({
+  name: "board.decision-count", input: z.strictObject({}),
+  output: z.object({ count: z.number().int().nonnegative() }),
 });
 export const saveNote = defineRpc({
   name: "board.save-note",

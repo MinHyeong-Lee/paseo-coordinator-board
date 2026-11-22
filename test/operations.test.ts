@@ -21,7 +21,7 @@ const job: DispatchInput = {
   projectId, workspaceId, title: "Test", prompt: "Synthetic task", grade: "C",
   expectedRoute: route, requestKey: "synthetic-job-01",
 };
-type CreateInput = { agentId: string; idempotencyKey: string; clientMessageId: string; parent: string; config: { provider: string; modeId?: string }; prompt: string; metadata: Record<string, unknown> };
+type CreateInput = { agentId: string; idempotencyKey: string; clientMessageId: string; parent: string; config: { provider: string; modeId?: string; options?: { auto_accept?: boolean } }; prompt: string; metadata: Record<string, unknown> };
 type Rpc = { name: string; input: { parse(value: unknown): unknown }; output: { parse(value: unknown): unknown } };
 type Callback = (input: unknown, ctx: { paseo: unknown }) => Promise<unknown>;
 const page = <T,>(entries: T[]) => ({ entries, pageInfo: { hasMore: false, nextCursor: null } });
@@ -41,6 +41,7 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
   const sent: { agentId: string; text: string; messageId: string }[] = [];
   const events: string[] = [];
   const activity = { modes: [{id:"auto",label:"Default Permissions"}, {id:"auto-review",label:"Auto-review"}], beforeModelList: () => {}, providers: ["codex", "cursor"] };
+  const runtime = { supportsToolInvocations:true, supportsMcpServers:true };
   const paseo = {
     projects: { list: async () => ({projects: workspaces.map(w => ({projectId: w.projectId, projectDisplayName: w.projectDisplayName, projectRootPath: w.workspaceDirectory}))}) },
     workspaces: {
@@ -66,7 +67,8 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
       ref: (id: string) => ({ refresh: async () => {
         if (id === coordinator) return {agent: {id, workspaceId, status:"idle", activeTurn:null, pendingPermissions:[]}};
         const existing = sessions.get(id);
-        return existing ? {agent: {id, workspaceId, currentModeId: existing.config.modeId, status:"idle", pendingPermissions:[], metadata: existing.metadata}} : null;
+        return existing ? {agent: {id, workspaceId, provider:existing.config.provider.split("/", 1)[0], options:existing.config.options,
+          capabilities:runtime, currentModeId: existing.config.modeId, status:"idle", pendingPermissions:[], metadata: existing.metadata}} : null;
       }, send: async (text: string, options: {messageId: string}) => { sent.push({agentId:id, text, messageId:options.messageId}); } }),
     },
     providers: {
@@ -95,7 +97,7 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
     const output = await t.execute(t.input.parse(input) as never, { paseo, agent: { id: caller } } as unknown as PluginHandlerContext & {agent: {id: string}});
     return JSON.parse(output.text);
   }
-  return { handlers, events, sessions, sent, activity, store, call, tool };
+  return { handlers, events, sessions, sent, activity, runtime, store, call, tool };
 }
 
 test("digest requests follow the board language and older clients default to Korean", async () => {
@@ -200,6 +202,26 @@ test("catalog discovers new provider IDs, useful names and unavailable, empty an
   await expect(s.call(updateRouting,{grade:"A",candidates:[choice],expectedRevision:1})).rejects.toThrow(/등급/);
 });
 
+test("worker previews and dispatch share the same high-grade fallback, including Grok-only hosts and fresh changes", async () => {
+  for (const provider of ["cursor", "custom-agent", "grok"]) {
+    const s = scenario();
+    s.activity.providers = ["empty", "offline", provider];
+    const plan = await s.tool("plan_board_assignment", {});
+    const hooks = await s.tool("plan_board_assignment", {needsHooks:true});
+    expect(hooks.routes.every(r => r.route === null)).toBe(true);
+    for (const {grade, route:selected} of plan.routes) {
+      expect(selected?.provider).toBe(provider);
+      const input = {...job, grade, expectedRoute:selected, requestKey:"fallback-job-" + grade};
+      await expect(s.tool("assign_board_worker", {job:{...input, needsHooks:true}})).rejects.toThrow(/미리보기/);
+      const created = await s.tool("assign_board_worker", {job:input});
+      expect(s.sessions.get(created.sessionId)?.config.provider).toBe(provider + "/" + selected.model);
+    }
+    s.activity.providers.push("codex");
+    const old = plan.routes.find(r => r.grade === "A").route;
+    await expect(s.tool("assign_board_worker", {job:{...job, grade:"A", expectedRoute:old}})).rejects.toThrow(/미리보기/);
+  }
+});
+
 test("excluding a provider preserves ordered overrides across reloads, and gates preview, workers and new coordinator sessions", async () => {
   const s = scenario();
   await s.call(updateRouting,{grade:"C",candidates:[route,alternate],expectedRevision:0});
@@ -266,6 +288,41 @@ test("새 코디네이터는 지원되는 자동 심사 모드를 미리 보여 
   expect((await s.call(operationState, {})).coordinatorMode).toBeNull();
   await expect(s.call(setupCoordinator, {replace:true,expectedCoordinator:coordinator,expectedRoute:route})).rejects.toThrow(/권한 모드/);
   expect(s.sessions.size).toBe(0);
+});
+
+test("OpenCode and Copilot need their actual safe coordinator mode and a tool-capable snapshot before replacing anyone", async () => {
+  for (const [provider, modeId] of [["opencode", "build"], ["copilot", "https://agentclientprotocol.com/protocol/session-modes#agent"]]) {
+    const s = scenario();
+    s.activity.providers = [provider];
+    s.activity.modes = [{id:"allow-all",label:"Unrestricted"}, {id:"full-access",label:"Unrestricted"}];
+    const expectedRoute = {provider,model:alternate.model,effort:null};
+    const input = {replace:true, expectedCoordinator:coordinator, expectedRoute, expectedModeId:modeId};
+    expect((await s.call(operationState,{})).coordinatorMode).toBeNull();
+    await expect(s.call(setupCoordinator,input)).rejects.toThrow(/권한 모드/);
+    expect(s.sessions.size).toBe(0);
+    s.activity.modes.push({id:modeId,label:"Safe mode"});
+    expect((await s.call(operationState,{})).coordinatorMode).toEqual({id:modeId,label:"Safe mode"});
+    s.runtime.supportsMcpServers = false;
+    await expect(s.call(setupCoordinator,input)).rejects.toThrow(/도구 지원/);
+    expect(s.store.read().coordinator).toBe(coordinator);
+    s.runtime.supportsMcpServers = true;
+    const created = await s.call(setupCoordinator,input);
+    expect(s.sessions.size).toBe(1);
+    expect(s.store.read().coordinator).toBe(created.sessionId);
+    expect(s.sessions.get(created.sessionId)?.config.modeId).toBe(modeId);
+    if (provider === "opencode") expect(s.sessions.get(created.sessionId)?.config.options).toEqual({auto_accept:false});
+  }
+});
+
+test("M prefers a verified native mode and falls back only when available defaults lack one, never for an unknown agent mode", async () => {
+  const s = scenario();
+  s.activity.providers = ["opencode", "custom-agent", "codex"];
+  s.activity.modes = [{id:"build", label:"Build"}, {id:"auto-review",label:"Auto-review"}];
+  expect((await s.call(operationState,{})).coordinatorMode?.id).toBe("auto-review");
+  s.activity.modes = [{id:"build",label:"Build"}];
+  expect((await s.call(operationState,{})).coordinatorMode?.id).toBe("build");
+  s.activity.providers = ["custom-agent"];
+  expect((await s.call(operationState,{})).coordinatorMode).toBeNull();
 });
 
 test("생성과 교체 RPC가 Claude 권한 모드를 명시하고 다이제스트는 기존 세션에 텍스트만 보낸다", async () => {

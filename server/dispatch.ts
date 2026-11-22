@@ -15,6 +15,32 @@ type PaseoAgentConfig = Parameters<Sdk["agents"]["create"]>[0]["config"];
 type DispatchScope = { projects: string[]; routing: RoutePolicy; coordinator: string | null; excludedProviders: string[] };
 type Directory = { providers: Omit<ProviderEntry, "included">[]; catalog: CatalogModel[] };
 
+// Only built-in adapters with a known permission contract and a Paseo tool transport.
+// ACP mode names are provider-specific; a custom "agent" or "auto" is not evidence.
+const coordinatorModes = new Map<string, string[]>([
+  ["claude", ["auto", "default"]],
+  ["codex", ["auto-review", "auto"]],
+  ["copilot", ["https://agentclientprotocol.com/protocol/session-modes#agent"]],
+  ["opencode", ["build"]],
+]);
+
+async function readCoordinatorMode(paseo: Pick<Sdk, "providers">, provider: string) {
+  const ids = coordinatorModes.get(provider);
+  if (!ids) return null;
+  try {
+    const result = await paseo.providers.listModes(provider);
+    if (!result.error) {
+      for (const id of ids) {
+        const mode = result.modes?.find(m => m.id === id && m.colorTier !== "dangerous");
+        if (mode) return { id, label: mode.label };
+      }
+    }
+  } catch {
+    // A runner can still receive worker jobs when its coordinator mode is unknown.
+  }
+  return null;
+}
+
 export async function readProviderAvailability(paseo: Pick<Sdk, "providers">) {
   try {
     const result = await paseo.providers.listAvailable();
@@ -25,7 +51,7 @@ export async function readProviderAvailability(paseo: Pick<Sdk, "providers">) {
   throw new Error("호스트의 실행기 목록을 확인하지 못했습니다.");
 }
 
-export async function readProviderDirectory(paseo: Pick<Sdk, "providers">, cwd?: string, withLabels = false): Promise<Directory> {
+export async function readProviderDirectory(paseo: Pick<Sdk, "providers">, cwd?: string, withLabels = false, withCoordinatorModes = false): Promise<Directory> {
   const [availability, labels] = await Promise.all([
     readProviderAvailability(paseo),
     withLabels ? paseo.providers.snapshot().then(s => new Map(s.entries.map(e => [e.provider, e.label]))).catch(() => null) : null,
@@ -40,12 +66,15 @@ export async function readProviderDirectory(paseo: Pick<Sdk, "providers">, cwd?:
       try {
         const result = await paseo.providers.listModels(provider, cwd ? { cwd } : undefined);
         if (!result.error && Array.isArray(result.models)) {
+          const coordinatorMode = withCoordinatorModes && result.models.some(m => m.isSelectable !== false)
+            ? await readCoordinatorMode(paseo, provider) : null;
           for (const model of result.models) {
             if (model.isSelectable === false) continue;
             models.push({
               provider, model: model.id, label: model.label, isDefault: !!model.isDefault,
               // Cursor exposes effort variants as selectable model IDs.
               efforts: provider === "cursor" ? [] : (model.thinkingOptions ?? []).map(option => option.id),
+              ...(withCoordinatorModes ? { coordinatorMode } : {}),
             });
           }
           info.modelCount = models.length;
@@ -60,8 +89,8 @@ export async function readProviderDirectory(paseo: Pick<Sdk, "providers">, cwd?:
   return { providers: rows.map(row => row.info), catalog: rows.flatMap(row => row.models) };
 }
 
-export async function readCatalog(paseo: Pick<Sdk, "providers">, cwd?: string) {
-  const directory = await readProviderDirectory(paseo, cwd);
+export async function readCatalog(paseo: Pick<Sdk, "providers">, cwd?: string, withCoordinatorModes = false) {
+  const directory = await readProviderDirectory(paseo, cwd, false, withCoordinatorModes);
   const available = directory.providers.filter(p => p.available);
   if (available.length && available.every(p => p.status === "error"))
     throw new Error("이 호스트의 모델 목록을 읽지 못했습니다. 연결을 확인하고 다시 시도해 주세요.");
