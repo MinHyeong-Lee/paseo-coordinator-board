@@ -13,6 +13,7 @@ import {
 } from "../shared/operations";
 import { resolveRoute } from "../shared/dispatch";
 import { Button, SessionChip, type Theme } from "./controls";
+import { PhotoComposer, usePhotoDraft } from "./photo-composer";
 import { ProviderSettings } from "./providers";
 import { FactReplyControls } from "./fact-reply-controls";
 import { CoordinatorPinControls } from "./coordinator-pin";
@@ -44,12 +45,14 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [text, setText] = useState("");
+  const photoDraft = usePhotoDraft();
+  const hasRequest = Boolean(text.trim() || photoDraft.photos.length);
   const [inputFocused, setInputFocused] = useState(false);
   const [feedbackArea, setFeedbackArea] = useState<"provider" | "routing" | "coordinator">("provider");
   const pending = useRef(false),
     live = useRef(false),
     generation = useRef(0);
-  const delivery = useRef({ payload: "", key: "" });
+  const delivery = useRef({ work: { payload: "", key: "" }, digest: { payload: "", key: "" } });
   const fetchRef = useRef(fetchState);
   fetchRef.current = fetchState;
   const refresh = useCallback(async (clearError = true) => {
@@ -83,7 +86,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   }, [needsModels, settings, refresh]);
   useEffect(() => {
     setConfirm(false);
-    delivery.current = { payload: "", key: "" };
+    delivery.current = { work: { payload: "", key: "" }, digest: { payload: "", key: "" } };
   }, [coordinator]);
   useEffect(() => {
     setConfirm(false);
@@ -113,25 +116,34 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     }
   }
   async function post(kind: "digest" | "work") {
-    if (!coordinator || pending.current) return;
+    if (!coordinator || pending.current || photoDraft.readPending.current) return;
+    const images = photoDraft.latest.current;
     const message = text.trim();
-    if (kind === "work" && !message) return;
-    const payload = JSON.stringify([kind, coordinator, kind === "digest" ? language : message]);
-    if (delivery.current.payload !== payload)
-      delivery.current = {
+    if (kind === "work" && !message && !images.length) return;
+    const payload = JSON.stringify(kind === "digest" ? [coordinator, language] : [coordinator, message, images.map(photo => photo.id)]);
+    if (delivery.current[kind].payload !== payload)
+      delivery.current[kind] = {
         payload,
         key: "board-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2),
       };
-    const input = { coordinator, requestKey: delivery.current.key };
+    const input = { coordinator, requestKey: delivery.current[kind].key };
     const receipt = await act(
-      () => (kind === "digest" ? sendDigest({ ...input, language, handleBoardFacts: true }) : sendWork({ ...input, text: message })),
+      async () => {
+        const result = kind === "digest" ? await sendDigest({ ...input, language, handleBoardFacts: true })
+          : await sendWork({ ...input, text: message, ...(images.length > 0 && { images: images.map(photo => photo.image) }) });
+        if (!result.ok) throw Error(t("전송을 확인하지 못했습니다. 다시 시도해 주세요.", "Delivery was not confirmed. Please retry."));
+        return result;
+      },
       kind === "digest"
         ? t("다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요.", "Digest requested. Open the coordinator session to read the response.")
         : t("코디네이터에게 맡겼습니다. 세션에서 배정과 진행을 확인하세요.", "Request sent. Open the coordinator session to follow the assignment."),
     );
     if (receipt && live.current) {
-      delivery.current = { payload: "", key: "" };
-      if (kind === "work") setText("");
+      delivery.current[kind] = { payload: "", key: "" };
+      if (kind === "work") {
+        setText("");
+        photoDraft.clear();
+      }
     }
   }
   if (!settings && !configured && !coordinator) return null;
@@ -217,14 +229,17 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     </View>
     {coordinator ? <>
       <Text style={{ color, fontWeight: "600" }}>{t("코디네이터에게 맡길 일", "Request for the coordinator")}</Text>
-      <TextInput accessibilityLabel={t("코디네이터에게 맡길 일", "Request for the coordinator")} placeholder={t("예: 초안 작성과 자료 검증을 나눠 맡겨 주세요", "Example: Assign the first draft and source checks separately.")} value={text}
-        placeholderTextColor={muted} style={{ minHeight: 64, padding: 10, textAlignVertical: "top", color,
-          backgroundColor: theme.colors.surface0, borderColor: inputFocused ? theme.colors.accent : muted, borderWidth: 2, borderRadius: 7 }}
-        onFocus={() => setInputFocused(true)} onBlur={() => setInputFocused(false)}
-        editable={!busy} multiline maxLength={24000} onChangeText={setText} />
+      <PhotoComposer theme={theme} disabled={busy} draft={photoDraft} text={text}
+        openSession={openCoordinator ? () => openCoordinator(coordinator) : undefined}>
+        <TextInput accessibilityLabel={t("코디네이터에게 맡길 일", "Request for the coordinator")} placeholder={t("예: 초안 작성과 자료 검증을 나눠 맡겨 주세요", "Example: Assign the first draft and source checks separately.")} value={text}
+          placeholderTextColor={muted} style={{ minHeight: 64, padding: 10, textAlignVertical: "top", color,
+            backgroundColor: theme.colors.surface0, borderColor: inputFocused ? theme.colors.accent : muted, borderWidth: 2, borderRadius: 7 }}
+          onFocus={() => setInputFocused(true)} onBlur={() => setInputFocused(false)}
+          editable={!busy} multiline maxLength={24000} onChangeText={setText} />
+      </PhotoComposer>
       <View style={wrap}>
-        <Button theme={theme} label={t("코디네이터에 요청 보내기", "Send to coordinator")} selected={!!text.trim() && !!configured && !busy} disabled={busy || !configured || !text.trim()} onPress={() => void post("work")} />
-        <Button theme={theme} label={t("다이제스트 요청", "Request digest")} disabled={busy || !configured} onPress={() => void post("digest")} />
+        <Button theme={theme} label={t("코디네이터에 요청 보내기", "Send to coordinator")} selected={hasRequest && configured && !busy && !photoDraft.reading} disabled={busy || !configured || !hasRequest || photoDraft.reading} onPress={() => void post("work")} />
+        <Button theme={theme} label={t("다이제스트 요청", "Request digest")} disabled={busy || photoDraft.reading || !configured} onPress={() => void post("digest")} />
       </View>
       <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("작업 요청은 코디네이터에게 전달됩니다. 다이제스트는 내 결정과 추천 답장을 모읍니다. 자동 답장이 켜져 있으면 보드에서 확인한 사실 질문도 처리합니다.", "Requests go to the coordinator. A digest gathers decisions and suggested replies. When automatic replies are on, it also answers verified board questions.")}</Text>
     </> : <>

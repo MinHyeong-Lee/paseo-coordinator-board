@@ -1,5 +1,6 @@
 import { defineAgentTool, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { askDigest, operationState, requestWork, setProviderInclusion, setupCoordinator, updateRouting } from "../shared/operations";
 import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import { dispatchInputSchema, includedCatalog, sameRoute, workerGradeSchema } from "../shared/dispatch";
@@ -98,12 +99,24 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       const cycle = input.handleBoardFacts && facts ? await facts.prepareCycle(paseo, input.coordinator, input.requestKey) : null;
       if (cycle && facts) {
         return sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, digestWithFactReplies(language, cycle),
-          messageId => facts.bindMessage(input.coordinator, cycle, messageId));
+          {beforeSend: messageId => facts.bindMessage(input.coordinator, cycle, messageId)});
       }
       return sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, language === "en" ? englishDigestPrompt : digestPrompt);
     });
     server.handle(requestWork, (input, { paseo }) =>
-      sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.text),
+      sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.text, {
+        images: input.images,
+        beforeSend(messageId) {
+          const key = createHash("sha256").update(JSON.stringify([input.coordinator, input.requestKey])).digest("hex");
+          // Reserve the content before the SDK call so an uncertain or simultaneous
+          // delivery can only be retried with the same message. Never persist photos.
+          store.change(scope => {
+            const reserved = scope.workRequestIds[key];
+            if (reserved && reserved !== messageId) throw new Error("내용이나 사진이 달라졌습니다. 새 요청으로 보내 주세요.");
+            scope.workRequestIds[key] = messageId;
+          });
+        },
+      }),
     );
   }
   const plan = defineAgentTool({

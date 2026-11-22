@@ -19,7 +19,7 @@ required = {
     "server/preferences.ts", "server/conversation.ts", "server/coordinator.ts",
     "server/notes.ts", "server/discovery.ts", "server/reporting.ts", "client/board.tsx",
     "shared/dispatch.ts", "shared/operations.ts", "server/dispatch.ts", "server/operations.ts", "server/lifecycle.ts",
-    "server/digest.ts", "client/coordinator-pin.tsx", "client/operations.tsx", "client/route-editor.tsx", "client/providers.tsx",
+    "server/digest.ts", "client/coordinator-pin.tsx", "client/operations.tsx", "client/photo-composer.tsx", "client/work-photos.ts", "client/route-editor.tsx", "client/providers.tsx",
     "client/hosts.tsx", "shared/hosts.ts", "client/route-options.ts",
     "server/decisions.ts", "shared/decision-actions.ts", "client/decision-actions.tsx",
     "server/board-facts.ts", "shared/board-facts.ts", "client/fact-reply-controls.tsx",
