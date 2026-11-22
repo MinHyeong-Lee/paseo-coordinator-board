@@ -7,9 +7,9 @@ import { decisionCount } from "../shared/decision-count";
 import { matchesWorkspace } from "../shared/workspace-pull";
 import type { PullRequestItem } from "../shared/prs";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { DecisionActions, ReceiptText, type DecisionReceipt } from "./decision-actions";
+import { DecisionActions, type DecisionReceipt } from "./decision-actions";
 import { SessionLinks } from "./session-links";
 import { useRemoteRunning, RemoteRunning } from "./remote-running";
 import { BoardHosts } from "./hosts";
@@ -73,6 +73,21 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const inFilter=(id:string|null)=>!filters.length || filters.includes(id);
   const {records:filteredRecords,sessions:filteredSessions,prs:filteredPrs}=decisionsFor(inFilter);
   const filteredTotal=filteredRecords.length+filteredSessions.length+filteredPrs.length;
+  const filteredHistory=history.filter(entry=>inFilter(entry.projectId));
+  const [historyOpen,setHistoryOpen]=useState<boolean|null>(null);
+  const showHistory=historyOpen ?? (filteredTotal===0);
+  const scroll=useRef<ScrollView>(null);
+  const historyY=useRef(0);
+  const [sentNotice,setSentNotice]=useState<{projectId:string|null}|null>(null);
+  useEffect(()=>{
+    if (!sentNotice) return;
+    const timer=setTimeout(()=>setSentNotice(null),10000);
+    return ()=>clearTimeout(timer);
+  },[sentNotice]);
+  function revealHistory() {
+    setHistoryOpen(true);
+    requestAnimationFrame(()=>scroll.current?.scrollTo({y:Math.max(0,historyY.current-12),animated:true}));
+  }
   const projectName=(id:string|null)=>names.get(id ?? "") ?? id ?? t("공통","Host-wide");
   function toggleFilter(id:string|null) {
     setChosenProjects(previous=>{
@@ -97,11 +112,11 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const remaining = [filteredRecords.length, filteredSessions.length, filteredPrs.length].reduce((sum,n) => sum + Math.max(0, n - digestLimit), 0);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
-  const latestMoved = receipts.find(r => inFilter(r.projectId) && snapshot?.projects.some(p => p.id === r.projectId && p.selected) && !human.some(card => card.session.id === r.sessionId && card.session.projectId === r.projectId));
   const renderDecision = (card: Card) => <DecisionActions key={JSON.stringify([card.session.projectId, card.session.id, card.session.decision?.version])}
           card={card} hostLabel={hostLabel} theme={theme} coordinator={snapshot!.coordinator} coordinatorTitle={snapshot!.sessions.find(s => s.id === snapshot!.coordinator)?.title}
           open={actions.onOpen} receipt={receipts.find(r => matches(r, card))}
           onSent={result => {
+            setSentNotice({projectId:result.projectId});
             setReceipts(prior => [result, ...prior.filter(r => !(r.projectId === result.projectId && r.sessionId === result.sessionId))].slice(0, 20));
             onRefresh();
           }} />;
@@ -133,14 +148,17 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
           const native = human.find(card => card.session.id === item.matchedSessionId);
           const pr = item.matchedPull && readyPrs.find(pr => pr.repo === item.matchedPull?.repo && pr.number === item.matchedPull.number);
           return <TrackedDecisionCard key={item.key} item={item} theme={theme}
-            recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={onRefresh}>
+            recipientId={native && !item.questions.length ? undefined : trackedRecipient(item,snapshot!.coordinator,snapshot!.sessions)} open={!native ? linkedSession(item) : undefined} onResolved={status=>{
+              if (status==="sent") setSentNotice({projectId:item.projectId});
+              onRefresh();
+            }}>
             {native && renderDecision(native)}
             {pr && renderPull(pr, pr.projectIds.includes(item.projectId ?? "") ? item.projectId! : pr.projectIds[0], true)}
           </TrackedDecisionCard>;
         };
   const c = theme.colors;
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
+    <ScrollView ref={scroll} style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ gap: 20, padding: layout.compact ? 12 : 22 }}>
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
         <View style={{ flex: 1, minWidth: 140, gap: 3 }}>
           <Text style={{ color: c.foreground, fontSize: 22, fontWeight: "700" }} accessibilityRole="header">{settings ? t("코디네이터 보드 설정", "Coordinator board settings") : t("세션별 코디네이터 보드", "Session coordinator board")}</Text>
@@ -197,7 +215,10 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
               label={`${projectName(id)} · ${count}`} onPress={() => toggleFilter(id)} />)}
           </View>}
         </View>}
-        <ReplyHistory entries={history.filter(entry=>inFilter(entry.projectId))} theme={theme} open={actions.onOpen} />
+        {sentNotice && inFilter(sentNotice.projectId) && <View style={{flexDirection:"row",alignItems:"center",gap:8}}>
+          <Text accessibilityLiveRegion="polite" style={{color:c.statusSuccess}}>{t("전송했습니다.","Message sent.")}</Text>
+          {!!filteredHistory.length && <Button theme={theme} label={t("기록 보기","View activity")} onPress={revealHistory} />}
+        </View>}
         {incomplete &&
           <Text accessibilityLiveRegion="polite" style={{ color: c.statusWarning }}>{t("일부 결정 기록을 읽지 못했습니다. 현재 건수에는 확인한 항목만 포함됩니다.", "Some decision records could not be loaded. The count includes the available items.")}</Text>}
         {filters.length > 0 && !filteredTotal && total > 0 && !incomplete && <Text style={{color:c.foregroundMuted}}>{t("선택한 프로젝트에 결정할 일이 없습니다.","No decisions in the selected projects.")}</Text>}
@@ -205,10 +226,12 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
         {mergeNotice && inFilter(mergeNotice.projectId) && snapshot.projects.some(p => p.selected && p.id === mergeNotice.projectId) && (mergeNotice.status === "merged" || mergeNotice.status === "already-merged" ||
           !readyPrs.some(pr => pr.repo + " #" + pr.number === mergeNotice.target)) && <MergeFeedback notice={mergeNotice} theme={theme} />}
         {filteredPrs.slice(0,digestLimit).map(pr => renderPull(pr,pr.projectIds.find(inFilter) ?? pr.projectIds[0],true))}
-        {latestMoved && <ReceiptText receipt={latestMoved} theme={theme} />}
         {filteredRecords.slice(0,digestLimit).map(renderRecord)}
         {filteredSessions.slice(0,digestLimit).map(renderDecision)}
         {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
+      </View>}
+      {!settings && configured && filteredHistory.length>0 && <View onLayout={event=>{historyY.current=event.nativeEvent.layout.y;}}>
+        <ReplyHistory entries={filteredHistory} theme={theme} open={actions.onOpen} expanded={showHistory} onToggle={()=>setHistoryOpen(!showHistory)} />
       </View>}
       {!settings && snapshot && !displayed.size && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
       {!settings && (displayed.size > 0 || byProject.has(null)) && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
