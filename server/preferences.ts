@@ -1,0 +1,57 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { routePolicySchema } from "../shared/dispatch";
+
+export const judgment = z.object({
+  evidenceId: z.string(), kind: z.enum(["question", "review", "idle"]), text: z.string().trim().min(1).max(1200),
+});
+const coordinatorConfig = z.object({ provider: z.string(), thinkingOptionId: z.string().optional(), modeId: z.string().optional() });
+const schema = z.object({
+  projects: z.array(z.string()), coordinator: z.string().nullable(),
+  judgments: z.record(z.string(), judgment.extend({ projectId: z.string() })),
+  routing: routePolicySchema.default({}),
+  excludedProviders: z.array(z.string().min(1).max(256)).default([]),
+  routingRevision: z.number().int().nonnegative().default(0),
+  pendingCoordinator: z.object({
+    id: z.string(), previous: z.string().nullable(),
+    config: coordinatorConfig,
+  }).optional(),
+  createdCoordinator: z.object({
+    id: z.string(), previous: z.string().nullable(), workspaceId: z.string(), config: coordinatorConfig,
+  }).optional(),
+});
+export type Preferences = z.infer<typeof schema>;
+
+export function isManagedCoordinator(scope: Preferences, id: string | null) {
+  return id !== null && scope.createdCoordinator?.id === id;
+}
+
+export function setCoordinator(scope: Preferences, id: string | null) {
+  scope.coordinator = id;
+  // A person's new selection supersedes any creation still in progress.
+  delete scope.pendingCoordinator;
+  // Judgments belong to the observed project/session and evidence, not the writer.
+}
+
+export class PreferenceStore {
+  constructor(private readonly path: string) {}
+  read(): Preferences {
+    try { return schema.parse(JSON.parse(readFileSync(this.path, "utf8"))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return schema.parse({ projects: [], coordinator: null, judgments: {} });
+      throw error;
+    }
+  }
+  change(edit: (value: Preferences) => void) {
+    const value = this.read();
+    edit(value);
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const temp = this.path + "." + randomUUID();
+    try {
+      writeFileSync(temp, JSON.stringify(value), { flag: "wx", mode: 0o600 });
+      renameSync(temp, this.path);
+    } finally { rmSync(temp, { force: true }); }
+  }
+}

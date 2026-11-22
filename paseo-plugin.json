@@ -1,0 +1,17 @@
+{
+  "id": "coordinator-board",
+  "name": "Coordinator Board",
+  "description": "Coordinate managed projects, route work to local sessions, and review decisions that need a person.",
+  "requirements": {
+    "paseo": ">=0.16.2"
+  },
+  "translations": {
+    "ko": {
+      "name": "세션별 코디네이터 보드",
+      "description": "코디네이터에게 일을 맡기고, 프로젝트별 진행과 내가 결정할 일을 한곳에서 확인합니다."
+    }
+  },
+  "media": [
+    "assets/preview.png"
+  ]
+}

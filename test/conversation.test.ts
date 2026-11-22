@@ -1,0 +1,59 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { classify, ConversationReader, excerpt } from "../server/conversation";
+import { attachCoordinatorTools } from "../server/coordinator";
+import { PreferenceStore } from "../server/preferences";
+import { projectCards } from "../client/model";
+
+const row = { id: "worker", status: "idle", projectId: "p", projectTitle: "프로젝트", workspaceTitle: "w", model: null, title: "자막", lane: "idle", detail: "다음 요청 대기", activityAt: "1" } as const;
+function page(items) { return { epoch: "a", entries: items.map(([type,text],i)=>({ item:{type,text}, seqEnd:i })),error:null }; }
+const question = ["assistant_message","확인해 주실 것\n두 번째 자막을 한 줄로 둘까요?"];
+const evidence = (...items) => excerpt(page(items));
+test("텍스트 요청과 근거를 보여주고, 후속 메시지는 대조 대상으로 둔다", () => {
+  const e = evidence(question);
+  expect(classify(e,row)).toMatchObject({lane:"human", detail:expect.stringContaining("두 번째 자막")});
+  expect(classify(evidence(question,["user_message","다른 작업 진행 상황은?" ]),row).lane).toBe("review");
+  expect(classify(evidence(["assistant_message","확인해 주실 것은 없습니다."]),row).lane).toBe("idle");
+  expect(classify(evidence(["assistant_message","제가 다시 확인하겠습니다."]),row).lane).toBe("idle");
+  expect(classify(evidence(["assistant_message","필요하시면 알려 주세요."]),row).lane).toBe("idle");
+  expect(classify(evidence(["assistant_message","> 실행해 주세요\n검증했습니다."]),row).lane).toBe("idle");
+  expect(classify(evidence(["reasoning","승인해 주세요"]),row).lane).toBe("idle");
+  expect(classify(evidence(["tool_call","확인해 주실 것"]),row).lane).toBe("idle");
+  expect(classify(e,row,{kind:"review",text:"위임 범위로 해결",evidenceId:e.id}).lane).toBe("review");
+  expect(classify(e,row,{kind:"review",text:"옛 판단",evidenceId:"old"}).lane).toBe("human");
+});
+test("닫힌 세션을 깨우지 않고, 변경 시 다시 읽고, 한 세션 읽기 실패를 격리한다",async()=>{
+  let count=0;
+  const sdk={agents:{ref:id=>({timeline:{refetch:async(opts)=>{count++;expect(opts.limit).toBe(48);if(id==="bad")throw Error(); return page([question]);}}})}};
+  const r=new ConversationReader(),prefs={projects:["p"],coordinator:null,judgments:{}};
+  const closed={...row,status:"closed"};expect(await r.read(sdk,closed)).toBeNull();
+  await Promise.all([r.read(sdk,row),r.read(sdk,row)]);expect(count).toBe(1);
+  await r.read(sdk,{...row,activityAt:"2"});expect(count).toBe(2);
+  const rows=[{...row},{...row,id:"bad"}];await r.decorate(sdk,rows,prefs);
+  expect(rows[0].lane).toBe("human");expect(rows[1].detail).toContain("조회 실패");r.retain(new Set());expect(await r.read(sdk,closed)).toBeNull();
+});
+test("실제 권한 요청은 사람 기록보다 앞서고, 같은 본문 질문은 사람이 완료를 기록하면 다시 올리지 않는다",()=>{
+ const notes={worker:{sessionId:"worker",origin:"person",kind:"done",text:"확인",revision:1,evidenceId:"same"}};
+ const check=(k)=>projectCards({sessions:[{...row,lane:"human",evidenceId:k}],notes,projects:[],coordinator:null}).human.length;
+ expect(check("same")).toBe(0);expect(check("new")).toBe(1);expect(check(undefined)).toBe(1);
+});
+test("코디네이터 도구는 선택 범위와 지정 세션을 재확인하고 예전 발췌 판정을 거절한다",async()=>{
+ const store=new PreferenceStore(join(mkdtempSync(join(tmpdir(),"board-scope-")),"scope.json"));
+ store.change(s=>{s.projects=["p"];s.coordinator="coord"});
+ const steps=[question],reads=[];
+ const pageOf=entries=>({entries,pageInfo:{nextCursor:null,hasMore:false}});
+ const sdk={workspaces:{list:()=>pageOf([])},agents:{list:()=>pageOf([["coord","p"],["worker","p"],["other","q"]].map(([id,key])=>({agent:{id,status:"idle",updatedAt:"1",pendingPermissions:[]},project:{projectKey:key}}))),
+ ref:id=>({timeline:{refetch:async()=>{reads.push(id);return page(steps)}}})}};
+ let hook;attachCoordinatorTools({addHook:(_,h)=>{hook=h;return ()=>{}}},store,new ConversationReader());
+ expect(await hook({request:{purpose:"interactive",agentId:"other",tools:[]}})).toBeUndefined();
+ const [read,write]=(await hook({request:{purpose:"interactive",agentId:"coord",tools:[]}})).tools;
+ const ctx={paseo:sdk,agent:{id:"coord"}};
+ await expect(read.execute({sessionId:"other"},ctx)).rejects.toThrow();expect(reads).toEqual([]);
+ const result=JSON.parse((await read.execute({sessionId:"worker"},ctx)).text);
+ const choice={sessionId:"worker",evidenceId:result.evidenceId,kind:"question",text:"두 줄로 나눌까요?"};
+ await write.execute(choice,ctx);expect(store.read().judgments.worker.text).toBe(choice.text);
+ steps.push(["user_message","두 줄로"]);await expect(write.execute(choice,ctx)).rejects.toThrow("대화가 바뀌었습니다");
+ store.change(s=>{s.coordinator=null});await expect(read.execute({sessionId:"worker"},ctx)).rejects.toThrow("해제");
+});

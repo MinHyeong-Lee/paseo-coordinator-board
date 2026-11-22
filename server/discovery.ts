@@ -1,0 +1,80 @@
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import { reportingKey, type SessionRow } from "../shared/contract";
+
+type Sdk = PluginHandlerContext["paseo"];
+type AgentPage = Awaited<ReturnType<Sdk["agents"]["list"]>>;
+type Entry = AgentPage["entries"][number];
+type WorkspacePage = Awaited<ReturnType<Sdk["workspaces"]["list"]>>;
+type Workspace = WorkspacePage["entries"][number];
+type PageRequest = { limit: number; cursor?: string };
+type Page<T> = { entries: T[]; pageInfo: { hasMore: boolean; nextCursor: string | null } };
+
+// Cursor order must remain stable when a session starts or finishes between pages.
+export async function readPages<T>(read: (page: PageRequest) => Promise<Page<T>>): Promise<T[]> {
+  const entries: T[] = [];
+  const visited = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await read(cursor ? { limit: 100, cursor } : { limit: 100 });
+    entries.push(...page.entries);
+    if (!page.pageInfo.hasMore) return entries;
+    const next = page.pageInfo.nextCursor;
+    if (!next || visited.has(next)) throw new Error("Paseo가 다음 목록 페이지를 반환하지 않았습니다. 새로 고쳐 주세요.");
+    visited.add(next);
+    cursor = next;
+  }
+}
+
+function observedState(agent: Entry["agent"]): Pick<SessionRow, "lane" | "detail"> {
+  const pending = agent.pendingPermissions.length;
+  if (pending) return { lane: "human", detail: `응답을 기다리는 요청 ${pending}건` };
+  if (agent.attentionReason === "permission") return { lane: "human", detail: "세션에서 응답 요청 확인" };
+  if (agent.status === "error" || agent.attentionReason === "error") {
+    return { lane: "review", detail: "오류 확인 필요" };
+  }
+  if (agent.status === "running" || agent.activeTurn) return { lane: "running", detail: "작업 중" };
+  if (agent.status === "initializing") return { lane: "unknown", detail: "세션을 여는 중" };
+  if (agent.lastError) return { lane: "review", detail: "마지막 오류 확인 필요" };
+  if (agent.requiresAttention || agent.attentionReason === "finished") {
+    return { lane: "review", detail: "세션 결과 확인 필요" };
+  }
+  if (agent.status === "idle" || agent.status === "closed") {
+    const count = agent.backgroundWork?.count ?? 0;
+    return { lane: "idle", detail: count ? `대화 대기 · 백그라운드 작업 ${count}개` : agent.status === "idle" ? "다음 요청 대기" : "대화 종료" };
+  }
+  return { lane: "unknown", detail: "세션 상태 미확인" };
+}
+
+export async function discoverSessions(paseo: Pick<Sdk, "agents" | "workspaces">): Promise<SessionRow[]> {
+  const [entries, workspaces] = await Promise.all([
+    readPages<Entry>((page) => paseo.agents.list({
+      filter: { includeArchived: false, includeBackground: true },
+      sort: [{ key: "created_at", direction: "asc" }], page,
+    })),
+    readPages<Workspace>((page) => paseo.workspaces.list({
+      filter: { includeBackground: true }, sort: [{ key: "project_id", direction: "asc" }], page,
+    })),
+  ]);
+  const byWorkspace = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  const rows = new Map<string, SessionRow>();
+  for (const { agent, project } of entries) {
+    const workspace = agent.workspaceId ? byWorkspace.get(agent.workspaceId) : undefined;
+    if (agent.archivedAt || agent.internal || workspace?.archivingAt) {
+      rows.delete(agent.id);
+      continue;
+    }
+    rows.set(agent.id, {
+      id: agent.id,
+      title: agent.title?.trim() || `세션 ${agent.id.slice(0, 8)}`,
+      projectId: workspace?.projectId || project.projectKey || "unassigned",
+      projectTitle: workspace?.projectCustomName?.trim() || workspace?.projectDisplayName || project.projectName || "프로젝트 미확인",
+      workspaceTitle: workspace?.title?.trim() || workspace?.name || project.workspaceName || "워크스페이스 미확인",
+      provider: agent.provider?.trim() || null,
+      model: agent.model?.trim() || null,
+      ...(agent.metadata?.[reportingKey] === true ? { reporting: true } : {}),
+      status: agent.status, activityAt: agent.updatedAt,
+      ...observedState(agent),
+    });
+  }
+  return [...rows.values()];
+}

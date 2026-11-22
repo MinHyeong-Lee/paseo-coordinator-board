@@ -1,0 +1,117 @@
+name: Verify and package
+
+on:
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag of an existing draft or published release (e.g. v0.4.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      commit: ${{ steps.package.outputs.commit }}
+    steps:
+      - name: Check out the pull request or release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.0'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build and verify the versioned ZIP
+        id: package
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$ ]]
+          if [[ "$GITHUB_EVENT_NAME" != pull_request && "$TAG" != "v$version" ]]; then
+            echo "::error::The release tag must be v$version."
+            exit 1
+          fi
+          npm run package:zip
+          zip="dist/coordinator-board-$version.zip"
+          unzip -tq "$zip"
+          unzip -p "$zip" coordinator-board/package.json |
+            node -e 'const fs = require("fs"); if (JSON.parse(fs.readFileSync(0, "utf8")).version !== process.argv[1]) process.exit(1)' "$version"
+          {
+            echo "version=$version"
+            echo "sha256=$(sha256sum "$zip" | cut -d' ' -f1)"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Keep the verified release ZIP
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-release-zip
+          path: dist/coordinator-board-${{ steps.package.outputs.version }}.zip
+          if-no-files-found: error
+          overwrite: true
+
+  release-asset:
+    needs: verify
+    if: >-
+      github.event.sender.type == 'User' &&
+      (github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch && github.ref_type == 'branch'))
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: release-zip-${{ needs.verify.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-release-zip
+          path: package
+      - name: Attach the verified ZIP to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          SHA256: ${{ needs.verify.outputs.sha256 }}
+          COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          asset="coordinator-board-$VERSION.zip"
+          zip="package/$asset"
+          echo "$SHA256  $zip" | sha256sum -c -
+          target=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs%2Ftags%2F$tag" --jq .sha)
+          if [[ "$target" != "$COMMIT" ]]; then
+            echo "::error::The release tag moved after verification."
+            exit 1
+          fi
+          names=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if grep -Fxq "$asset" <<< "$names"; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$RUNNER_TEMP"
+            if cmp -s "$zip" "$RUNNER_TEMP/$asset"; then
+              echo "Release already has the verified ZIP."
+              exit 0
+            fi
+            echo "::error::A different ZIP with this name is already on the release."
+            exit 1
+          fi
+          gh release upload "$tag" "$zip" --repo "$GITHUB_REPOSITORY"

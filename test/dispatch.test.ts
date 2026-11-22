@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { test } from "bun:test";
+import { createPaseoApi } from "@getpaseo/client";
+import { dispatchWorker, readCatalog, readManagedWorkspaces } from "../server/dispatch";
+import { resolveRoute, validateCandidates, type CatalogModel, type DispatchInput, type RouteChoice } from "../shared/dispatch";
+
+const gemini: RouteChoice = { provider: "cursor", model: "gemini-4-neon-high", effort: null };
+const sol: RouteChoice = { provider: "codex", model: "gpt-6.2-sol", effort: "high" };
+const models: CatalogModel[] = [
+  { ...gemini, label: "Gemini", efforts: [], isDefault: true },
+  { ...sol, label: "Sol", efforts: ["low", "high"], isDefault: true },
+];
+
+test("개인 배정표의 우선·예비·필수 훅을 같은 순서로 판정하고 사라진 모델로 조용히 배정하지 않는다", () => {
+  const policy = { C: [gemini, sol] };
+  assert.deepEqual(resolveRoute("C", policy, models), gemini);
+  assert.deepEqual(resolveRoute("C", policy, models, true), sol);
+  assert.deepEqual(resolveRoute("C", policy, models.slice(1)), sol);
+  assert.equal(resolveRoute("C", { C: [gemini] }, models.slice(1)), null);
+  for (const grade of ["A", "B", "M"] as const) {
+    assert.equal(resolveRoute(grade, {}, [models[0]]), null);
+    assert.throws(() => validateCandidates(grade, [gemini], models), /등급/);
+  }
+  assert.throws(() => validateCandidates("C", [gemini, gemini], models), /두 번/);
+  assert.throws(() => validateCandidates("C", [{ ...gemini, effort: "high" }], models), /추론 강도/);
+  assert.deepEqual(resolveRoute("M", {}, models), sol);
+  const astro = { provider: "codex", model: "gpt-6.2-astra", label: "Astra", efforts: ["high", "xhigh"], isDefault: false };
+  assert.equal(resolveRoute("A", {}, [...models, astro])?.effort, "xhigh");
+  assert.equal(resolveRoute("B", {}, [...models, astro])?.effort, "high");
+  assert.equal(resolveRoute("D", {}, []), null);
+  assert.equal(resolveRoute("C", {}, [{ ...models[0], provider: "grok" }]), null);
+});
+
+type DaemonClient = Parameters<typeof createPaseoApi>[0];
+type Create = Parameters<DaemonClient["createAgent"]>[0];
+const workspace = { id: "space-1", projectId: "project-1", name: "main", workspaceDirectory: "/tmp/synthetic-project" };
+const state = { excludedProviders: [], projects: [workspace.projectId], coordinator: "coord", routing: { C: [gemini, sol] } };
+const task: DispatchInput = {
+  projectId: workspace.projectId, workspaceId: workspace.id, grade: "C", requestKey: "request-dispatch-01",
+  title: "문서 교정", prompt: "오탈자를 확인해 줘.", expectedRoute: gemini,
+};
+
+function host() {
+  const agents = new Map<string, { id: string; workspaceId: string; metadata: Create["metadata"] }>();
+  const reqs: Create[] = [];
+  const submitted: Create[] = [];
+  const daemon = {
+    async listAvailableProviders() {
+      return { providers: ["cursor", "codex", "offline"].map(provider => ({ provider, available: provider !== "offline" })) };
+    },
+    async listProviderModels(provider: string) {
+      assert.notEqual(provider, "offline");
+      const def = models.find(m => m.provider === provider)!;
+      return { models: [{ id: def.model, label: def.label, isDefault: true, thinkingOptions: [{ id: "high" }] }, { id: "legacy", isSelectable: false }] };
+    },
+    getLastServerInfoMessage: () => ({ serverId: "this-host" }),
+    findWorkspace: async (id: string) => id === workspace.id ? workspace : null,
+    fetchAgent: async ({ agentId }: { agentId: string }) => agents.has(agentId) ? { agent: agents.get(agentId) } : null,
+    async createAgent(req: Create) {
+      submitted.push(req);
+      const id = req.agentId!;
+      const previous = agents.get(id);
+      if (previous) {
+        assert.deepEqual(reqs.find(first => first.idempotencyKey === req.idempotencyKey), req);
+        return previous;
+      }
+      reqs.push(req);
+      const agent = { id, workspaceId: req.workspaceId!, metadata: req.metadata };
+      agents.set(id, agent);
+      return agent;
+    },
+  };
+  // Run the SDK's local parent, provider/model and prompt mapping against an in-memory daemon.
+  return { sdk: createPaseoApi(daemon as unknown as DaemonClient), reqs, submitted, daemon };
+}
+
+test("SDK가 현재 기기의 워크스페이스에 첫 작업 지시를 보내고 지정한 코디네이터를 부모로 기록한다", async () => {
+  const { sdk, reqs, submitted } = host();
+  const catalog = await readCatalog(sdk);
+  assert.deepEqual(catalog.map(m => [m.provider, m.model, m.efforts]), [
+    ["cursor", gemini.model, []], ["codex", sol.model, ["high"]],
+  ]);
+  const result = await dispatchWorker(sdk, task, () => state);
+  const call = reqs[0];
+  assert.equal(call.workspaceId, workspace.id);
+  assert.equal(call.config.cwd, workspace.workspaceDirectory);
+  assert.equal(call.config.provider, "cursor");
+  assert.equal(call.config.model, gemini.model);
+  assert.equal(call.config.thinkingOptionId, undefined);
+  assert.equal(call.initialPrompt, task.prompt);
+  assert.equal(call.config.title, task.title);
+  assert.equal(call.metadata?.["coordinator-board/reports"], true);
+  assert.equal(call.callerAgentId, state.coordinator);
+  assert.equal(call.metadata?.["coordinator-board/dispatch-parent"], state.coordinator);
+  assert.equal(result.sessionId, call.agentId);
+  assert.equal(typeof call.clientMessageId, "string");
+  await assert.rejects(dispatchWorker(sdk, { ...task, prompt: "다른 작업" }, () => state), /다른 작업/);
+  assert.deepEqual(await dispatchWorker(sdk, task, () => ({ ...state, coordinator: "replacement" })), result);
+  assert.equal(reqs.length, 1);
+  assert.equal(submitted.length, 2);
+});
+
+test("정책·관리 범위가 달라지거나 다른 워크스페이스면 생성하지 않고, 필수 훅은 native 모델로만 시작한다", async () => {
+  const { sdk, reqs } = host();
+  const other = { ...state, projects: ["other"] };
+  const staleTask = { ...task, targetServerId: "stale-selection" };
+  await assert.rejects(dispatchWorker(sdk, staleTask, () => state), /targetServerId/);
+  await assert.rejects(dispatchWorker(sdk, task, () => ({ ...state, coordinator: null })), /코디네이터/);
+  await assert.rejects(dispatchWorker(sdk, task, () => other), /관리할 프로젝트/);
+  await assert.rejects(dispatchWorker(sdk, { ...task, workspaceId: "foreign" }, () => state), /워크스페이스/);
+  await assert.rejects(dispatchWorker(sdk, { ...task, projectId: "other" }, () => other), /워크스페이스/);
+  await assert.rejects(dispatchWorker(sdk, { ...task, needsHooks: true }, () => state), /미리보기/);
+  let reads = 0;
+  await assert.rejects(dispatchWorker(sdk, task, () => ++reads === 1 ? state : other), /관리할 프로젝트/);
+  assert.equal(reqs.length, 0);
+  await dispatchWorker(sdk, { ...task, needsHooks: true, expectedRoute: sol }, () => ({ ...state, coordinator: "local-coord" }));
+  assert.equal(reqs[0].config.thinkingOptionId, "high");
+  assert.equal(reqs[0].callerAgentId, "local-coord");
+});
+
+test("워크스페이스 목록은 페이지를 넘겨 관리 프로젝트의 준비된 작업 위치만 표시한다", async () => {
+  const calls: (string | undefined)[] = [];
+  const sdk = { workspaces: { list: async ({ page }: { page: { cursor?: string } }) => {
+    calls.push(page.cursor);
+    return page.cursor ? { entries: [{ ...workspace, title: "선택 가능" }], pageInfo: { hasMore: false, nextCursor: null } } :
+      { entries: [{ ...workspace, id: "other", projectId: "other" }, { ...workspace, internal: true }, { ...workspace, setupStatus: "failed" }, { ...workspace, archivingAt: "now" }],
+        pageInfo: { hasMore: true, nextCursor: "page-2" } };
+  } } } as unknown as Parameters<typeof readManagedWorkspaces>[0];
+  assert.deepEqual(await readManagedWorkspaces(sdk, []), []);
+  assert.deepEqual(await readManagedWorkspaces(sdk, [workspace.projectId]), [{ id: workspace.id, projectId: workspace.projectId, title: "선택 가능" }]);
+  assert.deepEqual(calls, [undefined, "page-2"]);
+});
+
+test("생성 결과를 잃은 뒤 세션 행만 보고 성공 처리하지 않고 같은 데몬 영수증을 다시 조회한다", async () => {
+  const { sdk, daemon, reqs, submitted } = host();
+  const create = daemon.createAgent;
+  let reconcile = false;
+  daemon.createAgent = async req => {
+    const result = await create(req);
+    if (!reconcile) throw new Error("첫 프롬프트 전송 확인 중 연결 끊김");
+    return result;
+  };
+  await assert.rejects(dispatchWorker(sdk, task, () => state), /연결 끊김/);
+  await assert.rejects(dispatchWorker(sdk, task, () => state), /연결 끊김/);
+  reconcile = true;
+  const result = await dispatchWorker(sdk, task, () => state);
+  assert.equal(result.sessionId, reqs[0].agentId);
+  assert.equal(reqs.length, 1);
+  assert.equal(submitted.length, 3);
+});
+
+test("동시에 온 같은 요청은 한 작업과 첫 메시지에 연결된다", async () => {
+  const { sdk, reqs, submitted } = host();
+  const [a, b] = await Promise.all([
+    dispatchWorker(sdk, task, () => state), dispatchWorker(sdk, task, () => state),
+  ]);
+  assert.deepEqual(a, b);
+  assert.equal(reqs.length, 1);
+  assert.equal(submitted.length, 2);
+});
+
+test("일부 모델 목록 장애는 다른 실행기를 막지 않고 전체 조회 장애를 모델 0개로 위장하지 않는다", async () => {
+  const { sdk, daemon } = host();
+  const list = daemon.listProviderModels;
+  daemon.listProviderModels = async provider => {
+    if (provider === "cursor") throw new Error("synthetic account diagnostic");
+    return list(provider);
+  };
+  assert.deepEqual((await readCatalog(sdk)).map(m => m.provider), ["codex"]);
+  daemon.listProviderModels = async () => { throw new Error("synthetic account diagnostic"); };
+  await assert.rejects(readCatalog(sdk), /연결을 확인/);
+});
