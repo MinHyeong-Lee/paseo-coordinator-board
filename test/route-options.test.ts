@@ -65,3 +65,21 @@ test("저장 후보를 제외하거나 모델·강도 목록이 바뀌어도 원
   expect(savedCandidateIssue(data, "C", first)).toBeNull();
   expect(data.routing.C).toEqual([first, second]);
 });
+
+test("영어 경고를 표시하면서 실행기 이름과 모델 ID를 보존한다", () => {
+  const en = (_ko: string, english: string) => english;
+  const a = model("codex", "팀-모델");
+  const b = model("cursor", "model-B");
+  const row = { provider: b.provider, model: b.model, effort: "xhigh" };
+  const data = {
+    providers: [provider("codex", { label: "팀 실행기" }), provider("cursor")],
+    catalog: [a, b], routing: { C: [row] },
+  };
+  expect(savedCandidateIssue(data, "C", row, en)).toMatch(/effort/);
+  expect(explainEmptyRoute(data, "C", en)).toContain("Restore defaults");
+  expect(browseModels(data, "C", "cursor", "팀", 6, en).hint).toContain("All providers");
+  const found = browseModels(data, "C", null, "팀", 6, en);
+  expect(found.providers[0].label).toBe("팀 실행기");
+  expect(found.choices[0].model).toBe("팀-모델");
+  expect(data.routing.C).toEqual([row]);
+});

@@ -89,7 +89,8 @@ export class ConversationReader {
         try {
           const evidence = await this.read(paseo, row);
           if (evidence && row.lane !== "human" && (row.lane === "idle" || row.lane === "review") && !row.detail.includes("오류")) {
-            Object.assign(row, classify(evidence, row, prefs.judgments[row.id]), { evidenceId: evidence.id });
+            const judgment = prefs.judgments[row.id];
+            Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined), { evidenceId: evidence.id });
           }
         } catch {
           row.detail += " · 최근 대화 조회 실패";

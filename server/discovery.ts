@@ -25,10 +25,10 @@ export async function readPages<T>(read: (page: PageRequest) => Promise<Page<T>>
   }
 }
 
-function observedState(agent: Entry["agent"]): Pick<SessionRow, "lane" | "detail"> {
+function observedState(agent: Entry["agent"]): Pick<SessionRow, "lane" | "detail" | "nativePending"> {
   const pending = agent.pendingPermissions.length;
-  if (pending) return { lane: "human", detail: `응답을 기다리는 요청 ${pending}건` };
-  if (agent.attentionReason === "permission") return { lane: "human", detail: "세션에서 응답 요청 확인" };
+  if (pending) return { lane: "human", nativePending: true, detail: `응답을 기다리는 요청 ${pending}건` };
+  if (agent.attentionReason === "permission") return { lane: "human", nativePending: true, detail: "세션에서 응답 요청 확인" };
   if (agent.status === "error" || agent.attentionReason === "error") {
     return { lane: "review", detail: "오류 확인 필요" };
   }

@@ -13,11 +13,48 @@ export const labels: Record<Lane, string> = {
 };
 export const noteLabels = { question: "결정 요청", review: "확인 요청", done: "완료 근거" } as const;
 
+type Translate = (ko: string, en: string) => string;
+const laneEnglish = { human: "My decisions", running: "In progress", review: "Awaiting review", idle: "Idle", done: "Done", unknown: "Unknown" };
+const noteEnglish = { question: "Decision request", review: "Review request", done: "Completion evidence" };
+
+export function laneLabel(lane: Lane, t: Translate) { return t(labels[lane], laneEnglish[lane]); }
+export function noteLabel(kind: keyof typeof noteLabels, t: Translate) { return t(noteLabels[kind], noteEnglish[kind]); }
+
+const statusPhrases: Record<string, string> = {
+  "답장을 보냈습니다. 담당 세션의 결과를 기다립니다.": "Reply sent. Waiting for the assigned session’s result.",
+  "세션에서 응답 요청 확인": "Review the request in the session",
+  "오류 확인 필요": "Error needs review",
+  "작업 중": "In progress",
+  "세션을 여는 중": "Opening session",
+  "마지막 오류 확인 필요": "Review the last error",
+  "세션 결과 확인 필요": "Review session results",
+  "다음 요청 대기": "Waiting for the next request",
+  "대화 종료": "Conversation closed",
+  "세션 상태 미확인": "Session status unknown",
+  "질문 뒤에 메시지가 왔습니다. 같은 질문에 대한 답인지 확인하세요.": "A message followed the question. Check whether it answers that question.",
+};
+
+export function sessionDetail(detail: string, t: Translate) {
+  if (Object.hasOwn(statusPhrases, detail)) return t(detail, statusPhrases[detail]);
+  const pending = /^응답을 기다리는 요청 (\d+)건$/.exec(detail);
+  if (pending) return t(detail, `Requests awaiting a response: ${pending[1]}`);
+  const tasks = /^대화 대기 · 백그라운드 작업 (\d+)개$/.exec(detail);
+  if (tasks) return t(detail, `Conversation idle · Background tasks: ${tasks[1]}`);
+  for (const [ko, en] of [["코디네이터 판단 · ", "Coordinator assessment · "], ["세션의 확인 요청 · ", "Session question · "]]) {
+    if (detail.startsWith(ko)) return t(ko, en) + detail.slice(ko.length);
+  }
+  return detail;
+}
+
 function displayLane(session: Session, note: Note | undefined): Lane {
+  if (session.nativePending) return "human";
   if (session.evidenceId && session.evidenceId === note?.evidenceId && note.origin === "person") {
     if (note.kind === "done") return "done";
     if (note.kind === "review") return "review";
     if (note.kind === "clear" && session.lane === "human") return "idle";
+  }
+  if (session.decisionAnswered) {
+    return session.lane === "running" || session.lane === "unknown" ? session.lane : "review";
   }
   if (session.lane === "human" || note?.kind === "question") return "human";
   if (session.lane === "running") return "running";

@@ -19,3 +19,14 @@ test("the digest and projects share one classification; new work takes priority 
   expect(projects.flatMap(p => p.cards).map(c => c.lane)).toEqual(["human", "running", "review", "done", "human", "idle"]);
   expect(projects.length).toBe(2);
 });
+
+test("a delivered reply takes the same question out of the digest while preserving live work and new prompts", () => {
+  const sessions: SessionRow[] = (["idle", "running", "unknown", "human"] as const).map((lane, i) => ({
+    id: String(i), title: "Review", projectId: "p", projectTitle: "P", workspaceTitle: "W",
+    lane, detail: "", model: null, decisionAnswered: true, nativePending: i === 3,
+  }));
+  const notes = Object.fromEntries(sessions.map(s => [s.id, { sessionId: s.id, kind: "question", text: "original", revision: 1 } satisfies Note]));
+  const { projects, human } = projectCards({ sessions, notes, projects: [], coordinator: null });
+  expect(projects[0].cards.map(c => c.lane)).toEqual(["review", "running", "unknown", "human"]);
+  expect(human.map(c => c.session.id)).toEqual(["3"]);
+});

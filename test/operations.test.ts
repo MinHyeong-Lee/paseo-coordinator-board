@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
+import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import type { DispatchInput } from "../shared/dispatch";
 import { createOperations } from "../server/operations";
 import { PreferenceStore } from "../server/preferences";
@@ -35,6 +36,7 @@ function scenario() {
     { id: workspaceId, projectId, title: "관리 공간", name: "managed", projectDisplayName: "예제 프로젝트", workspaceDirectory: "/synthetic/selected" },
     { id: "other-space", projectId: "other-project", title: "다른 공간", name: "other", projectDisplayName: "예제 프로젝트", workspaceDirectory: "/synthetic/other" },
   ];
+  const nativePins = new Map<string, string>();
   const sessions = new Map<string, CreateInput>();
   const sent: { agentId: string; text: string; messageId: string }[] = [];
   const events: string[] = [];
@@ -47,7 +49,10 @@ function scenario() {
         agents: { create: async (input: CreateInput) => { sessions.set(input.agentId,input); } },
       }),
       list: async () => { events.push("workspaces.list"); return page(workspaces); },
-      ref: (id: string) => ({ refresh: async () => workspaces.find(w => w.id === id) ?? null,
+      ref: (id: string) => ({ refresh: async () => {
+        const workspace = workspaces.find(w => w.id === id);
+        return workspace ? {...workspace, pinnedAt: nativePins.get(id) ?? null} : null;
+      }, setPinned: async (pin: boolean) => { expect(pin).toBe(true); events.push("workspace.pin:" + id); nativePins.set(id, "native-pin"); return { pinnedAt: "native-pin" }; },
         agents: { create: async (input: CreateInput) => {
           events.push("workspace.agents.create");
           const receipt = sessions.get(input.agentId);
@@ -59,7 +64,7 @@ function scenario() {
     agents: {
       list: async () => page([{ agent: {id:coordinator, workspaceId, title:"운영 세션", status:"idle", pendingPermissions:[], updatedAt:"2026-11-22T01:00:00Z"}, project:{projectKey:projectId,projectName:"예제 프로젝트"} }]),
       ref: (id: string) => ({ refresh: async () => {
-        if (id === coordinator) return {agent: {id, status:"idle", activeTurn:null, pendingPermissions:[]}};
+        if (id === coordinator) return {agent: {id, workspaceId, status:"idle", activeTurn:null, pendingPermissions:[]}};
         const existing = sessions.get(id);
         return existing ? {agent: {id, workspaceId, currentModeId: existing.config.modeId, status:"idle", pendingPermissions:[], metadata: existing.metadata}} : null;
       }, send: async (text: string, options: {messageId: string}) => { sent.push({agentId:id, text, messageId:options.messageId}); } }),
@@ -92,6 +97,17 @@ function scenario() {
   }
   return { handlers, events, sessions, sent, activity, store, call, tool };
 }
+
+test("digest requests follow the board language and older clients default to Korean", async () => {
+  const s = scenario();
+  await s.call(askDigest, { coordinator, requestKey: "digest-backward-compatible" });
+  await s.call(askDigest, { coordinator, requestKey: "digest-english-language", language: "en" });
+  expect(s.sent.map(message => message.agentId)).toEqual([coordinator, coordinator]);
+  expect(s.sent[0].text).toContain("조회와 분류");
+  expect(s.sent[1].text).toContain("in English");
+  expect(s.sent[1].text).toContain("read_board_conversation");
+  expect(s.sessions.size).toBe(0);
+});
 
 test("the board forwards the person's words only to the current coordinator; it does not create a worker", async () => {
   const s = scenario();
@@ -268,4 +284,19 @@ test("생성과 교체 RPC가 Claude 권한 모드를 명시하고 다이제스�
   const next = await s.call(setupCoordinator,{expectedRoute:choice,expectedCoordinator:first.sessionId,replace:true,expectedModeId:"default"});
   expect(s.sessions.get(next.sessionId)?.config.modeId).toBe("default");
   expect(s.sessions.get(first.sessionId)?.config.modeId).toBe("auto");
+});
+
+test("sidebar RPCs can pin a selected existing coordinator while auto-pin is off, without pinning another workspace", async () => {
+  const s = scenario();
+  expect(await s.call(coordinatorPinSettings, {})).toMatchObject({ enabled:true, workspace:{ id:workspaceId, coordinator, pinned:false } });
+  await s.call(setCoordinatorAutoPin, {enabled:false});
+  expect(s.store.read().autoPinCoordinatorWorkspace).toBe(false);
+  await expect(s.call(pinCurrentCoordinator, {coordinator,workspaceId:"other-space"})).rejects.toThrow();
+  expect(s.events).toEqual([]);
+  const pin = () => s.call(pinCurrentCoordinator, {coordinator,workspaceId});
+  await pin();
+  await pin();
+  expect(await s.call(coordinatorPinSettings, {})).toMatchObject({ enabled:false, workspace:{ pinned:true } });
+  await s.call(setCoordinatorAutoPin, {enabled:true});
+  expect(s.events).toEqual(["workspace.pin:" + workspaceId]);
 });

@@ -1,3 +1,4 @@
+import { useBoardLanguage } from "./language";
 import { getPaseoClient, useHosts, useSettings } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
@@ -5,14 +6,16 @@ import { boardHosts, hiddenAfter, hostVisibility, type BoardHost } from "../shar
 import { Button, type Theme } from "./controls";
 
 const statusText = {
-  online: "연결됨", connecting: "연결 중", idle: "연결 대기", offline: "연결 끊김", error: "연결 오류", unknown: "연결 미확인",
-};
+  online: ["연결됨", "Online"], connecting: ["연결 중", "Connecting"], idle: ["연결 대기", "Idle"],
+  offline: ["연결 끊김", "Offline"], error: ["연결 오류", "Connection error"], unknown: ["연결 미확인", "Connection unknown"],
+} as const;
 const wrap = { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 };
 type Open = (serverId: string, agentId: string) => void;
 
 export function BoardHosts({ current, settings, theme, open }: {
   current: { id: string; label: string }; settings: boolean; theme: Theme; open?: Open;
 }) {
+  const { t } = useBoardLanguage();
   const registered = useHosts();
   const scope = useSettings(hostVisibility);
   const hosts = boardHosts(current, registered);
@@ -43,40 +46,40 @@ export function BoardHosts({ current, settings, theme, open }: {
   }
 
   if (!settings && !expanded) {
-    return <View style={wrap}><Button theme={theme} label="기기별 세션 찾아보기" onPress={() => setExpanded(true)} /></View>;
+    return <View style={wrap}><Button theme={theme} label={t("기기별 세션 찾아보기", "Browse sessions by host")} onPress={() => setExpanded(true)} /></View>;
   }
   return <View style={{ gap: 8, padding: 14, borderRadius: 10, backgroundColor: c.surface1 }}>
     <View style={{ ...wrap, alignItems: "center", justifyContent: "space-between" }}>
       <Text accessibilityRole="header" style={{ fontSize: 17, fontWeight: "600", color: c.foreground }}>
-        {settings ? "Paseo 호스트" : "기기별 세션"}
+        {settings ? t("Paseo 호스트", "Paseo hosts") : t("기기별 세션", "Sessions by host")}
       </Text>
       {settings
-        ? <Text style={{ color: c.foregroundMuted }}>앱에 등록 {registered.length}대</Text>
-        : <Button theme={theme} label="기기별 세션 닫기" onPress={() => { setExpanded(false); setChosen(null); }} />}
+        ? <Text style={{ color: c.foregroundMuted }}>{t(`앱에 등록 ${registered.length}대`, `Registered hosts: ${registered.length}`)}</Text>
+        : <Button theme={theme} label={t("기기별 세션 닫기", "Close host sessions")} onPress={() => { setExpanded(false); setChosen(null); }} />}
     </View>
-    {settings && <Text style={{ color: c.foregroundMuted }}>앱에 등록한 호스트는 기기별 세션에 기본으로 표시됩니다. 이 설정은 기기별 세션 목록에만 적용됩니다.</Text>}
-    {scope.status === "loading" && <Text style={{ color: c.foregroundMuted }}>표시할 호스트를 확인하고 있습니다.</Text>}
+    {settings && <Text style={{ color: c.foregroundMuted }}>{t("앱에 등록한 호스트는 기기별 세션에 기본으로 표시됩니다. 이 설정은 기기별 세션 목록에만 적용됩니다.", "Registered hosts appear here by default. This setting applies only to the sessions-by-host list.")}</Text>}
+    {scope.status === "loading" && <Text style={{ color: c.foregroundMuted }}>{t("표시할 호스트를 확인하고 있습니다.", "Loading host visibility…")}</Text>}
     {error && <View style={wrap}>
-      <Text accessibilityLiveRegion="polite" style={{ color: c.statusDanger }}>{ready ? "표시 설정을 저장하지 못했습니다. 최신 설정에서 다시 선택해 주세요." : "호스트 표시 설정을 읽지 못했습니다."}</Text>
-      <Button theme={theme} label="호스트 표시 설정 다시 읽기" onPress={() => { setConflict(false); void scope.reload(); }} />
+      <Text accessibilityLiveRegion="polite" style={{ color: c.statusDanger }}>{ready ? t("표시 설정을 저장하지 못했습니다. 최신 설정에서 다시 선택해 주세요.", "Could not save host visibility. Review the latest settings and try again.") : t("호스트 표시 설정을 읽지 못했습니다.", "Could not load host visibility settings.")}</Text>
+      <Button theme={theme} label={t("호스트 표시 설정 다시 읽기", "Reload host visibility")} onPress={() => { setConflict(false); void scope.reload(); }} />
     </View>}
     {settings && ready && hosts.map(host => {
       const included = !scope.values.hidden.includes(host.serverId);
       return <View key={host.serverId} style={{ ...wrap, alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderColor: c.border, paddingTop: 7 }}>
-        <Text style={{ flexShrink: 1, color: c.foreground }}>{host.label}{host.serverId === current.id ? " · 현재 보드" : ""} · {statusText[host.status]}</Text>
+        <Text style={{ flexShrink: 1, color: c.foreground }}>{host.label}{host.serverId === current.id ? t(" · 현재 보드", " · Current board") : ""} · {t(statusText[host.status][0], statusText[host.status][1])}</Text>
         <Button theme={theme} selected={included} disabled={scope.saving}
-          label={included ? "기기별 세션에 표시" : "기기별 세션에서 숨김"}
-          accessibilityLabel={host.label + (included ? " · 기기별 세션에서 숨기기" : " · 기기별 세션에 표시하기")}
+          label={included ? t("기기별 세션에 표시", "Shown in host sessions") : t("기기별 세션에서 숨김", "Hidden from host sessions")}
+          accessibilityLabel={host.label + (included ? t(" · 기기별 세션에서 숨기기", " · Hide from host sessions") : t(" · 기기별 세션에 표시하기", " · Show in host sessions"))}
           onPress={() => void change(host.serverId, !included)} />
       </View>;
     })}
     {!settings && ready && <>
       <View style={wrap}>
         {shown.map(host => <Button theme={theme} key={host.serverId} selected={host.serverId === target?.serverId}
-          label={host.label + " · " + statusText[host.status]} disabled={host.status !== "online"}
+          label={host.label + " · " + t(statusText[host.status][0], statusText[host.status][1])} disabled={host.status !== "online"}
           onPress={() => setChosen(host.serverId)} />)}
       </View>
-      {!shown.length && <Text style={{ color: c.foregroundMuted }}>표시할 호스트가 없습니다. 설정에서 기기별 세션에 표시할 호스트를 고르세요.</Text>}
+      {!shown.length && <Text style={{ color: c.foregroundMuted }}>{t("표시할 호스트가 없습니다. 설정에서 기기별 세션에 표시할 호스트를 고르세요.", "No hosts to show. Choose hosts in settings.")}</Text>}
       {target?.status === "online" && <HostSessions key={target.serverId} host={target} theme={theme} open={open} />}
     </>}
   </View>;
@@ -84,6 +87,7 @@ export function BoardHosts({ current, settings, theme, open }: {
 
 type Summary = { id: string; title: string; project: string };
 function HostSessions({ host, theme, open }: { host: BoardHost; theme: Theme; open?: Open }) {
+  const { t } = useBoardLanguage();
   const [rows, setRows] = useState<Summary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState(false);
@@ -106,7 +110,7 @@ function HostSessions({ host, theme, open }: { host: BoardHost; theme: Theme; op
       });
       if (token !== request.current) return;
       const mapped = page.entries.filter(({ agent }) => !agent.archivedAt && !agent.internal)
-        .map(({ agent, project }) => ({ id: agent.id, title: agent.title?.trim() || `세션 ${agent.id.slice(0, 8)}`, project: project.projectName || "" }));
+        .map(({ agent, project }) => ({ id: agent.id, title: agent.title?.trim() || "", project: project.projectName || "" }));
       const visited = next ? new Set(seen.current).add(next) : new Set<string>();
       if (page.pageInfo.hasMore && (!page.pageInfo.nextCursor || visited.has(page.pageInfo.nextCursor))) throw Error();
       seen.current = visited;
@@ -126,18 +130,21 @@ function HostSessions({ host, theme, open }: { host: BoardHost; theme: Theme; op
 
   return <View style={{ gap: 6 }}>
     <View style={{ ...wrap, alignItems: "center", justifyContent: "space-between" }}>
-      <Text style={{ fontWeight: "600", color: c.foreground }}>{host.label}의 세션</Text>
-      <Button theme={theme} label="호스트 세션 새로 고침" disabled={loading} onPress={() => void load()} />
+      <Text style={{ fontWeight: "600", color: c.foreground }}>{t(`${host.label}의 세션`, `Sessions on ${host.label}`)}</Text>
+      <Button theme={theme} label={t("호스트 세션 새로 고침", "Refresh host sessions")} disabled={loading} onPress={() => void load()} />
     </View>
-    {rows.map(row => <View key={row.id} style={{ ...wrap, alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderColor: c.border, paddingTop: 6 }}>
-      <Text style={{ flexShrink: 1, color: c.foreground }}>{[row.project, row.title].filter(Boolean).join(" · ")}</Text>
-      {open && <Button theme={theme} label="세션 열기" accessibilityLabel={`${host.label} · ${row.title} 열기`} onPress={() => open(host.serverId, row.id)} />}
-    </View>)}
-    {loading && <Text style={{ color: c.foregroundMuted }}>세션을 읽고 있습니다.</Text>}
-    {!loading && error && <Text accessibilityLiveRegion="polite" style={{ color: c.statusDanger }}>이 호스트에서 세션을 읽지 못했습니다. 연결 상태를 확인해 주세요.</Text>}
-    {!loading && !error && !rows.length && !cursor && <Text style={{ color: c.foregroundMuted }}>표시할 세션이 없습니다.</Text>}
+    {rows.map(row => {
+      const title = row.title || t(`세션 ${row.id.slice(0, 8)}`, `Session ${row.id.slice(0, 8)}`);
+      return <View key={row.id} style={{ ...wrap, alignItems: "center", justifyContent: "space-between", borderTopWidth: 1, borderColor: c.border, paddingTop: 6 }}>
+        <Text style={{ flexShrink: 1, color: c.foreground }}>{[row.project, title].filter(Boolean).join(" · ")}</Text>
+        {open && <Button theme={theme} label={t("세션 열기", "Open session")} accessibilityLabel={t(`${host.label} · ${title} 열기`, `Open ${title} on ${host.label}`)} onPress={() => open(host.serverId, row.id)} />}
+      </View>;
+    })}
+    {loading && <Text style={{ color: c.foregroundMuted }}>{t("세션을 읽고 있습니다.", "Loading sessions…")}</Text>}
+    {!loading && error && <Text accessibilityLiveRegion="polite" style={{ color: c.statusDanger }}>{t("이 호스트에서 세션을 읽지 못했습니다. 연결 상태를 확인해 주세요.", "Could not load sessions on this host. Check its connection.")}</Text>}
+    {!loading && !error && !rows.length && !cursor && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다.", "No sessions to show.")}</Text>}
     {!loading && (cursor || error) && <View style={wrap}>
-      <Button theme={theme} label={error ? "호스트 세션 다시 읽기" : "세션 더 보기"} onPress={() => void load(cursor ?? undefined)} />
+      <Button theme={theme} label={error ? t("호스트 세션 다시 읽기", "Retry loading host sessions") : t("세션 더 보기", "Show more sessions")} onPress={() => void load(cursor ?? undefined)} />
     </View>}
   </View>;
 }

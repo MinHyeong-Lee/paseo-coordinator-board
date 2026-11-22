@@ -1,3 +1,4 @@
+import { useBoardLanguage, type Translate } from "./language";
 import { Text, View } from "react-native";
 import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
@@ -10,11 +11,16 @@ import {
 } from "../shared/dispatch";
 import type { Operations } from "../shared/operations";
 import { Button, type Theme } from "./controls";
-import { browseModels, explainEmptyRoute, savedCandidateIssue } from "./route-options";
+import { browseModels, explainEmptyRoute, koreanText, savedCandidateIssue } from "./route-options";
 
-export const gradeLabels = { A: "A · 최상", B: "B · 높음", C: "C · 중간", D: "D · 기본", M: "M · 코디네이터" };
-export function routeName(route: RouteChoice | null) {
-  return route ? [route.provider, route.model, route.effort].filter(Boolean).join(" / ") : "사용 가능한 후보 없음";
+function gradeName(grade: Grade, t: Translate) {
+  const names = {
+    A: t("최상", "Highest"), B: t("높음", "High"), C: t("중간", "Medium"), D: t("기본", "Basic"), M: t("운영", "Operations"),
+  };
+  return grade + " · " + names[grade];
+}
+export function routeName(route: RouteChoice | null, t: Translate = koreanText) {
+  return route ? [route.provider, route.model, route.effort].filter(Boolean).join(" / ") : t("사용 가능한 후보 없음", "No available candidate");
 }
 export const wrap = { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 };
 
@@ -25,38 +31,40 @@ type Props = {
   save: (grade: Grade, rows: RouteChoice[], revision: number) => Promise<boolean>;
 };
 export function RouteEditor({ data, theme, busy, save }: Props) {
+  const { t } = useBoardLanguage();
   const [grade, setGrade] = useState<Grade>("C");
   return (
     <View style={{ gap: 8 }}>
-      <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>작업 난이도</Text>
+      <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{t("작업 난이도", "Task difficulty")}</Text>
       <View style={wrap}>
         {workerGradeSchema.options.map((g) => (
           <Button
             key={g}
             theme={theme}
-            label={gradeLabels[g]}
+            label={gradeName(g, t)}
             selected={g === grade}
             onPress={() => setGrade(g)}
           />
         ))}
       </View>
       <View style={{ ...wrap, alignItems: "center" }}>
-        <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>운영 세션</Text>
-        <Button theme={theme} label={gradeLabels.M} selected={grade === "M"} onPress={() => setGrade("M")} />
+        <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{t("운영 세션", "Coordinator session")}</Text>
+        <Button theme={theme} label={gradeName("M", t)} selected={grade === "M"} onPress={() => setGrade("M")} />
       </View>
-      {grade === "M" && <Text style={{ color: theme.colors.foregroundMuted }}>M은 코디네이터를 만들거나 교체할 때 사용합니다. 현재 세션은 그대로 운영됩니다.</Text>}
+      {grade === "M" && <Text style={{ color: theme.colors.foregroundMuted }}>{t("M은 코디네이터를 만들거나 교체할 때 사용합니다. 현재 세션은 그대로 운영됩니다.", "M selects the model for a new or replacement coordinator. The current session keeps its model.")}</Text>}
       <CandidateList key={grade + ":" + data.revision} {...{ data, theme, busy, grade, save }} />
     </View>
   );
 }
 function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grade }) {
+  const { t } = useBoardLanguage();
   const [rows, setRows] = useState<RouteChoice[]>(data.routing[grade] ?? []);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(6);
   const [provider, setProvider] = useState<string | null>(null);
   const [selection, setSelection] = useState<RouteChoice | null>(null);
   const color = theme.colors.foreground;
-  const browser = browseModels(data, grade, provider, query, limit);
+  const browser = browseModels(data, grade, provider, query, limit, t);
   const model = selection && browser.choices.find(m => m.model === selection.model && m.provider === selection.provider);
   const saved = data.routing[grade]?.length;
   const route = resolveRoute(grade, data.routing, data.catalog);
@@ -67,19 +75,19 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
   }
   return (
     <View style={{ gap: 7 }}>
-      <Text style={{ color }}>{saved ? "저장된 배정" : "추천 설정"} · {routeName(route)}</Text>
-      {!route && <Text style={{ color: theme.colors.foregroundMuted }}>{explainEmptyRoute(data, grade)}</Text>}
+      <Text style={{ color }}>{saved ? t("저장된 배정", "Saved route") : t("추천 설정", "Recommended route")} · {routeName(route, t)}</Text>
+      {!route && <Text style={{ color: theme.colors.foregroundMuted }}>{explainEmptyRoute(data, grade, t)}</Text>}
       {rows.map((r, i) => {
-        const issue = savedCandidateIssue(data, grade, r);
+        const issue = savedCandidateIssue(data, grade, r, t);
         return (
           <View key={JSON.stringify(r)} style={wrap}>
             <Text style={{ color }}>
-              {i === 0 ? "우선" : `예비 ${i}`} · {routeName(r)}{issue ? " · " + issue : ""}
+              {i === 0 ? t("우선", "Primary") : t(`예비 ${i}`, `Fallback ${i}`)} · {routeName(r, t)}{issue ? " · " + issue : ""}
             </Text>
             {i > 0 && (
               <Button
                 theme={theme}
-                label="앞으로"
+                label={t("앞으로", "Move up")}
                 disabled={busy}
                 onPress={() => {
                   const next = [...rows];
@@ -90,7 +98,7 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
             )}
             <Button
               theme={theme}
-              label="후보 제외"
+              label={t("후보 제외", "Remove candidate")}
               disabled={busy}
               onPress={() => setRows(rows.filter((_, index) => i !== index))}
             />
@@ -98,14 +106,14 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
         );
       })}
       {browser.providers.length > 1 && <View style={wrap}>
-        <Button theme={theme} label="전체 실행기" selected={browser.active === null} onPress={() => filter(null)} />
+        <Button theme={theme} label={t("전체 실행기", "All providers")} selected={browser.active === null} onPress={() => filter(null)} />
         {browser.providers.map(p => <Button key={p.id} theme={theme}
           label={`${p.label} · ${p.count}`}
           selected={browser.active === p.id} onPress={() => filter(p.id)} />)}
       </View>}
       <TextInput
-        accessibilityLabel="모델 검색"
-        placeholder="실행기 또는 모델 검색"
+        accessibilityLabel={t("모델 검색", "Search models")}
+        placeholder={t("실행기 또는 모델 검색", "Search providers or models")}
         value={query}
         onChangeText={(v) => {
           setQuery(v);
@@ -125,25 +133,25 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
           />
         ))}
         {browser.choices.length < browser.count && (
-          <Button theme={theme} label="모델 더 보기" onPress={() => setLimit(limit + 12)} />
+          <Button theme={theme} label={t("모델 더 보기", "Show more models")} onPress={() => setLimit(limit + 12)} />
         )}
       </View>
       {model && selection && (
         <View style={{ gap: 6 }}>
-          <Text style={{ color }}>추론 강도</Text>
+          <Text style={{ color }}>{t("추론 강도", "Reasoning effort")}</Text>
           <View style={wrap}>
             {[null, ...model.efforts].map((e) => (
               <Button
                 theme={theme}
                 key={e ?? "default"}
-                label={e ?? "실행기 기본 강도"}
+                label={e ?? t("실행기 기본 강도", "Provider default")}
                 selected={e === selection.effort}
                 onPress={() => setSelection({ ...selection, effort: e })}
               />
             ))}
             <Button
               theme={theme}
-              label="후보에 추가"
+              label={t("후보에 추가", "Add candidate")}
               disabled={busy || rows.length >= 12 || rows.some((r) => sameRoute(r, selection))}
               onPress={() => {
                 setRows([...rows, selection]);
@@ -156,13 +164,13 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
       <View style={wrap}>
         <Button
           theme={theme}
-          label="배정표 저장"
+          label={t("배정표 저장", "Save routing")}
           disabled={busy || JSON.stringify(rows) === JSON.stringify(data.routing[grade] ?? [])}
           onPress={() => void save(grade, rows, data.revision)}
         />
         <Button
           theme={theme}
-          label="추천으로 복원"
+          label={t("추천으로 복원", "Restore defaults")}
           disabled={busy || !data.routing[grade]}
           onPress={() => void save(grade, [], data.revision)}
         />

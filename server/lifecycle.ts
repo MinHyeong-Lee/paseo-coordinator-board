@@ -28,10 +28,49 @@ export class CoordinatorLifecycle {
 
   constructor(private readonly prefs: PreferenceStore, private readonly directory: string) {}
 
-  ensure(paseo: Sdk, input: Start) {
-    const result = this.queue.then(() => this.prepare(paseo, input));
+  private inOrder<T>(operation: () => Promise<T>) {
+    const result = this.queue.then(operation);
     this.queue = result.then(() => {}, () => {});
     return result;
+  }
+
+  ensure(paseo: Sdk, input: Start) {
+    return this.inOrder(() => this.prepare(paseo, input));
+  }
+
+  private async pinTarget(paseo: Sdk, coordinator: string) {
+    if (this.prefs.read().coordinator !== coordinator) throw new Error(stale);
+    const agent = (await paseo.agents.ref(coordinator).refresh())?.agent;
+    if (agent?.id !== coordinator || !agent.workspaceId || agent.archivedAt || agent.status === "error") return null;
+    const handle = paseo.workspaces.ref(agent.workspaceId);
+    const workspace = await handle.refresh();
+    if (this.prefs.read().coordinator !== coordinator) throw new Error(stale);
+    if (workspace?.id !== agent.workspaceId || workspace.archivingAt) return null;
+    return { workspace, handle };
+  }
+
+  async pinSettings(paseo: Sdk) {
+    const { coordinator } = this.prefs.read();
+    // Keep the creation preference editable even while a selected session is unavailable.
+    const target = coordinator && await this.pinTarget(paseo, coordinator).catch(() => null);
+    return {
+      enabled: this.prefs.read().autoPinCoordinatorWorkspace,
+      workspace: target ? { id: target.workspace.id, coordinator, title: target.workspace.title || target.workspace.name, pinned: !!target.workspace.pinnedAt } : null,
+    };
+  }
+
+  pinCurrent(paseo: Sdk, coordinator: string, workspaceId: string) {
+    return this.inOrder(() => this.pinWorkspace(paseo, coordinator, workspaceId, false));
+  }
+
+  private async pinWorkspace(paseo: Sdk, coordinator: string, workspaceId: string, automatic: boolean) {
+    const target = await this.pinTarget(paseo, coordinator);
+    const latest = this.prefs.read();
+    if (!target || target.workspace.id !== workspaceId || latest.coordinator !== coordinator) throw new Error(stale);
+    // Re-pinning an already pinned workspace changes its native pin timestamp.
+    if (target.workspace.pinnedAt || (automatic && !latest.autoPinCoordinatorWorkspace)) return;
+    const result = await target.handle.setPinned(true);
+    if (!result.pinnedAt) throw new Error("워크스페이스 고정을 확인할 수 없습니다.");
   }
 
   private async prepare(paseo: Sdk, { expectedCoordinator, replace, config, verifyRoute }: Start) {
@@ -105,6 +144,12 @@ export class CoordinatorLifecycle {
       setCoordinator(s, pending.id);
       s.createdCoordinator = { id: pending.id, previous: current, workspaceId: workspace.id, config };
     });
-    return { sessionId: pending.id, workspaceId: workspace.id, reused: false };
+    const result = { sessionId: pending.id, workspaceId: workspace.id, reused: false };
+    // A rotation reuses the workspace. Preserve a person's earlier manual unpin.
+    if (prepared?.workspaceId !== workspace.id && this.prefs.read().autoPinCoordinatorWorkspace) {
+      try { await this.pinWorkspace(paseo, pending.id, workspace.id, true); }
+      catch { return { ...result, pinFailed: true }; }
+    }
+    return result;
   }
 }

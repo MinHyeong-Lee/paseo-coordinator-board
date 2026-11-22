@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { decisionSchema } from "./decision-actions";
 
 const sessionId = z.string().min(1).max(256);
 const noteKind = z.enum(["question", "review", "done", "clear"]);
@@ -10,11 +11,16 @@ const session = z.object({
   projectId: z.string(),
   projectTitle: z.string(),
   workspaceTitle: z.string(),
+  sourceProjectId: z.string().optional(),
+  sourceProjectTitle: z.string().optional(),
   model: z.string().nullable(),
   provider: z.string().nullable().optional(),
   reporting: z.boolean().optional(),
   status: z.string().optional(),
   evidenceId: z.string().optional(),
+  decision: decisionSchema.optional(),
+  decisionAnswered: z.boolean().optional(),
+  nativePending: z.boolean().optional(),
   activityAt: z.string().optional(),
   lane: z.enum(["human", "running", "review", "idle", "unknown"]),
   detail: z.string(),

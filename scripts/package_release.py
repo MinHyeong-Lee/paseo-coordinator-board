@@ -19,9 +19,11 @@ required = {
     "server/preferences.ts", "server/conversation.ts", "server/coordinator.ts",
     "server/notes.ts", "server/discovery.ts", "server/reporting.ts", "client/board.tsx",
     "shared/dispatch.ts", "shared/operations.ts", "server/dispatch.ts", "server/operations.ts", "server/lifecycle.ts",
-    "server/digest.ts", "client/operations.tsx", "client/route-editor.tsx", "client/providers.tsx",
+    "server/digest.ts", "client/coordinator-pin.tsx", "client/operations.tsx", "client/route-editor.tsx", "client/providers.tsx",
     "client/hosts.tsx", "shared/hosts.ts", "client/route-options.ts",
-    "OVERVIEW.md", "README.md", "templates/coordinator-session.md",
+    "server/decisions.ts", "shared/decision-actions.ts", "client/decision-actions.tsx",
+    "server/session-links.ts", "shared/session-links.ts", "client/session-links.tsx", "client/language.tsx",
+    "package.json", "LICENSE", "OVERVIEW.md", "README.md", "templates/coordinator-session.md",
     "third-party/better-paseo/LICENSE", "THIRD_PARTY_NOTICES.md", "assets/preview.png",
 }
 with tempfile.TemporaryDirectory() as scratch:

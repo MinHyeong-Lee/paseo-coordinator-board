@@ -52,8 +52,9 @@ test("코디네이터 도구는 선택 범위와 지정 세션을 재확인하�
  const ctx={paseo:sdk,agent:{id:"coord"}};
  await expect(read.execute({sessionId:"other"},ctx)).rejects.toThrow();expect(reads).toEqual([]);
  const result=JSON.parse((await read.execute({sessionId:"worker"},ctx)).text);
- const choice={sessionId:"worker",evidenceId:result.evidenceId,kind:"question",text:"두 줄로 나눌까요?"};
- await write.execute(choice,ctx);expect(store.read().judgments.worker.text).toBe(choice.text);
+ const content={question:"두 줄로 나눌까요?",recommendation:"한 줄로 유지",options:[{label:"한 줄",reply:"한 줄로 유지해 주세요."}]};
+ const choice=write.input.parse({sessionId:"worker",evidenceId:result.evidenceId,kind:"question",text:"두 줄로 나눌까요?",content});
+ await write.execute(choice,ctx);expect(store.read().judgments.worker.text).toBe(choice.text);expect(store.read().judgments.worker.content).toEqual(content);
  steps.push(["user_message","두 줄로"]);await expect(write.execute(choice,ctx)).rejects.toThrow("대화가 바뀌었습니다");
  store.change(s=>{s.coordinator=null});await expect(read.execute({sessionId:"worker"},ctx)).rejects.toThrow("해제");
 });

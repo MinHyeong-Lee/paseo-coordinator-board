@@ -37,12 +37,31 @@ export const setupCoordinator = defineRpc({
     expectedRoute: routeChoiceSchema,
     expectedModeId: z.string().min(1).optional(),
   }),
-  output: z.object({ sessionId: z.string(), workspaceId: z.string().nullable(), reused: z.boolean() }),
+  output: z.object({ sessionId: z.string(), workspaceId: z.string().nullable(), reused: z.boolean(), pinFailed: z.boolean().optional() }),
 });
+export const coordinatorPinSettings = defineRpc({
+  name: "board.coordinator-pin-settings",
+  input: z.strictObject({}),
+  output: z.object({
+    enabled: z.boolean(),
+    workspace: z.object({ id: z.string(), coordinator: z.string(), title: z.string(), pinned: z.boolean() }).nullable(),
+  }),
+});
+export const setCoordinatorAutoPin = defineRpc({
+  name: "board.set-coordinator-auto-pin",
+  input: z.strictObject({ enabled: z.boolean() }),
+  output: z.object({ ok: z.boolean() }),
+});
+export const pinCurrentCoordinator = defineRpc({
+  name: "board.pin-current-coordinator",
+  input: z.strictObject({ coordinator: z.string().min(1), workspaceId: z.string().min(1) }),
+  output: z.object({ ok: z.boolean() }),
+});
+export type CoordinatorPinSettings = z.output<typeof coordinatorPinSettings.output>;
 const messageFields = { coordinator: z.string().min(1).max(256), requestKey: z.string().min(12).max(96) };
 export const askDigest = defineRpc({
   name: "board.request-digest",
-  input: z.strictObject(messageFields),
+  input: z.strictObject({ ...messageFields, language: z.enum(["ko", "en"]).optional() }),
   output: z.object({ ok: z.boolean() }),
 });
 export const requestWork = defineRpc({

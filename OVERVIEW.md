@@ -1,15 +1,35 @@
-Coordinator Board groups existing Paseo sessions by project and shows which ones are waiting for a person. Open the board on a connected host to see its sessions. A card opens the original conversation. The interface is in Korean.
+# Session coordinator board
 
-Paseo supplies the workspace, model when available, and lifecycle signals. A permission request appears in the decision digest. An unread result or an error goes to review. A session can be idle while the work still needs verification. Record a question, a result to check, or evidence of completion on its card. The board refreshes while open.
+The board groups existing Paseo sessions by project and shows which decisions need your attention. A coordinator can review recent conversations, assign work on this host, and report back. The interface supports Korean and English. Open **설정 → 보드 언어 → English** to switch this device to English.
 
-Optionally enable reporting on a session's card. With Paseo MCP enabled and injected into the provider, on its next interactive session open the agent receives a tool to post a question or a result for review on that session's own card. People retain control of approvals and verified completion. The package includes a short Korean template for choosing which decisions you want to handle.
+## Install and choose projects
 
-The plugin targets Paseo 0.16.2 and later. Install it on the Paseo host where you coordinate your projects. It uses the host's session and workspace directory and keeps board notes in the daemon's local plugin data. The reporting switch is stored in the selected session's metadata. Using a model in that session is subject to your provider's normal terms.
+On the computer running Paseo 0.16.2 or later, enable trusted plugins and install the GitHub source directly.
 
-Select the projects to manage on first use. The board reads bounded conversation excerpts on that host and surfaces ordinary confirmation requests. A designated coordinator can read recent user and assistant turns for selected projects and record a judgment tied to that excerpt. Later messages invalidate that judgment. Reviewing the board does not start a model.
+```sh
+paseo plugin install git:devbrother2024/paseo-coordinator-board
+```
 
-Submit a task in your own words. The coordinator starts with recommended models available on this host. Open Settings to change the preferred and fallback models for a task grade or to replace the coordinator. The coordinator selects a managed workspace and worker model on this host. Replacing the coordinator preserves board judgments. Review the included TypeScript source to adapt the charter, default policy, and task assignment to your workflow.
+The `git:` prefix selects a Git source. Paseo uses the plain `owner/slug` form for registry entries. For a ZIP installation, unzip the package and run `paseo plugin install .` in the folder containing `paseo-plugin.json`. Keep that folder in place. [Source](https://github.com/devbrother2024/paseo-coordinator-board) · [Paseo plugin guide](https://paseo.sh/docs/plugins)
 
-Provider settings discover the runners and selectable models exposed by the active Paseo host, including custom ACP providers. Each runner shows its registered ID, catalog status and eligible task grades. Newly discovered runners are included by default. You can exclude one from future assignments or restore it while keeping your model preferences. Session cards show the runner and model reported by Paseo.
+Open the board from the sidebar and select the projects you want in your digest. To manage just one session from another project, open **Settings → Link an existing session to a project**. Search for the session, check its ID and source workspace, select a managed destination, then click **Link to this project**. The card appears once under its destination. The session keeps its original ID, workspace, files and conversation. **Unlink from project** removes the link. The card returns to its source project if that project is also managed.
 
-A new or replacement coordinator previews its tool permission mode. Claude Code uses Auto mode where available. Codex uses Auto-review where available. Older providers fall back to interactive approvals. Digest requests keep the current session and its permissions.
+## Work with a coordinator
+
+Click **Start with recommended settings** to create the coordinator, or select **Choose an existing coordinator session** in Settings. Before creating or replacing a coordinator, the board shows the model and tool permission mode. It prefers Auto mode for Claude Code and Auto-review for Codex when supported.
+
+Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn this off in **Settings → Sidebar pinning**. Replacing the coordinator in the same workspace preserves its existing pin state. For an existing coordinator, click **Pin current coordinator workspace**.
+
+Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
+
+- **Reply to a session.** Review the recipient and use **Send suggested reply** or choose an option and use **Send selected reply**. **Edit reply** and **Write a reply** let you send your own wording.
+- **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
+- **Respond to a native approval.** Choose **Review approval in original session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
+
+## Models, hosts and tools
+
+In **Settings**, choose providers and models for task grades A through D, or the M grade used to create or replace the coordinator. Providers discovered on the active host are included by default. You can exclude a provider and restore it later. The model selector shows eligible providers, available models, and reasons a saved model cannot be used. Session cards show the provider and model reported by Paseo. The host directory lets you browse sessions on registered devices. New work is assigned on the board's current host.
+
+The coordinator uses `read_board_conversation` to read managed sessions and `classify_board_conversation` to record a judgment tied to the current evidence. It uses `plan_board_assignment` and `assign_board_worker` to delegate work. A worker with reporting enabled can post a question or a result to its own card with `report_to_board`. These tools require Paseo MCP integration in the session's provider.
+
+The host stores project selections, session links, judgments, delivery receipts and notes in its local plugin data. Opening the board does not start a model. When you send a message, the receiving session uses its provider under your existing plan. [한국어 사용 안내](README.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)

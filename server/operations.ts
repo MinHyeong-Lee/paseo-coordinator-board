@@ -1,6 +1,7 @@
 import { defineAgentTool, type PluginHandlerContext, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import { askDigest, operationState, requestWork, setProviderInclusion, setupCoordinator, updateRouting } from "../shared/operations";
+import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import { dispatchInputSchema, includedCatalog, sameRoute, workerGradeSchema } from "../shared/dispatch";
 import {
   configForRoute,
@@ -13,8 +14,9 @@ import {
   validateCandidates,
 } from "./dispatch";
 import { CoordinatorLifecycle } from "./lifecycle";
+import { isCurrentMembership } from "./session-links";
 import { managedRowsForCoordinator } from "./coordinator";
-import { sendCoordinatorRequest, digestPrompt } from "./digest";
+import { sendCoordinatorRequest, digestPrompt, englishDigestPrompt } from "./digest";
 import { PreferenceStore } from "./preferences";
 
 async function coordinatorPermissionMode(paseo: PluginHandlerContext["paseo"], provider: string) {
@@ -42,6 +44,15 @@ export function createOperations(store: PreferenceStore, workspaceDir: string) {
     return scope;
   }
   function register(server: PluginServerContext) {
+    server.handle(coordinatorPinSettings, (_input, { paseo }) => lifecycle.pinSettings(paseo));
+    server.handle(setCoordinatorAutoPin, async ({ enabled }) => {
+      store.change(scope => { scope.autoPinCoordinatorWorkspace = enabled; });
+      return { ok: true };
+    });
+    server.handle(pinCurrentCoordinator, async ({ coordinator, workspaceId }, { paseo }) => {
+      await lifecycle.pinCurrent(paseo, coordinator, workspaceId);
+      return { ok: true };
+    });
     server.handle(operationState, async (_input, { paseo }) => {
       const directory = await readProviderDirectory(paseo, undefined, true);
       const scope = store.read();
@@ -99,7 +110,7 @@ export function createOperations(store: PreferenceStore, workspaceDir: string) {
       });
     });
     server.handle(askDigest, (input, { paseo }) =>
-      sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, digestPrompt),
+      sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.language === "en" ? englishDigestPrompt : digestPrompt),
     );
     server.handle(requestWork, (input, { paseo }) =>
       sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.text),
@@ -128,11 +139,12 @@ export function createOperations(store: PreferenceStore, workspaceDir: string) {
           path: p.projectRootPath,
         }));
       const sessions = rows
-        .filter((r) => selected(r.projectId))
-        .map(({ id, title, projectId, workspaceTitle, status }) => ({
+        .filter((r) => isCurrentMembership(r, first) && isCurrentMembership(r, latest))
+        .map(({ id, title, projectId, sourceProjectId, workspaceTitle, status }) => ({
           id,
           title,
           projectId,
+          sourceProjectId,
           workspaceTitle,
           status,
         }));
