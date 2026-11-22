@@ -1,5 +1,9 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { decisionSchema } from "./decision-actions";
+import { pullRequestViewSchema } from "./prs";
+import { trackedDecisionViewSchema } from "./tracked-decisions";
+import { factSchema } from "./board-facts";
 
 const sessionId = z.string().min(1).max(256);
 const noteKind = z.enum(["question", "review", "done", "clear"]);
@@ -10,11 +14,17 @@ const session = z.object({
   projectId: z.string(),
   projectTitle: z.string(),
   workspaceTitle: z.string(),
+  sourceProjectId: z.string().optional(),
+  sourceProjectTitle: z.string().optional(),
   model: z.string().nullable(),
   provider: z.string().nullable().optional(),
   reporting: z.boolean().optional(),
   status: z.string().optional(),
   evidenceId: z.string().optional(),
+  decision: decisionSchema.optional(),
+  decisionAnswered: z.boolean().optional(),
+  boardFact: factSchema.extend({ current: z.boolean() }).optional(),
+  nativePending: z.boolean().optional(),
   activityAt: z.string().optional(),
   lane: z.enum(["human", "running", "review", "idle", "unknown"]),
   detail: z.string(),
@@ -39,10 +49,14 @@ export const boardScope = defineRpc({
 
 export const boardSnapshot = defineRpc({
   name: "board.snapshot",
-  input: z.object({}),
+  input: z.object({ fresh: z.boolean().optional() }),
   output: z.object({ sessions: z.array(session), notes: z.record(z.string(), noteSchema),
     projects: z.array(z.object({ id: z.string(), title: z.string(), path: z.string(), selected: z.boolean() })),
-    coordinator: sessionId.nullable() }),
+    coordinator: sessionId.nullable(), trackedDecisions: trackedDecisionViewSchema.optional(), pullRequests: pullRequestViewSchema.optional() }),
+});
+export const boardDecisionCount = defineRpc({
+  name: "board.decision-count", input: z.strictObject({}),
+  output: z.object({ count: z.number().int().nonnegative() }),
 });
 export const saveNote = defineRpc({
   name: "board.save-note",

@@ -2,18 +2,39 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { sessionLinkSchema } from "../shared/session-links";
+import { decisionFields } from "../shared/decision-actions";
 import { routePolicySchema } from "../shared/dispatch";
+import { repositoryOverride } from "../shared/prs";
+import { factSchema } from "../shared/board-facts";
 
 export const judgment = z.object({
+  content: decisionFields.optional(),
   evidenceId: z.string(), kind: z.enum(["question", "review", "idle"]), text: z.string().trim().min(1).max(1200),
 });
 const coordinatorConfig = z.object({ provider: z.string(), thinkingOptionId: z.string().optional(), modeId: z.string().optional() });
 const schema = z.object({
   projects: z.array(z.string()), coordinator: z.string().nullable(),
+  projectRepositories: z.record(z.string(), repositoryOverride).default({}),
+  autoPinCoordinatorWorkspace: z.boolean().default(true),
+  autoReplyToBoardFacts: z.boolean().default(true),
+  factHistory: z.record(z.string(), factSchema).default({}),
+  factCycleKeys: z.record(z.string(), z.literal(true)).default({}),
+  factCycle: z.object({
+    id: z.string(), coordinator: z.string(), expires: z.number(), messageId: z.string().optional(),
+    candidates: z.record(z.string(), z.string()),
+  }).optional(),
   judgments: z.record(z.string(), judgment.extend({ projectId: z.string() })),
+  sessionLinks: z.record(z.string(), sessionLinkSchema).default({}),
   routing: routePolicySchema.default({}),
   excludedProviders: z.array(z.string().min(1).max(256)).default([]),
   routingRevision: z.number().int().nonnegative().default(0),
+  answers: z.record(z.string(), z.object({ version: z.string(), noteRevision: z.number().optional() })).default({}),
+  decisionReceipts: z.record(z.string(), z.object({
+    fingerprint: z.string(), sessionId: z.string(), version: z.string(), status: z.enum(["pending", "sent"]),
+    evidenceId: z.string().optional(),
+    noteRevision: z.number().optional(), beforeAnswer: z.string().optional(), messageId: z.string().optional(),
+  })).default({}),
   pendingCoordinator: z.object({
     id: z.string(), previous: z.string().nullable(),
     config: coordinatorConfig,
@@ -29,6 +50,7 @@ export function isManagedCoordinator(scope: Preferences, id: string | null) {
 }
 
 export function setCoordinator(scope: Preferences, id: string | null) {
+  if (scope.coordinator !== id) delete scope.factCycle;
   scope.coordinator = id;
   // A person's new selection supersedes any creation still in progress.
   delete scope.pendingCoordinator;

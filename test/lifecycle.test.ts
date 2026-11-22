@@ -22,8 +22,16 @@ function setup() {
   const pages = (entries) => ({ entries, pageInfo: { hasMore: false, nextCursor: null } });
   const agents = new Map(), creations = [];
   const effects = { beforeCreate: async (_id) => {}, afterCreate: async (_id) => {} };
+  const pins = { calls: [] as boolean[], pinnedAt: null as string | null, fail: false };
+  const workspaceSnapshot = () => ({ id: "operating-workspace", title: "코디네이터 운영", pinnedAt: pins.pinnedAt });
   const ws = {
-    id: "operating-workspace", current: () => ({ title: null }), setTitle: async () => {},
+    id: "operating-workspace", current: workspaceSnapshot, refresh: async () => workspaceSnapshot(), setTitle: async () => {},
+    setPinned: async (enabled: boolean) => {
+      pins.calls.push(enabled);
+      if (pins.fail) throw Error("pin unavailable");
+      pins.pinnedAt = enabled ? "2026-11-22T00:00:00Z" : null;
+      return { pinnedAt: pins.pinnedAt };
+    },
     agents: { create: async input => {
       creations.push(input);
       await effects.beforeCreate(input.agentId);
@@ -32,13 +40,13 @@ function setup() {
     } },
   };
   const sdk = {
-    workspaces: { open: async path => { expect(path).toBe(directory); return ws; }, list: () => pages([]) },
+    workspaces: { ref: id => { expect(id).toBe(ws.id); return ws; }, open: async path => { expect(path).toBe(directory); return ws; }, list: () => pages([]) },
     agents: {
       list: () => pages([...agents.values()].map(agent => ({ agent, project: { projectKey: agent.workspaceId === ws.id ? "operate" : "team" } }))),
       ref: id => ({ refresh: async () => agents.has(id) ? { agent: agents.get(id) } : null }),
     },
   };
-  return { path, directory, prefs, lifecycle, sdk, effects, agents, creations };
+  return { path, directory, prefs, lifecycle, sdk, effects, agents, creations, pins, ws };
 }
 
 test("신규 설치 두 창이 동시에 시작해도 운영 세션 한 개와 기존 발췌 판단을 유지한다", async () => {
@@ -143,4 +151,51 @@ test("준비한 새 세션이 다른 권한을 보고하면 기존 운영 세션
   f.agents.get(f.creations[0].agentId).currentModeId = "auto-review";
   expect((await f.lifecycle.ensure(f.sdk,change)).sessionId).toBe(f.creations[0].agentId);
   expect(f.creations).toHaveLength(1);
+});
+
+test("a new operating workspace is pinned once; reloading, retry and rotation respect a manual unpin", async () => {
+  const f = setup();
+  expect(f.prefs.read().autoPinCoordinatorWorkspace).toBe(true);
+  const first = await f.lifecycle.ensure(f.sdk, start);
+  expect(f.pins.calls).toEqual([true]);
+  expect(f.pins.pinnedAt).toBeTruthy();
+  f.pins.pinnedAt = null;
+  const restarted = new CoordinatorLifecycle(new PreferenceStore(f.path), f.directory);
+  await restarted.ensure(f.sdk, start);
+  await restarted.ensure(f.sdk, { ...start, replace: true, expectedCoordinator: first.sessionId });
+  expect(f.creations).toHaveLength(2);
+  expect(f.pins.calls).toEqual([true]);
+  expect(f.pins.pinnedAt).toBeNull();
+});
+
+test("disabled or already pinned keeps the native workspace pin and its timestamp untouched", async () => {
+  for (const alreadyPinned of [true, false]) {
+    const f = setup();
+    if (alreadyPinned) f.pins.pinnedAt = "initial-pin";
+    else f.prefs.change(s => { s.autoPinCoordinatorWorkspace = false; });
+    await f.lifecycle.ensure(f.sdk, start);
+    expect(f.pins.calls).toEqual([]);
+    expect(f.pins.pinnedAt).toBe(alreadyPinned ? "initial-pin" : null);
+  }
+});
+
+test("pin failure preserves the coordinator; a manual retry only pins the verified current workspace", async () => {
+  const f = setup();
+  f.pins.fail = true;
+  const created = await f.lifecycle.ensure(f.sdk, start);
+  expect(created.pinFailed).toBe(true);
+  expect(f.prefs.read().coordinator).toBe(created.sessionId);
+  f.pins.fail = false;
+  const pin = () => f.lifecycle.pinCurrent(f.sdk, created.sessionId, created.workspaceId);
+  await expect(f.lifecycle.pinCurrent(f.sdk, "old", created.workspaceId)).rejects.toThrow();
+  await expect(f.lifecycle.pinCurrent(f.sdk, created.sessionId, "unrelated")).rejects.toThrow();
+  await Promise.all([pin(), pin()]);
+  expect(f.pins.calls).toEqual([true, true]);
+  expect(f.creations).toHaveLength(1);
+  expect((await f.lifecycle.pinSettings(f.sdk)).workspace).toMatchObject({id:created.workspaceId, coordinator:created.sessionId, pinned:true});
+  f.pins.pinnedAt = null;
+  const refresh = f.ws.refresh;
+  f.ws.refresh = async () => { f.prefs.change(s => setCoordinator(s, "later")); return refresh(); };
+  await expect(pin()).rejects.toThrow();
+  expect(f.pins.calls).toEqual([true, true]);
 });

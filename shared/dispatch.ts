@@ -18,6 +18,7 @@ export type ProviderEntry = z.infer<typeof providerEntrySchema>;
 export const catalogModelSchema = z.object({
   provider: identifier, model: identifier, label: z.string(),
   efforts: z.array(identifier), isDefault: z.boolean(),
+  coordinatorMode: z.object({ id: identifier, label: z.string() }).nullable().optional(),
 });
 export const routePolicySchema = z.partialRecord(gradeSchema, z.array(routeChoiceSchema).min(1).max(12));
 export const workspaceChoiceSchema = z.object({ id: identifier, projectId, title: z.string() });
@@ -36,11 +37,26 @@ export type RoutePolicy = z.infer<typeof routePolicySchema>;
 export type WorkspaceChoice = z.infer<typeof workspaceChoiceSchema>;
 export type DispatchInput = z.infer<typeof dispatchInputSchema>;
 
-export function eligibleProvider(grade: Grade, provider: string, needsHooks = false) {
-  if (needsHooks || grade === "A" || grade === "B" || grade === "M") {
-    return provider === "claude" || provider === "codex";
+function primary(provider: string) {
+  return provider === "claude" || provider === "codex";
+}
+
+export function eligibleProvider(grade: Grade, provider: string, needsHooks = false, catalog?: readonly CatalogModel[]) {
+  if (needsHooks && !primary(provider)) return false;
+  if (grade === "M") {
+    if (!catalog) return primary(provider);
+    // Old catalogs omitted mode discovery for Claude Code and Codex.
+    const hasMode = (m: CatalogModel) => !!m.coordinatorMode || (m.coordinatorMode === undefined && primary(m.provider));
+    const hasPrimary = catalog.some(m => primary(m.provider) && hasMode(m));
+    return (!hasPrimary || primary(provider)) && catalog.some(m => m.provider === provider && hasMode(m));
   }
-  return provider !== "grok" || grade === "D";
+  if (grade === "A" || grade === "B") {
+    return primary(provider) || (!!catalog && !catalog.some(m => primary(m.provider)));
+  }
+  if (grade === "C" && provider === "grok") {
+    return !!catalog && !catalog.some(m => m.provider !== "grok");
+  }
+  return true;
 }
 
 export function sameRoute(a: RouteChoice, b: RouteChoice) {
@@ -69,7 +85,8 @@ export function includedCatalog(catalog: CatalogModel[], excludedProviders: read
 export function validateCandidates(grade: Grade, candidates: RouteChoice[], catalog: CatalogModel[], saved: RouteChoice[] = []) {
   const seen: RouteChoice[] = [];
   for (const choice of candidates) {
-    if (!eligibleProvider(grade, choice.provider) || (!available(choice, catalog) && !saved.some(prior => sameRoute(prior, choice)))) {
+    const retained = saved.some(prior => sameRoute(prior, choice));
+    if (!retained && (!eligibleProvider(grade, choice.provider, false, catalog) || !available(choice, catalog))) {
       throw new Error("이 등급과 호스트에서 사용할 수 있는 실행기·모델·추론 강도를 선택해 주세요.");
     }
     if (seen.some(prior => sameRoute(prior, choice))) throw new Error("같은 배정 후보가 두 번 있습니다.");
@@ -78,7 +95,11 @@ export function validateCandidates(grade: Grade, candidates: RouteChoice[], cata
 }
 
 export function resolveRoute(grade: Grade, policy: RoutePolicy, catalog: CatalogModel[], needsHooks = false): RouteChoice | null {
-  const allowed = catalog.filter(m => eligibleProvider(grade, m.provider, needsHooks));
+  const providers = new Set(catalog.map(m => m.provider));
+  for (const provider of providers) {
+    if (!eligibleProvider(grade, provider, needsHooks, catalog)) providers.delete(provider);
+  }
+  const allowed = catalog.filter(m => providers.has(m.provider));
   const overrides = policy[grade];
   if (overrides) return overrides.find(choice => available(choice, allowed)) ?? null;
   for (const [provider, model, effort] of recommendations[grade]) {

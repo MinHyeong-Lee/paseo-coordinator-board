@@ -2,14 +2,28 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createHash } from "node:crypto";
 import { PreferenceStore } from "./preferences";
 
-export const digestPrompt =
-  "관리 중인 프로젝트의 첫 다이제스트를 갱신해 주세요. read_board_conversation으로 최근 발췌를 확인하고 그 근거에 따라 classify_board_conversation으로 판단을 기록하세요. 지금 내가 직접 결정할 항목과 그 근거를 먼저 알려 주세요. 이번 요청은 조회와 분류만 맡깁니다.";
+const prompts = {
+  ko: "관리 프로젝트의 다이제스트를 한국어로 갱신하세요. read_board_conversation에서 최근 근거를 확인하고 classify_board_conversation으로 기록하세요. 각 질문에는 당사자가 정할 한 문장을 content.question에 적으세요. 근거·기존 기준에서 제안할 수 있는 가장 타당한 답장 하나를 content.recommendation에, 간단한 이유를 content.recommendationReason에 적으세요. 증거에 실제 답장 문장이 없어도 근거 있는 제안은 작성할 수 있습니다. 판단에 필요한 정보가 부족하면 결정을 지어내지 말고 필요한 정보를 content.needsInput에 적으세요. 예전에 판단한 질문도 needsRecommendation이 표시되면 갱신하세요. 진행 보고와 이미 정해진 사항은 내 결정에서 내리고, 직접 결정할 안건을 먼저 보고하세요.",
+  en: "Refresh the digest for managed projects in English. Inspect recent evidence with read_board_conversation and use classify_board_conversation to record your findings. For every genuine human decision, write one short question in content.question. When evidence or an established preference supports it, propose one editable, ready-to-send reply in content.recommendation and give a brief reason in content.recommendationReason. The proposed wording may be new. If essential input is missing, name it in content.needsInput without inventing the person's choice. Revisit earlier decisions marked needsRecommendation. Keep progress reports and resolved matters out of My decisions, and report the remaining decisions first.",
+};
+
+export const digestPrompt = prompts.ko + " 이번 요청은 조회와 분류만 맡깁니다.";
+export const englishDigestPrompt = prompts.en + " Limit this request to reading and classification.";
+
+export function digestWithFactReplies(language: "ko" | "en", cycleId: string) {
+  const instructions = language === "ko"
+    ? "이번 다이제스트에서 보드가 단독 사실 질문으로 식별한 세션에는 answer_board_fact로 답하세요. 이 도구가 허용한 대상·근거에 대해서만 코디네이터 이름으로 확인된 사실을 보낼 수 있습니다. 다른 방식의 메시지 전송은 요청하지 않았습니다. 처리 결과와 사람이 결정할 안건을 구분하세요."
+    : "For this digest, call answer_board_fact for standalone factual questions identified by the board. Only that tool may send its verified facts as the coordinator. Do not send a message by any other route. Report handled items separately from human decisions.";
+  return prompts[language] + " " + instructions + " " + JSON.stringify({ cycleId });
+}
+
 export async function sendCoordinatorRequest(
   paseo: PluginHandlerContext["paseo"],
   store: PreferenceStore,
   expected: string,
   key: string,
   text: string,
+  beforeSend?: (messageId: string) => void,
 ) {
   if (store.read().coordinator !== expected) throw new Error("현재 코디네이터를 다시 확인해 주세요.");
   if (!store.read().projects.length) throw new Error("관리할 프로젝트를 하나 이상 선택하세요.");
@@ -36,6 +50,7 @@ export async function sendCoordinatorRequest(
     "8" + id.slice(17, 20),
     id.slice(20, 32),
   ].join("-");
+  beforeSend?.(messageId);
   await handle.send(text, { messageId, activeTurnBehavior: "steer" });
   return { ok: true };
 }

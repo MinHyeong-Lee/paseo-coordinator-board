@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
+import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import type { DispatchInput } from "../shared/dispatch";
 import { createOperations } from "../server/operations";
 import { PreferenceStore } from "../server/preferences";
@@ -20,13 +21,13 @@ const job: DispatchInput = {
   projectId, workspaceId, title: "Test", prompt: "Synthetic task", grade: "C",
   expectedRoute: route, requestKey: "synthetic-job-01",
 };
-type CreateInput = { agentId: string; idempotencyKey: string; clientMessageId: string; parent: string; config: { provider: string; modeId?: string }; prompt: string; metadata: Record<string, unknown> };
+type CreateInput = { agentId: string; idempotencyKey: string; clientMessageId: string; parent: string; config: { provider: string; modeId?: string; options?: { auto_accept?: boolean } }; prompt: string; metadata: Record<string, unknown> };
 type Rpc = { name: string; input: { parse(value: unknown): unknown }; output: { parse(value: unknown): unknown } };
 type Callback = (input: unknown, ctx: { paseo: unknown }) => Promise<unknown>;
 const page = <T,>(entries: T[]) => ({ entries, pageInfo: { hasMore: false, nextCursor: null } });
 
 // This fixture has no host registry, networking, transcripts, or model executor.
-function scenario() {
+function scenario(facts?: Parameters<typeof createOperations>[2]) {
   const dir = mkdtempSync(join(tmpdir(), "board-coordinator-operations-"));
   paths.push(dir);
   const store = new PreferenceStore(join(dir, "scope.json"));
@@ -35,10 +36,12 @@ function scenario() {
     { id: workspaceId, projectId, title: "관리 공간", name: "managed", projectDisplayName: "예제 프로젝트", workspaceDirectory: "/synthetic/selected" },
     { id: "other-space", projectId: "other-project", title: "다른 공간", name: "other", projectDisplayName: "예제 프로젝트", workspaceDirectory: "/synthetic/other" },
   ];
+  const nativePins = new Map<string, string>();
   const sessions = new Map<string, CreateInput>();
   const sent: { agentId: string; text: string; messageId: string }[] = [];
   const events: string[] = [];
   const activity = { modes: [{id:"auto",label:"Default Permissions"}, {id:"auto-review",label:"Auto-review"}], beforeModelList: () => {}, providers: ["codex", "cursor"] };
+  const runtime = { supportsToolInvocations:true, supportsMcpServers:true };
   const paseo = {
     projects: { list: async () => ({projects: workspaces.map(w => ({projectId: w.projectId, projectDisplayName: w.projectDisplayName, projectRootPath: w.workspaceDirectory}))}) },
     workspaces: {
@@ -47,7 +50,10 @@ function scenario() {
         agents: { create: async (input: CreateInput) => { sessions.set(input.agentId,input); } },
       }),
       list: async () => { events.push("workspaces.list"); return page(workspaces); },
-      ref: (id: string) => ({ refresh: async () => workspaces.find(w => w.id === id) ?? null,
+      ref: (id: string) => ({ refresh: async () => {
+        const workspace = workspaces.find(w => w.id === id);
+        return workspace ? {...workspace, pinnedAt: nativePins.get(id) ?? null} : null;
+      }, setPinned: async (pin: boolean) => { expect(pin).toBe(true); events.push("workspace.pin:" + id); nativePins.set(id, "native-pin"); return { pinnedAt: "native-pin" }; },
         agents: { create: async (input: CreateInput) => {
           events.push("workspace.agents.create");
           const receipt = sessions.get(input.agentId);
@@ -59,9 +65,10 @@ function scenario() {
     agents: {
       list: async () => page([{ agent: {id:coordinator, workspaceId, title:"운영 세션", status:"idle", pendingPermissions:[], updatedAt:"2026-11-22T01:00:00Z"}, project:{projectKey:projectId,projectName:"예제 프로젝트"} }]),
       ref: (id: string) => ({ refresh: async () => {
-        if (id === coordinator) return {agent: {id, status:"idle", activeTurn:null, pendingPermissions:[]}};
+        if (id === coordinator) return {agent: {id, workspaceId, status:"idle", activeTurn:null, pendingPermissions:[]}};
         const existing = sessions.get(id);
-        return existing ? {agent: {id, workspaceId, currentModeId: existing.config.modeId, status:"idle", pendingPermissions:[], metadata: existing.metadata}} : null;
+        return existing ? {agent: {id, workspaceId, provider:existing.config.provider.split("/", 1)[0], options:existing.config.options,
+          capabilities:runtime, currentModeId: existing.config.modeId, status:"idle", pendingPermissions:[], metadata: existing.metadata}} : null;
       }, send: async (text: string, options: {messageId: string}) => { sent.push({agentId:id, text, messageId:options.messageId}); } }),
     },
     providers: {
@@ -78,7 +85,7 @@ function scenario() {
       },
     },
   };
-  const ops = createOperations(store, join(dir, "workspace"));
+  const ops = createOperations(store, join(dir, "workspace"), facts);
   const handlers = new Map<string, Callback>();
   ops.register({ handle: (contract: Rpc, handler: Callback) => { handlers.set(contract.name,handler); } } as unknown as PluginServerContext);
   async function call(definition: Rpc, input: unknown) {
@@ -90,8 +97,19 @@ function scenario() {
     const output = await t.execute(t.input.parse(input) as never, { paseo, agent: { id: caller } } as unknown as PluginHandlerContext & {agent: {id: string}});
     return JSON.parse(output.text);
   }
-  return { handlers, events, sessions, sent, activity, store, call, tool };
+  return { handlers, events, sessions, sent, activity, runtime, store, call, tool };
 }
+
+test("digest requests follow the board language and older clients default to Korean", async () => {
+  const s = scenario();
+  await s.call(askDigest, { coordinator, requestKey: "digest-backward-compatible" });
+  await s.call(askDigest, { coordinator, requestKey: "digest-english-language", language: "en" });
+  expect(s.sent.map(message => message.agentId)).toEqual([coordinator, coordinator]);
+  expect(s.sent[0].text).toContain("조회와 분류");
+  expect(s.sent[1].text).toContain("in English");
+  expect(s.sent[1].text).toContain("read_board_conversation");
+  expect(s.sessions.size).toBe(0);
+});
 
 test("the board forwards the person's words only to the current coordinator; it does not create a worker", async () => {
   const s = scenario();
@@ -184,6 +202,26 @@ test("catalog discovers new provider IDs, useful names and unavailable, empty an
   await expect(s.call(updateRouting,{grade:"A",candidates:[choice],expectedRevision:1})).rejects.toThrow(/등급/);
 });
 
+test("worker previews and dispatch share the same high-grade fallback, including Grok-only hosts and fresh changes", async () => {
+  for (const provider of ["cursor", "custom-agent", "grok"]) {
+    const s = scenario();
+    s.activity.providers = ["empty", "offline", provider];
+    const plan = await s.tool("plan_board_assignment", {});
+    const hooks = await s.tool("plan_board_assignment", {needsHooks:true});
+    expect(hooks.routes.every(r => r.route === null)).toBe(true);
+    for (const {grade, route:selected} of plan.routes) {
+      expect(selected?.provider).toBe(provider);
+      const input = {...job, grade, expectedRoute:selected, requestKey:"fallback-job-" + grade};
+      await expect(s.tool("assign_board_worker", {job:{...input, needsHooks:true}})).rejects.toThrow(/미리보기/);
+      const created = await s.tool("assign_board_worker", {job:input});
+      expect(s.sessions.get(created.sessionId)?.config.provider).toBe(provider + "/" + selected.model);
+    }
+    s.activity.providers.push("codex");
+    const old = plan.routes.find(r => r.grade === "A").route;
+    await expect(s.tool("assign_board_worker", {job:{...job, grade:"A", expectedRoute:old}})).rejects.toThrow(/미리보기/);
+  }
+});
+
 test("excluding a provider preserves ordered overrides across reloads, and gates preview, workers and new coordinator sessions", async () => {
   const s = scenario();
   await s.call(updateRouting,{grade:"C",candidates:[route,alternate],expectedRevision:0});
@@ -252,6 +290,41 @@ test("새 코디네이터는 지원되는 자동 심사 모드를 미리 보여 
   expect(s.sessions.size).toBe(0);
 });
 
+test("OpenCode and Copilot need their actual safe coordinator mode and a tool-capable snapshot before replacing anyone", async () => {
+  for (const [provider, modeId] of [["opencode", "build"], ["copilot", "https://agentclientprotocol.com/protocol/session-modes#agent"]]) {
+    const s = scenario();
+    s.activity.providers = [provider];
+    s.activity.modes = [{id:"allow-all",label:"Unrestricted"}, {id:"full-access",label:"Unrestricted"}];
+    const expectedRoute = {provider,model:alternate.model,effort:null};
+    const input = {replace:true, expectedCoordinator:coordinator, expectedRoute, expectedModeId:modeId};
+    expect((await s.call(operationState,{})).coordinatorMode).toBeNull();
+    await expect(s.call(setupCoordinator,input)).rejects.toThrow(/권한 모드/);
+    expect(s.sessions.size).toBe(0);
+    s.activity.modes.push({id:modeId,label:"Safe mode"});
+    expect((await s.call(operationState,{})).coordinatorMode).toEqual({id:modeId,label:"Safe mode"});
+    s.runtime.supportsMcpServers = false;
+    await expect(s.call(setupCoordinator,input)).rejects.toThrow(/도구 지원/);
+    expect(s.store.read().coordinator).toBe(coordinator);
+    s.runtime.supportsMcpServers = true;
+    const created = await s.call(setupCoordinator,input);
+    expect(s.sessions.size).toBe(1);
+    expect(s.store.read().coordinator).toBe(created.sessionId);
+    expect(s.sessions.get(created.sessionId)?.config.modeId).toBe(modeId);
+    if (provider === "opencode") expect(s.sessions.get(created.sessionId)?.config.options).toEqual({auto_accept:false});
+  }
+});
+
+test("M prefers a verified native mode and falls back only when available defaults lack one, never for an unknown agent mode", async () => {
+  const s = scenario();
+  s.activity.providers = ["opencode", "custom-agent", "codex"];
+  s.activity.modes = [{id:"build", label:"Build"}, {id:"auto-review",label:"Auto-review"}];
+  expect((await s.call(operationState,{})).coordinatorMode?.id).toBe("auto-review");
+  s.activity.modes = [{id:"build",label:"Build"}];
+  expect((await s.call(operationState,{})).coordinatorMode?.id).toBe("build");
+  s.activity.providers = ["custom-agent"];
+  expect((await s.call(operationState,{})).coordinatorMode).toBeNull();
+});
+
 test("생성과 교체 RPC가 Claude 권한 모드를 명시하고 다이제스트는 기존 세션에 텍스트만 보낸다", async () => {
   const s = scenario();
   s.activity.providers = ["claude"];
@@ -268,4 +341,42 @@ test("생성과 교체 RPC가 Claude 권한 모드를 명시하고 다이제스�
   const next = await s.call(setupCoordinator,{expectedRoute:choice,expectedCoordinator:first.sessionId,replace:true,expectedModeId:"default"});
   expect(s.sessions.get(next.sessionId)?.config.modeId).toBe("default");
   expect(s.sessions.get(first.sessionId)?.config.modeId).toBe("auto");
+});
+
+test("sidebar RPCs can pin a selected existing coordinator while auto-pin is off, without pinning another workspace", async () => {
+  const s = scenario();
+  expect(await s.call(coordinatorPinSettings, {})).toMatchObject({ enabled:true, workspace:{ id:workspaceId, coordinator, pinned:false } });
+  await s.call(setCoordinatorAutoPin, {enabled:false});
+  expect(s.store.read().autoPinCoordinatorWorkspace).toBe(false);
+  await expect(s.call(pinCurrentCoordinator, {coordinator,workspaceId:"other-space"})).rejects.toThrow();
+  expect(s.events).toEqual([]);
+  const pin = () => s.call(pinCurrentCoordinator, {coordinator,workspaceId});
+  await pin();
+  await pin();
+  expect(await s.call(coordinatorPinSettings, {})).toMatchObject({ enabled:false, workspace:{ pinned:true } });
+  await s.call(setCoordinatorAutoPin, {enabled:true});
+  expect(s.events).toEqual(["workspace.pin:" + workspaceId]);
+});
+
+test("only a digest click with enabled factual handling binds the exact coordinator message", async () => {
+  const grants: string[] = [];
+  const bound: string[][] = [];
+  const cycle = "a".repeat(64);
+  const s = scenario({
+    async prepareCycle(_sdk, recipient, key) {
+      expect(recipient).toBe(coordinator);
+      grants.push(key);
+      return key === "enabled-facts-01" ? cycle : null;
+    },
+    bindMessage(recipient, scope, messageId) { bound.push([recipient, scope, messageId]); },
+  });
+  await s.call(requestWork, {coordinator, requestKey:"regular-work-01", text:"Summarize progress."});
+  await s.call(askDigest, {coordinator, requestKey:"legacy-digest-01"});
+  await s.call(askDigest, {coordinator, requestKey:"disabled-facts-01", handleBoardFacts:true});
+  await s.call(askDigest, {coordinator, requestKey:"enabled-facts-01", handleBoardFacts:true, language:"en"});
+  expect(grants).toEqual(["disabled-facts-01", "enabled-facts-01"]);
+  expect(bound).toEqual([[coordinator, cycle, s.sent[3].messageId]]);
+  expect(s.sent.slice(0, 3).every(msg => !msg.text.includes("answer_board_fact"))).toBe(true);
+  expect(s.sent[3].text).toContain(cycle);
+  expect(s.sent[3].text).toContain("answer_board_fact");
 });

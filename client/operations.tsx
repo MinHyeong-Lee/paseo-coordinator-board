@@ -14,7 +14,10 @@ import {
 import { resolveRoute } from "../shared/dispatch";
 import { Button, type Theme } from "./controls";
 import { ProviderSettings } from "./providers";
+import { FactReplyControls } from "./fact-reply-controls";
+import { CoordinatorPinControls } from "./coordinator-pin";
 import { RouteEditor, routeName, wrap } from "./route-editor";
+import { useBoardLanguage } from "./language";
 import { explainEmptyRoute } from "./route-options";
 
 type Props = {
@@ -27,6 +30,7 @@ type Props = {
 };
 
 export function OperationsPanel({ theme, settings, coordinator, configured, refreshBoard, openCoordinator }: Props) {
+  const { t, language } = useBoardLanguage();
   const fetchState = useRpc(operationState),
     setup = useRpc(setupCoordinator),
     includeProvider = useRpc(setProviderInclusion),
@@ -40,6 +44,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [text, setText] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
   const [feedbackArea, setFeedbackArea] = useState<"provider" | "routing" | "coordinator">("provider");
   const pending = useRef(false),
     live = useRef(false),
@@ -58,7 +63,6 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       }
     } catch (e) {
       if (live.current && token === generation.current) {
-        setData(null);
         setFeedbackArea("provider");
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -85,7 +89,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     setConfirm(false);
     setNotice("");
     setError("");
-  }, [settings]);
+  }, [settings, language]);
   async function act<T>(fn: () => Promise<T>, done: string, area: typeof feedbackArea = "coordinator"): Promise<T | null> {
     if (pending.current) return null;
     pending.current = true;
@@ -112,7 +116,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     if (!coordinator || pending.current) return;
     const message = text.trim();
     if (kind === "work" && !message) return;
-    const payload = JSON.stringify([kind, coordinator, message]);
+    const payload = JSON.stringify([kind, coordinator, kind === "digest" ? language : message]);
     if (delivery.current.payload !== payload)
       delivery.current = {
         payload,
@@ -120,10 +124,10 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       };
     const input = { coordinator, requestKey: delivery.current.key };
     const receipt = await act(
-      () => (kind === "digest" ? sendDigest(input) : sendWork({ ...input, text: message })),
+      () => (kind === "digest" ? sendDigest({ ...input, language, handleBoardFacts: true }) : sendWork({ ...input, text: message })),
       kind === "digest"
-        ? "다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요."
-        : "코디네이터에게 맡겼습니다. 세션에서 배정과 진행을 확인하세요.",
+        ? t("다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요.", "Digest requested. Open the coordinator session to read the response.")
+        : t("코디네이터에게 맡겼습니다. 세션에서 배정과 진행을 확인하세요.", "Request sent. Open the coordinator session to follow the assignment."),
     );
     if (receipt && live.current) {
       delivery.current = { payload: "", key: "" };
@@ -133,7 +137,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   if (!settings && !configured && !coordinator) return null;
   const model = data && resolveRoute("M", data.routing, data.catalog);
   const mode = data?.coordinatorMode;
-  const modeText = mode ? `도구 권한 · ${mode.label}` : "권한 모드를 확인할 수 없습니다. 설정에서 실행기·모델을 새로 고쳐 주세요.";
+  const modeText = mode ? t(`도구 권한 · ${mode.label}`, `Tool permissions · ${mode.label}`) : t("권한 모드를 확인할 수 없습니다. 설정에서 실행기·모델을 새로 고쳐 주세요.", "Permission mode unavailable. Refresh providers and models in Settings.");
   const color = theme.colors.foreground;
   const muted = theme.colors.foregroundMuted;
   const section = { gap: 10, backgroundColor: theme.colors.surface1, padding: 14, borderRadius: 10 };
@@ -147,29 +151,34 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     if (!model || !mode || !configured) return;
     void act(
       () => setup({ expectedCoordinator: coordinator, replace: !!coordinator, expectedRoute: model, expectedModeId: mode.id }),
-      "운영 세션을 연결했습니다.",
+      t("운영 세션을 연결했습니다.", "Coordinator session connected."),
     ).then((result) => {
-      if (result && live.current) setConfirm(false);
+      if (result && live.current) {
+        setConfirm(false);
+        if (result.pinFailed) setNotice(t("운영 세션을 연결했습니다. 사이드바 고정은 설정에서 다시 시도해 주세요.", "Coordinator connected. Retry sidebar pinning in Settings."));
+      }
     });
   }
 
   if (settings) return <View style={{ gap: 14 }}>
+    <FactReplyControls theme={theme} />
+    <CoordinatorPinControls theme={theme} coordinator={coordinator} />
     <View style={section}>
       <View style={{ ...wrap, alignItems: "center", justifyContent: "space-between" }}>
-        <Text accessibilityRole="header" style={heading}>Paseo 실행기</Text>
-        <Button theme={theme} label={loading ? "실행기 조회 중…" : "실행기·모델 새로 고침"} disabled={loading || busy} onPress={() => void refresh()} />
+        <Text accessibilityRole="header" style={heading}>{t("Paseo 실행기", "Paseo providers")}</Text>
+        <Button theme={theme} label={loading ? t("실행기 조회 중…", "Loading providers\u2026") : t("실행기·모델 새로 고침", "Refresh providers and models")} disabled={loading || busy} onPress={() => void refresh()} />
       </View>
-      <Text style={{ color: muted }}>새로 발견한 실행기는 기본으로 포함됩니다. 연결된 모델이 있는 실행기에 작업을 배정합니다.</Text>
-      {data && <ProviderSettings theme={theme} providers={data.providers} busy={busy || loading} change={async (provider, included) => {
+      <Text style={{ color: muted }}>{t("새로 발견한 실행기는 기본으로 포함됩니다. 연결된 모델이 있는 실행기에 작업을 배정합니다.", "New providers are included by default. Providers with available models can receive assignments.")}</Text>
+      {data && <ProviderSettings theme={theme} providers={data.providers} catalog={data.catalog} busy={busy || loading} change={async (provider, included) => {
         const result = await act(() => includeProvider({ provider, included, expectedRevision: data.revision }),
-          included ? "이 실행기를 새 작업 배정에 포함했습니다." : "이 실행기를 새 작업 배정에서 제외했습니다.", "provider");
+          included ? t("이 실행기를 새 작업 배정에 포함했습니다.", "Provider included in new assignments.") : t("이 실행기를 새 작업 배정에서 제외했습니다.", "Provider excluded from new assignments."), "provider");
         if (live.current) await refresh(!!result);
       }} />}
       {feedbackArea === "provider" && feedback}
     </View>
     <View style={section}>
-      <Text accessibilityRole="header" style={heading}>모델 배정</Text>
-      <Text style={{ color: muted }}>추천 설정은 연결된 실행기에서 사용할 수 있는 모델을 고릅니다. 직접 정하려면 후보를 원하는 순서대로 저장하세요.</Text>
+      <Text accessibilityRole="header" style={heading}>{t("모델 배정", "Model routing")}</Text>
+      <Text style={{ color: muted }}>{t("추천 설정은 연결된 실행기에서 사용할 수 있는 모델을 고릅니다. 직접 정하려면 후보를 원하는 순서대로 저장하세요.", "Recommended settings use available models from connected providers. To customize a grade, save its models in order of preference.")}</Text>
       {data && <RouteEditor
         data={data}
         theme={theme}
@@ -177,7 +186,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
         save={async (grade, candidates, expectedRevision) => {
           const result = await act(
             () => savePolicy({ grade, candidates, expectedRevision }),
-            grade === "M" ? "운영 세션 모델을 저장했습니다. 다음 생성 또는 교체부터 적용됩니다." : "배정표를 저장했습니다. 다음 배정부터 적용됩니다.",
+            grade === "M" ? t("운영 세션 모델을 저장했습니다. 다음 생성 또는 교체부터 적용됩니다.", "Coordinator model saved for the next creation or replacement.") : t("배정표를 저장했습니다. 다음 배정부터 적용됩니다.", "Routing saved for the next assignment."),
             "routing",
           );
           if (live.current) await refresh(!!result);
@@ -187,37 +196,41 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       {feedbackArea === "routing" && feedback}
     </View>
     {configured && coordinator && <View style={section}>
-      <Text accessibilityRole="header" style={heading}>운영 세션 교체</Text>
-      <Text style={{ color: muted }}>새 코디네이터를 만들 때 쓸 모델 · {loading ? "조회 중…" : routeName(model)}</Text>
+      <Text accessibilityRole="header" style={heading}>{t("운영 세션 교체", "Replace coordinator")}</Text>
+      <Text style={{ color: muted }}>{t("새 코디네이터를 만들 때 쓸 모델", "Model for the next coordinator")} · {loading ? t("조회 중…", "Loading\u2026") : routeName(model, t)}</Text>
       {!loading && model && <Text style={{ color: muted }}>{modeText}</Text>}
-      {!loading && data && !model && <Text style={{ color: muted }}>{explainEmptyRoute(data, "M")}</Text>}
-      {confirm && <Text style={{ color }}>새 운영 세션이 준비되면 담당자를 바꿉니다. 진행 중인 작업과 결정 카드는 유지됩니다.</Text>}
+      {!loading && data && !model && <Text style={{ color: muted }}>{explainEmptyRoute(data, "M", t)}</Text>}
+      {confirm && <Text style={{ color }}>{t("새 운영 세션이 준비되면 담당자를 바꿉니다. 진행 중인 작업과 결정 카드는 유지됩니다.", "The new session takes over when ready. Current work and decisions stay on the board.")}</Text>}
       <View style={wrap}>
-        <Button theme={theme} label={confirm ? "교체 취소" : "새 코디네이터로 교체…"}
+        <Button theme={theme} label={confirm ? t("교체 취소", "Cancel replacement") : t("새 코디네이터로 교체…", "Replace coordinator\u2026")}
           disabled={busy || (!confirm && (loading || !model || !mode))} onPress={() => setConfirm(!confirm)} />
-        {confirm && <Button theme={theme} label="새 세션으로 교체" disabled={busy || loading || !model || !mode} onPress={connect} />}
+        {confirm && <Button theme={theme} label={t("새 세션으로 교체", "Switch to new session")} disabled={busy || loading || !model || !mode} onPress={connect} />}
       </View>
       {feedbackArea === "coordinator" && feedback}
     </View>}
   </View>;
 
   return <View style={section}>
-    <Text accessibilityRole="header" style={heading}>코디네이터</Text>
+    <Text accessibilityRole="header" style={heading}>{t("코디네이터", "Coordinator")}</Text>
     {coordinator ? <>
-      <TextInput accessibilityLabel="코디네이터에게 맡길 일" placeholder="어떤 일을 맡길까요?" value={text}
+      <Text style={{ color, fontWeight: "600" }}>{t("코디네이터에게 맡길 일", "Request for the coordinator")}</Text>
+      <TextInput accessibilityLabel={t("코디네이터에게 맡길 일", "Request for the coordinator")} placeholder={t("예: 초안 작성과 자료 검증을 나눠 맡겨 주세요", "Example: Assign the first draft and source checks separately.")} value={text}
+        placeholderTextColor={muted} style={{ minHeight: 64, padding: 10, textAlignVertical: "top", color,
+          backgroundColor: theme.colors.surface0, borderColor: inputFocused ? theme.colors.accent : muted, borderWidth: 2, borderRadius: 7 }}
+        onFocus={() => setInputFocused(true)} onBlur={() => setInputFocused(false)}
         editable={!busy} multiline maxLength={24000} onChangeText={setText} />
       <View style={wrap}>
-        <Button theme={theme} label="코디네이터에 작업 맡기기" disabled={busy || !configured || !text.trim()} onPress={() => void post("work")} />
-        <Button theme={theme} label="다이제스트 요청" disabled={busy || !configured} onPress={() => void post("digest")} />
-        {openCoordinator && <Button theme={theme} label="코디네이터 세션 열기" onPress={() => openCoordinator(coordinator)} />}
+        <Button theme={theme} label={t("코디네이터에 요청 보내기", "Send to coordinator")} selected={!!text.trim() && !!configured && !busy} disabled={busy || !configured || !text.trim()} onPress={() => void post("work")} />
+        <Button theme={theme} label={t("다이제스트 요청", "Request digest")} disabled={busy || !configured} onPress={() => void post("digest")} />
+        {openCoordinator && <Button theme={theme} label={t("코디네이터 세션 열기", "Open coordinator session")} onPress={() => openCoordinator(coordinator)} />}
       </View>
-      <Text style={{ color: muted }}>요청을 보내면 코디네이터 모델이 실행됩니다. 선택한 프로젝트 안에서 담당 세션과 모델을 고릅니다.</Text>
+      <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("작업 요청은 코디네이터에게 전달됩니다. 다이제스트는 내 결정과 추천 답장을 모읍니다. 자동 답장이 켜져 있으면 보드에서 확인한 사실 질문도 처리합니다.", "Requests go to the coordinator. A digest gathers decisions and suggested replies. When automatic replies are on, it also answers verified board questions.")}</Text>
     </> : <>
-      <Text style={{ color: muted }}>{loading ? "사용할 수 있는 모델을 확인하고 있습니다." :
-        model ? `연결된 모델로 운영 세션을 만듭니다 · ${routeName(model)}` :
-        data ? explainEmptyRoute(data, "M") : "설정에서 실행기와 모델을 새로 고쳐 주세요."}</Text>
+      <Text style={{ color: muted }}>{loading ? t("사용할 수 있는 모델을 확인하고 있습니다.", "Checking available models\u2026") :
+        model ? t(`연결된 모델로 운영 세션을 만듭니다 · ${routeName(model, t)}`, `Create a coordinator session with ${routeName(model, t)}`) :
+        data ? explainEmptyRoute(data, "M", t) : t("설정에서 실행기와 모델을 새로 고쳐 주세요.", "Refresh providers and models in Settings.")}</Text>
       {!loading && model && <Text style={{ color: muted }}>{modeText}</Text>}
-      <View style={wrap}><Button theme={theme} label={data?.routing.M ? "저장한 모델로 시작" : "추천 설정으로 시작"} disabled={busy || loading || !model || !mode} onPress={connect} /></View>
+      <View style={wrap}><Button theme={theme} label={data?.routing.M ? t("저장한 모델로 시작", "Start with saved model") : t("추천 설정으로 시작", "Start with recommended settings")} disabled={busy || loading || !model || !mode} onPress={connect} /></View>
     </>}
     {feedback}
   </View>;
