@@ -103,12 +103,13 @@ export function clarificationHistory(
 ): ClarificationEntry[] {
   const scope = store.read();
   const result: ClarificationEntry[] = [];
-  const updates = new Map<string, string>();
+  const updates = new Map<string, string | undefined>();
   for (const entry of Object.values(scope.clarifications)) {
     if (!inScope(scope, entry.card) || !rows.has(entry.recipientId)) continue;
-    const response = evidence.get(entry.recipientId)?.clarificationReplies?.get(entry.messageId) ?? entry.response;
-    if (response && (entry.response !== response || entry.status !== "sent"))
-      updates.set(entry.messageId, response);
+    const message = evidence.get(entry.recipientId)?.clarificationMessages?.get(entry.messageId);
+    const accepted = message?.bodyHash === entry.bodyHash;
+    const response = (accepted ? message.response : undefined) ?? entry.response;
+    if (accepted && (entry.response !== response || entry.status !== "sent")) updates.set(entry.messageId, response);
     result.push({
       cardKey: entry.cardKey,
       messageId: entry.messageId,
@@ -116,7 +117,7 @@ export function clarificationHistory(
       at: entry.at,
       question: entry.question,
       imageCount: entry.imageCount,
-      status: response ? "sent" : entry.status,
+      status: accepted ? "sent" : entry.status,
       response,
     });
   }

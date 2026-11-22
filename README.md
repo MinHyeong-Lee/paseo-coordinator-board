@@ -4,20 +4,24 @@ Paseo에서 여러 프로젝트를 운영할 때, 내가 결정할 일과 각 �
 
 ## 설치하고 첫 카드 보기
 
-1. 세션을 실행할 컴퓨터에 **Paseo 0.16.2 이상**을 준비합니다. 앱에서 **Settings → Plugins**를 열고 신뢰하는 플러그인을 사용할 수 있게 설정합니다.
-2. **Plugin source**에는 공식 디렉터리의 설치 ID `devbrother2024/coordinator-board`를 붙여 넣고 **Install plugin**을 누릅니다. 기본 브랜치를 직접 설치하려면 아래 명령을 실행합니다. Git 소스 설치에는 호스트에 Git이 필요합니다.
+세션을 실행할 컴퓨터에 **Paseo 0.16.2 이상**이 필요합니다. 앱에서 **Settings → Plugins**를 열고 **Enable plugins**를 켜세요. **Plugin source**에 아래 설치 ID를 붙여 넣고 **Install plugin**을 누르세요. [공식 플러그인 페이지](https://paseo.sh/plugins/devbrother2024/coordinator-board)
 
-   ```sh
-   paseo plugin install git:devbrother2024/paseo-coordinator-board --ref main
-   paseo plugin ls coordinator-board
-   ```
+```text
+devbrother2024/coordinator-board
+```
 
-3. 설치 상태가 `running`이면 사이드바에서 **세션별 코디네이터 보드**를 엽니다. 프로젝트 하나를 선택하세요. 기존 세션이 있으면 **프로젝트별 진행**에 상태와 실행 호스트가 표시됩니다.
-4. **추천 설정으로 시작**으로 코디네이터를 만든 뒤 **다이제스트 요청**을 누릅니다. 답을 기다리는 질문이 있으면 **내 결정**에서 내용을 읽고 담당 세션을 열거나 답장을 보낼 수 있습니다.
+터미널에서 설치하려면 같은 컴퓨터에서 다음 명령을 실행하세요.
 
-CLI에서 `--ref`에 전체 Git 커밋 SHA를 넣으면 그 버전을 설치합니다. `git:`은 GitHub 직접 설치용입니다. 공식 목록의 설치 ID는 승인된 버전을 지정합니다. [버전별 커밋](https://github.com/devbrother2024/paseo-coordinator-board/commits/main/) · [Paseo 설치 안내](https://paseo.sh/docs/plugins)
+```sh
+paseo plugin install devbrother2024/coordinator-board
+paseo plugin ls coordinator-board
+```
 
-ZIP을 받았다면 세션을 실행할 컴퓨터에서 압축을 풀고 `paseo-plugin.json`이 들어 있는 폴더에서 `paseo plugin install .`을 실행하세요. 설치 후에도 그 폴더를 보관합니다. 사이드바에 보드가 나타나지 않으면 해당 호스트의 **Settings → Plugins → Coordinator Board → Logs**에서 상태를 확인할 수 있습니다.
+상태가 `running`이면 사이드바에서 **세션별 코디네이터 보드**를 열고 관리할 프로젝트를 선택하세요. 기존 세션은 **프로젝트별 진행**에 나타납니다. **추천 설정으로 시작**을 눌러 코디네이터를 만든 뒤 **다이제스트 요청**을 누르면 답변이 필요한 항목을 확인할 수 있습니다.
+
+레지스트리로 설치한 보드의 새 버전을 확인하려면 `paseo plugin update coordinator-board --check`를 실행하세요. 업데이트하려면 `paseo plugin update coordinator-board`를 실행하고 제안된 변경을 확인합니다.
+
+**Git·ZIP 설치**도 가능합니다. Git이 있는 호스트에서는 `paseo plugin install git:devbrother2024/paseo-coordinator-board --ref main`으로 기본 브랜치를 설치합니다. 영상에서 소개한 기능을 포함한 0.5.12를 설치하려면 `main` 자리에 `v0.5.12`를 넣으세요. 전체 커밋 SHA도 사용할 수 있습니다. ZIP은 압축을 푼 뒤 `paseo-plugin.json`이 있는 폴더에서 `paseo plugin install .`을 실행하고 그 폴더를 보관하세요. [Paseo 플러그인 안내](https://paseo.sh/docs/plugins)
 
 답을 보낸 뒤에는 **내 결정** 목록 아래의 **최근 결정 기록**에서 보낸 문구, 시각, 받은 세션을 확인합니다. 프로젝트 칸반의 **결정 후속**에도 같은 기록이 남습니다. 기기 로그인처럼 프로젝트에 속하지 않는 요청은 **공통**에 표시됩니다. 받은 세션의 후속 응답이 확인되면 카드에 표시되며 세션 칩에서 대화 전문을 열 수 있습니다.
 
