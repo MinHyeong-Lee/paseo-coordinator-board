@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createPaseoApi } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
-import { MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
+import { MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, setWorkerMode, updateRouting } from "../shared/operations";
 import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import type { DispatchInput } from "../shared/dispatch";
 import { setUsageRouting } from "../shared/usage-routing";
@@ -103,8 +103,84 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
     const output = await t.execute(t.input.parse(input) as never, { paseo, agent: { id: caller } } as unknown as PluginHandlerContext & {agent: {id: string}});
     return JSON.parse(output.text);
   }
-  return { handlers, events, sessions, sent, activity, runtime, store, call, tool, dir };
+  return { handlers, events, sessions, sent, activity, runtime, store, call, tool, dir, paseo };
 }
+
+test("initial setup requests only the diagnostics needed for its coordinator preview", async () => {
+  const s = scenario();
+  s.activity.providers.push("custom-agent");
+  const calls = { labels: 0, usage: 0 };
+  const providers = s.paseo.providers;
+  const sdk = { providers: {
+    ...providers,
+    snapshot: () => { calls.labels++; return providers.snapshot(); },
+    listUsage: () => { calls.usage++; return providers.listUsage(); },
+  } };
+  s.store.change(scope => { scope.coordinator = null; scope.usageRouting = false; });
+  const preview = await s.call(operationState, { view: "setup" }, sdk);
+  expect(calls).toEqual({ labels: 0, usage: 0 });
+  expect(preview.usage).toBeUndefined();
+  expect(preview.coordinatorMode?.id).toBe("auto-review");
+
+  s.store.change(scope => { scope.usageRouting = true; });
+  await s.call(operationState, { view: "setup" }, sdk);
+  expect(calls).toEqual({ labels: 0, usage: 1 });
+  s.store.change(scope => { scope.routing.M = [route]; });
+  await s.call(operationState, { view: "setup" }, sdk);
+  expect(calls).toEqual({ labels: 0, usage: 1 });
+
+  const settings = await s.call(operationState, {}, sdk);
+  expect(calls).toEqual({ labels: 1, usage: 2 });
+  expect(settings.usage).toBeDefined();
+  expect(settings.providers.find((p: { id: string }) => p.id === "custom-agent")?.label).toBe("My Code Studio");
+});
+
+test("worker permission preferences apply to new sessions, retain creation receipts and cannot be elevated by an assignment", async () => {
+  const s = scenario();
+  s.activity.modes.push({id:"full-access",label:"Full Access"});
+  const unrestricted = {...job, expectedModeId:"full-access"};
+  await expect(s.tool("assign_board_worker",{job:unrestricted})).rejects.toThrow(/미리보기/);
+  expect(s.sessions.size).toBe(0);
+  const first = await s.tool("assign_board_worker",{job});
+  expect(s.sessions.get(first.sessionId)?.config.modeId).toBe("auto-review");
+  await s.call(setWorkerMode, {provider:"codex", modeId:"full-access", expectedRevision:0});
+  const plan = await s.tool("plan_board_assignment",{});
+  expect(plan.routes.find(r=>r.grade === "C")).toMatchObject({expectedModeId:"full-access"});
+  const second = await s.tool("assign_board_worker",{job:{...unrestricted, requestKey:"synthetic-different-job"}});
+  expect(s.sessions.get(second.sessionId)?.config.modeId).toBe("full-access");
+  expect(await s.tool("assign_board_worker",{job})).toEqual(first);
+  await expect(s.call(setWorkerMode, {provider:"codex", modeId:null, expectedRevision:0})).rejects.toThrow(/바뀌/);
+  await s.call(setWorkerMode, {provider:"codex", modeId:null, expectedRevision:1});
+  expect(s.sessions.get(second.sessionId)?.config.modeId).toBe("full-access");
+  expect(s.store.read().workerModeOverrides).toEqual({});
+});
+
+test("a custom provider alias receives the mode explicitly selected for that host", async () => {
+  const s = scenario();
+  const provider = "studio-claude";
+  s.activity.providers = [provider];
+  s.activity.modes = [{id:"auto",label:"Auto mode"},{id:"default",label:"Always Ask"}];
+  const expectedRoute = {provider, model:alternate.model, effort:null};
+  await s.call(setWorkerMode, {provider,modeId:"auto",expectedRevision:0});
+  expect((await s.call(operationState,{})).workerModeOverrides).toEqual({[provider]:"auto"});
+  const worker = await s.tool("assign_board_worker",{job:{...job,expectedRoute}});
+  expect(s.sessions.get(worker.sessionId)?.config.modeId).toBe("auto");
+});
+
+test("Claude workers request advertised Auto and never silently fall back to Always Ask or Bypass", async () => {
+  const s = scenario();
+  const expectedRoute = {provider:"claude",model:alternate.model,effort:null};
+  s.activity.providers = ["claude"];
+  s.activity.modes = [{id:"default",label:"Always Ask"}, {id:"bypassPermissions",label:"Bypass"}];
+  const assign = () => s.tool("assign_board_worker",{job:{...job,expectedRoute}});
+  await expect(assign()).rejects.toThrow(/auto/);
+  await expect(s.call(setWorkerMode, {provider:"claude",modeId:"bypassPermissions",expectedRevision:0})).rejects.toThrow(/권한/);
+  expect(s.sessions.size).toBe(0);
+  s.activity.modes.push({id:"auto", label:"Auto mode"});
+  const result = await assign();
+  expect(result.modeId).toBe("auto");
+  expect(s.sessions.get(result.sessionId)?.config.modeId).toBe("auto");
+});
 
 test("digest requests follow the board language and older clients default to Korean", async () => {
   const s = scenario();
@@ -252,7 +328,7 @@ test("catalog discovers new provider IDs, useful names and unavailable, empty an
   const s = scenario();
   s.activity.providers.push("custom-agent", "empty", "broken", "offline");
   const state = await s.call(operationState, {});
-  expect(state.providers.find(p => p.id === "custom-agent")).toEqual({id:"custom-agent",label:"My Code Studio",available:true,included:true,status:"ready",modelCount:1});
+  expect(state.providers.find(p => p.id === "custom-agent")).toEqual({id:"custom-agent",label:"My Code Studio",available:true,included:true,status:"ready",modelCount:1,workerModes:s.activity.modes});
   expect(state.providers.find(p => p.id === "empty")).toMatchObject({available:true,status:"empty",modelCount:0});
   expect(state.providers.find(p => p.id === "broken")).toMatchObject({available:true,status:"error",modelCount:null});
   expect(state.providers.find(p => p.id === "offline")).toMatchObject({available:false,status:"unavailable",modelCount:null});

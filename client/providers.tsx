@@ -1,7 +1,7 @@
 import { useBoardLanguage, type Translate } from "./language";
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { eligibleProvider, workerGradeSchema, type CatalogModel } from "../shared/dispatch";
+import { eligibleProvider, workerGradeSchema, recommendedWorkerMode, type CatalogModel } from "../shared/dispatch";
 import type { Operations } from "../shared/operations";
 import { Button, type Theme } from "./controls";
 
@@ -23,11 +23,13 @@ function roles(id: string, catalog: CatalogModel[], t: Translate) {
   return scope.join(" / ");
 }
 
-export function ProviderSettings({ providers, catalog, theme, busy, change }: {
+export function ProviderSettings({ providers, catalog, theme, busy, change, overrides, setMode }: {
   providers: Provider[]; catalog: CatalogModel[];
   theme: Theme;
   busy: boolean;
   change: (provider: string, included: boolean) => void;
+  overrides?: Record<string,string>;
+  setMode: (provider: string, mode: string | null) => void;
 }) {
   const { t } = useBoardLanguage();
   const [expanded, setExpanded] = useState(true);
@@ -51,6 +53,9 @@ export function ProviderSettings({ providers, catalog, theme, busy, change }: {
         <Text selectable style={{ fontWeight: "600", color: c.foreground }}>{provider.label}</Text>
         <Text selectable style={{ fontSize: 12, color: c.foregroundMuted }}>{provider.id} · {catalogStatus(provider, t)}</Text>
         <Text style={{ fontSize: 12, color: c.foregroundMuted }}>{roles(provider.id, catalog, t)}</Text>
+        {overrides && (provider.workerModes?.length || Object.hasOwn(overrides, provider.id) || recommendedWorkerMode(provider.id)) ? <WorkerPermissions
+          provider={provider.id} modes={provider.workerModes} selected={Object.hasOwn(overrides, provider.id) ? overrides[provider.id] : undefined}
+          theme={theme} busy={busy} save={setMode} /> : null}
         <View style={{ flexDirection: "row" }}>
           <Button theme={theme} selected={provider.included} disabled={busy}
             label={provider.included ? t("배정에 포함됨", "Included in routing") : t("배정에서 제외됨", "Excluded from routing")}
@@ -59,5 +64,29 @@ export function ProviderSettings({ providers, catalog, theme, busy, change }: {
         </View>
       </View>)}
     </View>}
+  </View>;
+}
+
+function WorkerPermissions({provider, modes, selected, theme, busy, save}: {
+  provider: string; modes: Provider["workerModes"]; selected?: string;
+  theme: Theme; busy: boolean; save: (provider: string, mode: string | null) => void;
+}) {
+  const { t } = useBoardLanguage();
+  const [open, setOpen] = useState(false);
+  const current = selected ?? recommendedWorkerMode(provider);
+  const label = modes?.find(m => m.id === current)?.label ?? current ?? t("실행기 기본", "Provider default");
+  return <View style={{ gap: 5 }}>
+    <Button theme={theme} label={t(`새 작업 세션 권한 · ${label}`, `New worker permissions · ${label}`)}
+      onPress={() => setOpen(!open)} />
+    {open && <>
+      {current && !modes?.some(m => m.id === current) && <Text style={{color:theme.colors.foregroundMuted}}>{t("호스트에서 현재 선택을 확인할 수 없습니다.", "This host has not confirmed the selected mode.")}</Text>}
+      <View style={{flexDirection:"row", flexWrap:"wrap", gap:5}}>
+        {modes?.map(mode => <Button key={mode.id} theme={theme} label={mode.label} selected={current === mode.id} disabled={busy}
+          onPress={() => save(provider, mode.id)} />)}
+        {selected !== undefined && <Button theme={theme} label={t("권장 모드 복원","Restore recommended mode")} disabled={busy} onPress={() => save(provider, null)} />}
+      </View>
+      {provider === "codex" && modes?.some(m => m.id === "full-access") &&
+        <Text style={{color:theme.colors.foregroundMuted}}>{t("Full Access를 고르면 새 Codex 작업자가 샌드박스 밖에서도 명령을 실행할 수 있습니다.", "Full Access lets new Codex workers run commands outside the sandbox.")}</Text>}
+    </>}
   </View>;
 }
