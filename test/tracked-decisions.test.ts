@@ -188,3 +188,32 @@ test("record routing follows explicit host and project membership",()=>{
   expect(trackedRecipient({...item,where:"manager"},"coord",[s])).toBe("coord");
   expect(trackedRecipient({...item,where:"unknown"},"coord",[s])).toBeNull();
 });
+
+test("a v1 host-wide delivery stays visible after restart and export removal without becoming a new decision", () => {
+  const f = fixture();
+  f.write([row("device-login",{projectId:null,title:"Sign in on the studio device",where:"human"})]);
+  const [original] = f.read().items;
+  const messageId="3fa85f64-5717-4562-b3fc-2c963f66afa6";
+  const at="2026-11-22T06:45:25.444Z";
+  writeFileSync(join(f.dir,"tracked-decisions.resolved.json"),JSON.stringify({version:1,items:[
+    {key:original.key,fingerprint:original.fingerprint,at,answer:"Signed in",recipientId:"coord",messageId,pending:false},
+  ]}));
+  expect(f.read().items).toHaveLength(0);
+  expect(f.read().history).toMatchObject([{projectId:null,title:original.title,answer:"Signed in",status:"sent",coordinator:true,at}]);
+  const evidence=new Map([["coord",{id:"e",turns:[],replies:new Map([[messageId,"Access verified"]])}]]);
+  expect(f.service.read(f.selected,[],{items:[],projects:[]},evidence).history?.[0].response).toBe("Access verified");
+  rmSync(f.path);
+  const restarted=new TrackedDecisionStore(f.path);
+  expect(restarted.read(f.selected,[],{items:[],projects:[]}).history).toMatchObject([{title:original.title,at,response:"Access verified"}]);
+  expect(restarted.read(new Set(),[],{items:[],projects:[]}).history).toBeUndefined();
+});
+
+test("local-only and no-answer resolutions remain distinct and scoped to their project",()=>{
+  const f=fixture();f.write([row("first"),row("second")]);
+  const [first,second]=f.read().items;
+  expect(f.close(first,"Keep it").status).toBe("closed");
+  expect(f.close(second).status).toBe("closed");
+  expect(f.read().history?.map(x=>x.status)).toEqual(["recorded","closed"]);
+  f.selected.clear();f.selected.add("unrelated");
+  expect(f.read().history).toBeUndefined();
+});

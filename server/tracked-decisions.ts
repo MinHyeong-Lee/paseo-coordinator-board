@@ -4,6 +4,8 @@ import { dirname, join, parse } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import type { SessionRow } from "../shared/contract";
+import type { ReplyEntry } from "../shared/reply-history";
+import type { Evidence } from "./conversation";
 import type { PullRequestView } from "../shared/prs";
 import {
   resolveTrackedDecision, trackedDecisionInputSchema, trackedKey, trackedMatches,
@@ -12,7 +14,7 @@ import {
 
 const maxBytes = 8 * 1024 * 1024;
 const feed = z.union([z.object({version:z.literal(1),items:z.array(z.unknown())}).transform(v=>v.items),z.array(z.unknown())]);
-const receipt = z.object({key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
+const receipt = z.object({title:z.string().optional(), coordinator:z.boolean().optional(), response:z.string().optional(),key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
 const receipts = z.object({version:z.literal(1),items:z.array(receipt)});
 type SourceStatus = TrackedDecisionView["status"];
 type InputRow = {key:string;fingerprint:string;item:TrackedDecisionInput};
@@ -90,11 +92,34 @@ export class TrackedDecisionStore {
     return rows.size===parsed.data.items.length?rows:null;
   }
 
-  read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView):TrackedDecisionView {
+  read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView, evidence: ReadonlyMap<string,Evidence> = new Map()):TrackedDecisionView & { history?:ReplyEntry[] } {
     const {status,rows}=this.load(selected);
-    if(status!=="ok" && status!=="partial")return {items:[],status};
     const resolved=this.recorded();
     if(!resolved)return {items:[],status:"unavailable"};
+    const history: ReplyEntry[] = [];
+    let updated = false;
+    for (const [version, receipt] of resolved) {
+      let reference: unknown;
+      try { reference = JSON.parse(receipt.key); } catch { continue; }
+      if (!Array.isArray(reference) || reference.length !== 3) continue;
+      const [, projectId, id] = reference;
+      if (typeof id !== "string" || !(projectId === null ? selected.size > 0 : selected.has(projectId))) continue;
+      const source = rows.get(receipt.key);
+      const original = source?.fingerprint === receipt.fingerprint ? source.item : undefined;
+      const title = receipt.title ?? original?.title ?? id;
+      const coordinator = receipt.coordinator ?? (original ? original.where === "manager" || original.where === "human" : undefined);
+      const response = receipt.recipientId && receipt.messageId && !receipt.pending
+        ? evidence.get(receipt.recipientId)?.replies?.get(receipt.messageId) : undefined;
+      // Preserve the old format's title while the original card is still available.
+      if ((!receipt.title && original && receipt.recipientId) || (response && response !== receipt.response)) {
+        Object.assign(receipt, {title, coordinator, response:response ?? receipt.response});
+        updated = true;
+      }
+      history.push({key:version, title, projectId, coordinator, at:receipt.at, answer:receipt.answer,
+        recipientId:receipt.recipientId, messageId:receipt.messageId, response:receipt.response,
+        status:receipt.pending ? "pending" : receipt.recipientId ? "sent" : receipt.answer ? "recorded" : "closed"});
+    }
+    if (updated) this.save(resolved);
     const scopedSessions=sessions.filter(s=>selected.has(s.projectId));
     const scopedPrs={...prs,items:prs.items.filter(p=>p.projectIds.some(id=>selected.has(id)))};
     const items=[];
@@ -103,7 +128,7 @@ export class TrackedDecisionStore {
       if(previous && !previous.pending)continue;
       items.push({...item,key,fingerprint,...trackedMatches(item,scopedSessions,scopedPrs)});
     }
-    return {items,status};
+    return {items,status,...(history.length ? {history} : {})};
   }
 
   resolve(input:TrackedResolution,getScope:()=>Set<string>):Attempt {
@@ -123,7 +148,7 @@ export class TrackedDecisionStore {
     if(previous?.pending || input.recipientId)return {status:"unconfirmed"};
     if(previous)
       return {status:input.answer && input.answer!==previous.answer?"changed":"already-closed"};
-    records.set(version,{key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),...(input.answer?{answer:input.answer}:{})});
+    records.set(version,{title:row.item.title,key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),...(input.answer?{answer:input.answer}:{})});
     return this.save(records) ? {status:"closed"} : {status:"unavailable"};
   }
 
@@ -155,7 +180,7 @@ export class TrackedDecisionStore {
     if (previous && (previous.recipientId!==input.recipientId || previous.answer!==input.answer)) return {status:"changed"};
     if (previous && !previous.pending) return {status:"sent"};
     const messageId=previous?.messageId ?? randomUUID();
-    const receipt:Receipt={key,fingerprint:input.fingerprint,at:new Date().toISOString(),answer:input.answer,recipientId:input.recipientId,messageId,pending:true};
+    const receipt:Receipt={title:row.item.title,coordinator:row.item.where==="human" || row.item.where==="manager",key,fingerprint:input.fingerprint,at:previous?.at ?? new Date().toISOString(),answer:input.answer,recipientId:input.recipientId,messageId,pending:true};
     try {
       if (previous) {
         if (!(await target.accepted(input.answer,messageId))) return {status:"unconfirmed"};

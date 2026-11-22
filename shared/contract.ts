@@ -5,6 +5,7 @@ import { pullRequestViewSchema } from "./prs";
 import { trackedDecisionViewSchema } from "./tracked-decisions";
 import { factSchema } from "./board-facts";
 
+import { replyEntry } from "./reply-history";
 import { workspacePullSchema } from "./workspace-pull";
 
 const sessionId = z.string().min(1).max(256);
@@ -55,7 +56,7 @@ export const boardSnapshot = defineRpc({
   input: z.object({ fresh: z.boolean().optional() }),
   output: z.object({ sessions: z.array(session), notes: z.record(z.string(), noteSchema),
     projects: z.array(z.object({ id: z.string(), title: z.string(), path: z.string(), selected: z.boolean() })),
-    coordinator: sessionId.nullable(), trackedDecisions: trackedDecisionViewSchema.optional(), pullRequests: pullRequestViewSchema.optional() }),
+    coordinator: sessionId.nullable(), replyHistory: z.array(replyEntry).optional(), trackedDecisions: trackedDecisionViewSchema.optional(), pullRequests: pullRequestViewSchema.optional() }),
 });
 export const boardDecisionCount = defineRpc({
   name: "board.decision-count", input: z.strictObject({}),

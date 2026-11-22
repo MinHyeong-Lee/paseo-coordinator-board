@@ -1,4 +1,5 @@
 import type { BoardReadiness } from "../shared/readiness";
+import { ReplyHistory } from "./reply-history";
 import { TrackedDecisionCard } from "./tracked-decisions";
 import { trackedCoverage, trackedRecipient, pullKey, type TrackedDecision } from "../shared/tracked-decisions";
 import { MergeFeedback, PullRequestCard, PullRequestSettings, type MergeNotice, type WorkSessionLink } from "./pull-requests";
@@ -56,6 +57,11 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   for (const item of records) {
     projectIds.add(item.projectId);
     if (item.projectId && !displayed.has(item.projectId)) displayed.set(item.projectId,{id:item.projectId,title:names.get(item.projectId) ?? item.projectTitle ?? item.projectId,cards:[]});
+  }
+  const history = snapshot?.replyHistory ?? [];
+  for (const entry of history) {
+    projectIds.add(entry.projectId);
+    if (entry.projectId && !displayed.has(entry.projectId)) displayed.set(entry.projectId,{id:entry.projectId,title:names.get(entry.projectId) ?? entry.projectId,cards:[]});
   }
   for (const id of projectIds) {
     const list=decisionsFor(projectId=>projectId===id);
@@ -191,6 +197,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
               label={`${projectName(id)} · ${count}`} onPress={() => toggleFilter(id)} />)}
           </View>}
         </View>}
+        <ReplyHistory entries={history.filter(entry=>inFilter(entry.projectId))} theme={theme} open={actions.onOpen} />
         {incomplete &&
           <Text accessibilityLiveRegion="polite" style={{ color: c.statusWarning }}>{t("일부 결정 기록을 읽지 못했습니다. 현재 건수에는 확인한 항목만 포함됩니다.", "Some decision records could not be loaded. The count includes the available items.")}</Text>}
         {filters.length > 0 && !filteredTotal && total > 0 && !incomplete && <Text style={{color:c.foregroundMuted}}>{t("선택한 프로젝트에 결정할 일이 없습니다.","No decisions in the selected projects.")}</Text>}
@@ -204,8 +211,11 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
         {remaining > 0 && <Button theme={theme} label={t(`결정 ${remaining}건 더 보기`, `Show ${remaining} more decisions`)} onPress={() => setDigestLimit(total)} />}
       </View>}
       {!settings && snapshot && !displayed.size && (configured || !snapshot.projects.length) && <Text style={{ color: c.foregroundMuted }}>{t("표시할 세션이 없습니다. 워크스페이스에서 세션을 시작하면 여기에 나타납니다.", "Start a session in a workspace to see it here.")}</Text>}
-      {!settings && displayed.size > 0 && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
-      {!settings && [...displayed.values()].map((p) => <Project projectId={p.id} records={records.filter(r => r.projectId === p.id)} renderRecord={renderRecord} decisions={byProject.get(p.id) ?? 0} sessionHostLabel={hostLabel} renderPull={renderPull} openRecord={linkedSession} requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
+      {!settings && (displayed.size > 0 || byProject.has(null)) && <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: 19, fontWeight: "700" }}>{t("프로젝트별 진행", "Project progress")}</Text>}
+      {!settings && byProject.has(null) && <Project projectId="" title={t("공통","Host-wide")} cards={[]} requests={[]} history={history.filter(entry=>entry.projectId === null)}
+        records={records.filter(item=>item.projectId === null)} decisions={byProject.get(null) ?? 0} renderRecord={renderRecord} renderPull={renderPull}
+        openRecord={linkedSession} compact={layout.compact} theme={theme} {...actions} />}
+      {!settings && [...displayed.values()].map((p) => <Project projectId={p.id} history={history.filter(entry=>entry.projectId===p.id)} records={records.filter(r => r.projectId === p.id)} renderRecord={renderRecord} decisions={byProject.get(p.id) ?? 0} sessionHostLabel={hostLabel} renderPull={renderPull} openRecord={linkedSession} requests={pullRequests?.items.filter(pr => pr.projectIds.includes(p.id)) ?? []} key={p.id} title={p.title} cards={p.cards} compact={layout.compact} theme={theme} {...actions} />)}
       {!settings && hostId && snapshot && configured && <RemoteRunning groups={peers}
         projects={snapshot.projects} open={onOpenHostSession} theme={theme} />}
     </ScrollView>

@@ -6,9 +6,12 @@ import { columnWidth, COLUMN_GAP } from "./lane-width";
 import type { PullRequestItem } from "../shared/prs";
 import type { TrackedDecision } from "../shared/tracked-decisions";
 import { factStatus, laneLabel, noteLabel, sessionDetail, type Card, type Lane } from "./model";
+import type { ReplyEntry } from "../shared/reply-history";
+import { ReplyCard } from "./reply-history";
+type ColumnKind = Lane | "history";
 type Actions = { sessionHostLabel?: string; onOpen?: (id:string) => void; onEdit:(id:string) => void };
 
-function accent(lane: Lane, theme: Theme) {
+function accent(lane: ColumnKind, theme: Theme) {
   const c = theme.colors;
   if (lane === "human") return c.statusWarning;
   if (lane === "running") return c.accent;
@@ -77,14 +80,14 @@ function RecordPreview({item,theme,render,open}: {item:TrackedDecision;theme:The
   </View>;
 }
 
-function Column({lane,entries,theme}: {lane:Lane;entries:Entry[];theme:Theme}) {
+function Column({lane,entries,theme}: {lane:ColumnKind;entries:Entry[];theme:Theme}) {
   const {t} = useBoardLanguage();
   const [limit,setLimit] = useState(4);
   const c=theme.colors;
   return <View style={{padding:8,borderRadius:8,backgroundColor:c.surface1,borderColor:c.border,borderWidth:1,gap:7}}>
     <View style={{flexDirection:"row",alignItems:"center",gap:6}}>
       <View style={{width:7,height:7,borderRadius:4,backgroundColor:accent(lane,theme)}} />
-      <Text accessibilityRole="header" style={{color:c.foreground,flex:1,fontWeight:"600"}}>{laneLabel(lane,t)}</Text>
+      <Text accessibilityRole="header" style={{color:c.foreground,flex:1,fontWeight:"600"}}>{lane === "history" ? t("결정 후속","Decision follow-up") : laneLabel(lane,t)}</Text>
       <Text style={{color:c.foregroundMuted}}>{entries.length}</Text>
     </View>
     {entries.slice(0,limit).map(entry=><View key={entry.key}>{entry.content}</View>)}
@@ -92,14 +95,14 @@ function Column({lane,entries,theme}: {lane:Lane;entries:Entry[];theme:Theme}) {
   </View>;
 }
 
-type Props = Actions & {projectId:string; title:string; decisions:number; cards:Card[]; records:TrackedDecision[]; requests:PullRequestItem[];
+type Props = Actions & {projectId:string; title:string; history?:ReplyEntry[]; decisions:number; cards:Card[]; records:TrackedDecision[]; requests:PullRequestItem[];
   renderRecord:(item:TrackedDecision)=>ReactNode; theme:Theme; compact:boolean; openRecord:(item:TrackedDecision)=>(()=>void)|undefined; renderPull:(pr:PullRequestItem,projectId:string)=>ReactNode};
-const order:Lane[] = ["running","review","human","idle","done","unknown"];
+const order:ColumnKind[] = ["running","review","human","history","idle","done","unknown"];
 
-export function Project({projectId,title,decisions,cards,records,requests,renderRecord,theme,compact,openRecord,renderPull,...actions}:Props) {
+export function Project({projectId,title,decisions,cards,records,history=[],requests,renderRecord,theme,compact,openRecord,renderPull,...actions}:Props) {
   const {t} = useBoardLanguage();
   const [width,setWidth] = useState(0);
-  const groups:Record<Lane,Entry[]> = {running:[],review:[],human:[],idle:[],done:[],unknown:[]};
+  const groups:Record<ColumnKind,Entry[]> = {history: history.map(entry=>({key:entry.key,content:<ReplyCard entry={entry} theme={theme} open={actions.onOpen} />})),running:[],review:[],human:[],idle:[],done:[],unknown:[]};
   for(const item of records) {
     const since = Date.parse(item.since ?? "");
     const answered = item.replyHistory.some(reply => Date.parse(reply.at ?? "") >= since);

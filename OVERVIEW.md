@@ -15,6 +15,8 @@ For a reviewed catalog release, paste the install ID from its directory page int
 
 Open the board from the sidebar and select the projects you want in your digest. To manage just one session from another project, open **Settings → Link a session from another project**. Search for the session, check its ID and source workspace, select a managed destination, then click **Link to this project**. The card appears once under its destination. The session keeps its original ID, workspace, files and conversation. **Unlink from project** removes the link. The card returns to its source project if that project is also managed.
 
+After sending an answer, check **Recent decision activity** for the exact message, time and recipient. The project’s **Decision follow-up** column keeps the same record. Device-wide actions appear under **Host-wide**. A verified follow-up appears on the card, and the recipient chip opens the conversation.
+
 ## Work with a coordinator
 
 Click **Start with recommended settings** to create the coordinator, or select **Choose an existing coordinator session** in Settings. Before creating or replacing a coordinator, the board shows the model and tool permission mode. It prefers Auto mode for Claude Code and Auto-review for Codex when supported. OpenCode with Build mode and Copilot with Agent mode can serve as alternatives when their coordinator mode is available on the host. For other providers, you can designate an existing session with Paseo MCP.

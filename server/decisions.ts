@@ -141,6 +141,8 @@ export class DecisionSender {
       decorateDecision(row, note, current);
       if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
       current.decisionReceipts[messageId] = {
+        activity: { title: row.decision.question || row.title, at: new Date().toISOString(), projectId: input.projectId,
+          answer: input.text, recipientId: input.recipientId, coordinator: input.action === "coordinate" },
         fingerprint, sessionId: row.id, version: input.version, evidenceId: evidence.id, status: "pending", beforeAnswer: current.answers[row.id]?.version, ...(note?.kind === "question" ? { noteRevision: note.revision } : {}),
       };
     });
