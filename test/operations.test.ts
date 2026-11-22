@@ -27,7 +27,7 @@ type Callback = (input: unknown, ctx: { paseo: unknown }) => Promise<unknown>;
 const page = <T,>(entries: T[]) => ({ entries, pageInfo: { hasMore: false, nextCursor: null } });
 
 // This fixture has no host registry, networking, transcripts, or model executor.
-function scenario() {
+function scenario(facts?: Parameters<typeof createOperations>[2]) {
   const dir = mkdtempSync(join(tmpdir(), "board-coordinator-operations-"));
   paths.push(dir);
   const store = new PreferenceStore(join(dir, "scope.json"));
@@ -83,7 +83,7 @@ function scenario() {
       },
     },
   };
-  const ops = createOperations(store, join(dir, "workspace"));
+  const ops = createOperations(store, join(dir, "workspace"), facts);
   const handlers = new Map<string, Callback>();
   ops.register({ handle: (contract: Rpc, handler: Callback) => { handlers.set(contract.name,handler); } } as unknown as PluginServerContext);
   async function call(definition: Rpc, input: unknown) {
@@ -299,4 +299,27 @@ test("sidebar RPCs can pin a selected existing coordinator while auto-pin is off
   expect(await s.call(coordinatorPinSettings, {})).toMatchObject({ enabled:false, workspace:{ pinned:true } });
   await s.call(setCoordinatorAutoPin, {enabled:true});
   expect(s.events).toEqual(["workspace.pin:" + workspaceId]);
+});
+
+test("only a digest click with enabled factual handling binds the exact coordinator message", async () => {
+  const grants: string[] = [];
+  const bound: string[][] = [];
+  const cycle = "a".repeat(64);
+  const s = scenario({
+    async prepareCycle(_sdk, recipient, key) {
+      expect(recipient).toBe(coordinator);
+      grants.push(key);
+      return key === "enabled-facts-01" ? cycle : null;
+    },
+    bindMessage(recipient, scope, messageId) { bound.push([recipient, scope, messageId]); },
+  });
+  await s.call(requestWork, {coordinator, requestKey:"regular-work-01", text:"Summarize progress."});
+  await s.call(askDigest, {coordinator, requestKey:"legacy-digest-01"});
+  await s.call(askDigest, {coordinator, requestKey:"disabled-facts-01", handleBoardFacts:true});
+  await s.call(askDigest, {coordinator, requestKey:"enabled-facts-01", handleBoardFacts:true, language:"en"});
+  expect(grants).toEqual(["disabled-facts-01", "enabled-facts-01"]);
+  expect(bound).toEqual([[coordinator, cycle, s.sent[3].messageId]]);
+  expect(s.sent.slice(0, 3).every(msg => !msg.text.includes("answer_board_fact"))).toBe(true);
+  expect(s.sent[3].text).toContain(cycle);
+  expect(s.sent[3].text).toContain("answer_board_fact");
 });

@@ -3,6 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendDecision, type DecisionInput } from "../shared/decision-actions";
+import { requestRecommendation } from "../shared/recommendation";
+import { registerRecommendation } from "../server/recommendation";
 import { ConversationReader } from "../server/conversation";
 import { decorateDecision, DecisionSender } from "../server/decisions";
 import { discoverSessions } from "../server/discovery";
@@ -54,7 +56,7 @@ async function fixture() {
     action: "reply", text: "한 줄로 해 주세요.", requestKey: "send-000000001",
   };
   const send = (changes: Partial<DecisionInput> = {}) => sender.send(sdk, sendDecision.input.parse({ ...input, ...changes }));
-  return { prefs, notes, sent, send, row, input, actors, timelines, state, reader, sdk };
+  return { prefs, notes, sent, send, row, input, actors, timelines, state, reader, sdk, sender };
 }
 
 test("구조화 질문·추천·선택은 해당 근거에만 붙고 자유 입력은 클릭한 문장 그대로 원래 세션으로 간다", async () => {
@@ -145,4 +147,27 @@ test("발송 결과가 불명확하고 수신 타임라인에 해당 ID가 없�
   await expect(f.send()).rejects.toThrow("이전 전송 결과");
   expect(f.sent).toHaveLength(1);
   expect(f.prefs.read().answers).toEqual({});
+});
+
+test("a recommendation refresh targets just one card and leaves its answer open", async () => {
+  const f = await fixture();
+  let handler;
+  registerRecommendation({handle(contract, fn) { expect(contract.name).toBe(requestRecommendation.name); handler = fn; }}, f.sender);
+  const input = requestRecommendation.input.parse({
+    sessionId:"worker", projectId:"project", version:f.input.version,
+    requestKey:"recommendation-click-01", coordinator:"coordinator", language:"en",
+  });
+  const invoke = (args = input) => handler(args, {paseo:f.sdk});
+  const results = await Promise.all([invoke(), invoke()]);
+  expect(results[1]).toEqual(results[0]);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0].id).toBe("coordinator");
+  expect(f.sent[0].text).toContain('"sessionId":"worker"');
+  expect(f.sent[0].text).toContain("content.needsInput");
+  expect(f.sent[0].text).not.toContain("answer_board_fact");
+  expect(f.prefs.read().answers).toEqual({});
+  f.actors.worker.pendingPermissions.push({id:"native"});
+  expect(await invoke({...input, requestKey:"repeat-recommendation-02"})).toEqual(results[0]);
+  await expect(invoke({...input, language:"ko", requestKey:"different-recommendation-03"})).rejects.toThrow();
+  expect(f.sent).toHaveLength(1);
 });

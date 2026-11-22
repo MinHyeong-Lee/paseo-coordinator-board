@@ -14,6 +14,7 @@ import {
 import { resolveRoute } from "../shared/dispatch";
 import { Button, type Theme } from "./controls";
 import { ProviderSettings } from "./providers";
+import { FactReplyControls } from "./fact-reply-controls";
 import { CoordinatorPinControls } from "./coordinator-pin";
 import { RouteEditor, routeName, wrap } from "./route-editor";
 import { useBoardLanguage } from "./language";
@@ -123,7 +124,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       };
     const input = { coordinator, requestKey: delivery.current.key };
     const receipt = await act(
-      () => (kind === "digest" ? sendDigest({ ...input, language }) : sendWork({ ...input, text: message })),
+      () => (kind === "digest" ? sendDigest({ ...input, language, handleBoardFacts: true }) : sendWork({ ...input, text: message })),
       kind === "digest"
         ? t("다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요.", "Digest requested. Open the coordinator session to read the response.")
         : t("코디네이터에게 맡겼습니다. 세션에서 배정과 진행을 확인하세요.", "Request sent. Open the coordinator session to follow the assignment."),
@@ -160,6 +161,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   }
 
   if (settings) return <View style={{ gap: 14 }}>
+    <FactReplyControls theme={theme} />
     <CoordinatorPinControls theme={theme} coordinator={coordinator} />
     <View style={section}>
       <View style={{ ...wrap, alignItems: "center", justifyContent: "space-between" }}>
@@ -222,7 +224,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
         <Button theme={theme} label={t("다이제스트 요청", "Request digest")} disabled={busy || !configured} onPress={() => void post("digest")} />
         {openCoordinator && <Button theme={theme} label={t("코디네이터 세션 열기", "Open coordinator session")} onPress={() => openCoordinator(coordinator)} />}
       </View>
-      <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("맡길 일을 입력하면 보낼 수 있습니다. 코디네이터가 선택한 프로젝트 안에서 담당 세션과 모델을 고릅니다.", "Enter a request to send it. The coordinator chooses a worker session and model in your selected projects.")}</Text>
+      <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("작업 요청은 코디네이터에게 전달됩니다. 다이제스트는 내 결정과 추천 답장을 모읍니다. 자동 답장이 켜져 있으면 보드에서 확인한 사실 질문도 처리합니다.", "Requests go to the coordinator. A digest gathers decisions and suggested replies. When automatic replies are on, it also answers verified board questions.")}</Text>
     </> : <>
       <Text style={{ color: muted }}>{loading ? t("사용할 수 있는 모델을 확인하고 있습니다.", "Checking available models\u2026") :
         model ? t(`연결된 모델로 운영 세션을 만듭니다 · ${routeName(model, t)}`, `Create a coordinator session with ${routeName(model, t)}`) :

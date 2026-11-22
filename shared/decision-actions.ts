@@ -4,6 +4,8 @@ import { z } from "zod";
 export const decisionFields = z.object({
   question: z.string().trim().min(1).max(2000).optional(),
   recommendation: z.string().trim().min(1).max(2000).optional(),
+  recommendationReason: z.string().trim().min(1).max(400).optional(),
+  needsInput: z.string().trim().min(1).max(400).optional(),
   options: z.array(z.object({
     label: z.string().trim().min(1).max(160), reply: z.string().trim().min(1).max(2000),
   })).max(10).optional(),

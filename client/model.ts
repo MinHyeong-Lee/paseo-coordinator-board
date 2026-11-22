@@ -46,6 +46,17 @@ export function sessionDetail(detail: string, t: Translate) {
   return detail;
 }
 
+export function factStatus({ delivery, kind }: Pick<NonNullable<Session["boardFact"]>, "delivery" | "kind">, t: Translate) {
+  if (delivery === "recorded" && kind === "report") return t("진행 보고 기록됨", "Progress report recorded");
+  const words = {
+    recorded: t("사실 확인 기록됨", "Fact recorded"),
+    pending: t("사실 답변 전달 확인 중", "Checking delivery of fact"),
+    sent: t("사실 답변 전달됨", "Fact delivered"),
+    unconfirmed: t("사실 답변 전달 미확인", "Fact delivery unconfirmed"),
+  };
+  return words[delivery];
+}
+
 function displayLane(session: Session, note: Note | undefined): Lane {
   if (session.nativePending) return "human";
   if (session.evidenceId && session.evidenceId === note?.evidenceId && note.origin === "person") {

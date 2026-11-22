@@ -1,6 +1,6 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useMemo, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { DecisionActions, ReceiptText, type DecisionReceipt } from "./decision-actions";
 import { SessionLinks } from "./session-links";
 import { BoardHosts } from "./hosts";
@@ -8,7 +8,7 @@ import { OperationsPanel } from "./operations";
 import { Button, type Theme } from "./controls";
 import { columnWidth, COLUMN_GAP } from "./lane-width";
 import { BoardLanguageSetting, useBoardLanguage } from "./language";
-import { laneLabel, lanes, noteLabel, sessionDetail, projectCards, type Card, type Lane, type Snapshot } from "./model";
+import { factStatus, laneLabel, lanes, noteLabel, sessionDetail, projectCards, type Card, type Lane, type Snapshot } from "./model";
 
 type Actions = { coordinator?: string | null; onCoordinator?: (id: string | null) => void; changing?: boolean; onOpen?: (id: string) => void; onEdit: (id: string) => void };
 
@@ -21,21 +21,46 @@ function accent(lane: Lane, theme: Theme) {
 }
 
 function CardView({ card, theme, onOpen, onEdit }: { card: Card; theme: Theme } & Actions) {
+  const [expanded, setExpanded] = useState(false);
   const { t } = useBoardLanguage();
   const { session, note } = card;
   const c = theme.colors;
+  const fact = session.boardFact;
+  const question = session.decision?.question;
   const runtime = [session.provider, session.model === session.provider ? null : session.model].filter(Boolean).join(" / ");
   const noteText = note && note.kind !== "clear" ? [note.origin === "agent" ? t("세션 보고", "Session report") : null, noteLabel(note.kind, t), note.text].filter(Boolean).join(" · ") : null;
   return (
     <View style={{ padding: 10, borderRadius: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface0, gap: 6 }}>
-      <Text selectable style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>{session.title}</Text>
-      <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{[session.sourceProjectTitle && t(`원래 소속 ${session.sourceProjectTitle}`, `From ${session.sourceProjectTitle}`), session.workspaceTitle, runtime].filter(Boolean).join(" · ")}</Text>
-      {!!session.detail && <Text selectable style={{ color: c.foregroundMuted, fontSize: 13 }}>{sessionDetail(session.detail, t)}</Text>}
-      {noteText && <Text selectable numberOfLines={3} style={{ color: c.foreground, fontSize: 13 }}>{noteText}</Text>}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
-        {onOpen && <Button theme={theme} label={t("세션 열기", "Open session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
-        <Button theme={theme} label={noteText ? t("기록 편집", "Edit note") : t("기록 추가", "Add note")} accessibilityLabel={t(`기록 편집 · ${session.title}`, `Edit note · ${session.title}`)} onPress={() => onEdit(session.id)} />
-      </View>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded }}
+        accessibilityLabel={t(`${session.title} · ${expanded ? "상세 접기" : "상세 보기"}`, `${session.title} · ${expanded ? "Hide details" : "View details"}`)}
+        onPress={() => setExpanded(value => !value)} style={{ gap: 3 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <Text style={{ color: c.foreground, fontSize: 14, fontWeight: "600", flex: 1 }}>{session.title}</Text>
+          <Text accessible={false} style={{ color: c.foregroundMuted }}>{expanded ? "▴" : "▾"}</Text>
+        </View>
+        <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12 }}>
+          {card.lane === "human" ? t("내 답을 기다리는 중", "Waiting for my decision")
+            : session.detail ? sessionDetail(session.detail, t) : laneLabel(card.lane, t)}
+        </Text>
+      </Pressable>
+      {fact && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+        {fact.current ? "" : t("이전 · ", "Previous · ")}{factStatus(fact, t)}
+      </Text>}
+      {expanded && <>
+        {fact && <View style={{ gap: 3 }}>
+          <Text selectable style={{ color: c.foreground }}>{fact.answer}</Text>
+          <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("확인 근거", "Source")} · {fact.source}</Text>
+        </View>}
+        <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{[session.sourceProjectTitle && t(`원래 소속 ${session.sourceProjectTitle}`, `From ${session.sourceProjectTitle}`), session.workspaceTitle, runtime].filter(Boolean).join(" · ")}</Text>
+        {!!session.detail && <Text selectable style={{ color: c.foregroundMuted, fontSize: 13 }}>{sessionDetail(session.detail, t)}</Text>}
+        {!!question && question !== session.detail && !session.detail.endsWith(" · " + question) && note?.text !== question &&
+          <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{question}</Text>}
+        {noteText && <Text selectable style={{ color: c.foreground, fontSize: 13 }}>{noteText}</Text>}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
+          {onOpen && <Button theme={theme} label={t("세션 열기", "Open session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
+          <Button theme={theme} label={noteText ? t("기록 편집", "Edit note") : t("기록 추가", "Add note")} accessibilityLabel={t(`기록 편집 · ${session.title}`, `Edit note · ${session.title}`)} onPress={() => onEdit(session.id)} />
+        </View>
+      </>}
     </View>
   );
 }
@@ -72,7 +97,8 @@ function Project({ cards, title, theme, compact, ...actions }: { cards: Card[]; 
   const c = theme.colors;
   return (
     <View style={{ gap: 8 }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-      <Text accessibilityRole="header" style={{ fontSize: 18, fontWeight: "600", color: c.foreground }}>{title} <Text style={{ fontSize: 14, color: c.foregroundMuted }}>{cards.length}</Text></Text>
+      <Text accessibilityRole="header" style={{ fontSize: 18, fontWeight: "600", color: c.foreground }}>{title}</Text>
+      <Text style={{ fontSize: 13, color: c.foregroundMuted }}>{t(`세션 ${cards.length}개 · 진행 중 ${grouped.running.length} · 내 결정 ${grouped.human.length}건`, `Sessions ${cards.length} · In progress ${grouped.running.length} · My decisions ${grouped.human.length}`)}</Text>
       {width === 0 && !compact ? null : narrow ? <>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
           {lanes.map((lane) => <Button theme={theme} key={lane} selected={lane === current} label={`${laneLabel(lane, t)} ${grouped[lane].length}`} onPress={() => setSelected(lane)} />)}

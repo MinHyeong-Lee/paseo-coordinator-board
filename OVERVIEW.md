@@ -22,6 +22,10 @@ Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn 
 
 Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
 
+Each decision card leads with the question and one suggested reply. Open **View source** for the original text and the reason behind the suggestion. Use **Ask coordinator for a recommendation** to revisit an older card. If a necessary detail is missing, the card asks for that detail. Other actions sit under **Other actions**.
+
+A worker asking “Which project does this session belong to?” can receive a verified answer from the designated coordinator during a requested digest. The project card shows a record of the response. **Settings → Automatic replies to factual questions** lets you turn this off for the host. Receiving a reply can start the worker's model and use its provider allowance. A decision such as deleting a work folder still requires the person responsible.
+
 - **Reply to a session.** Review the recipient and use **Send suggested reply** or choose an option and use **Send selected reply**. **Edit reply** and **Write a reply** let you send your own wording.
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
 - **Respond to a native approval.** Choose **Review approval in original session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.

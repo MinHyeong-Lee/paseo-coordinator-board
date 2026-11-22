@@ -61,7 +61,7 @@ export type CoordinatorPinSettings = z.output<typeof coordinatorPinSettings.outp
 const messageFields = { coordinator: z.string().min(1).max(256), requestKey: z.string().min(12).max(96) };
 export const askDigest = defineRpc({
   name: "board.request-digest",
-  input: z.strictObject({ ...messageFields, language: z.enum(["ko", "en"]).optional() }),
+  input: z.strictObject({ ...messageFields, language: z.enum(["ko", "en"]).optional(), handleBoardFacts: z.boolean().optional() }),
   output: z.object({ ok: z.boolean() }),
 });
 export const requestWork = defineRpc({

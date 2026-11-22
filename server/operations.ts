@@ -16,7 +16,8 @@ import {
 import { CoordinatorLifecycle } from "./lifecycle";
 import { isCurrentMembership } from "./session-links";
 import { managedRowsForCoordinator } from "./coordinator";
-import { sendCoordinatorRequest, digestPrompt, englishDigestPrompt } from "./digest";
+import type { BoardFacts } from "./board-facts";
+import { sendCoordinatorRequest, digestPrompt, englishDigestPrompt, digestWithFactReplies } from "./digest";
 import { PreferenceStore } from "./preferences";
 
 async function coordinatorPermissionMode(paseo: PluginHandlerContext["paseo"], provider: string) {
@@ -36,7 +37,7 @@ async function coordinatorPermissionMode(paseo: PluginHandlerContext["paseo"], p
   return null;
 }
 
-export function createOperations(store: PreferenceStore, workspaceDir: string) {
+export function createOperations(store: PreferenceStore, workspaceDir: string, facts?: Pick<BoardFacts, "prepareCycle" | "bindMessage">) {
   const lifecycle = new CoordinatorLifecycle(store, workspaceDir);
   function ownerScope(caller: string) {
     const scope = store.read();
@@ -109,9 +110,15 @@ export function createOperations(store: PreferenceStore, workspaceDir: string) {
         config: { ...configForRoute(input.expectedRoute), modeId: mode.id }, verifyRoute,
       });
     });
-    server.handle(askDigest, (input, { paseo }) =>
-      sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.language === "en" ? englishDigestPrompt : digestPrompt),
-    );
+    server.handle(askDigest, async (input, { paseo }) => {
+      const language = input.language ?? "ko";
+      const cycle = input.handleBoardFacts && facts ? await facts.prepareCycle(paseo, input.coordinator, input.requestKey) : null;
+      if (cycle && facts) {
+        return sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, digestWithFactReplies(language, cycle),
+          messageId => facts.bindMessage(input.coordinator, cycle, messageId));
+      }
+      return sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, language === "en" ? englishDigestPrompt : digestPrompt);
+    });
     server.handle(requestWork, (input, { paseo }) =>
       sendCoordinatorRequest(paseo, store, input.coordinator, input.requestKey, input.text),
     );

@@ -12,7 +12,9 @@ import { hostVisibility } from "./shared/hosts";
 import { decorateDecision, DecisionSender } from "./server/decisions";
 import { sendDecision } from "./shared/decision-actions";
 import { isCurrentMembership, managedSessions, registerSessionLinks, releaseUnmanagedCoordinator } from "./server/session-links";
+import { registerRecommendation } from "./server/recommendation";
 import { NoteStore } from "./server/notes";
+import { BoardFacts } from "./server/board-facts";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(hostVisibility);
@@ -22,10 +24,13 @@ export default function contribute(server: PluginServerContext) {
 
   const prefs = new PreferenceStore(join(dataDir, "scope.json"));
   const reader = new ConversationReader();
-  const operations = createOperations(prefs, join(home, "plugin-workspaces", "coordinator-board"));
+  const facts = new BoardFacts(prefs, notes, reader);
+  facts.register(server);
+  const operations = createOperations(prefs, join(home, "plugin-workspaces", "coordinator-board"), facts);
   operations.register(server);
   registerSessionLinks(server, prefs);
   const decisions = new DecisionSender(prefs, notes, reader);
+  registerRecommendation(server, decisions);
   server.handle(sendDecision, (input, { paseo }) => decisions.send(paseo, input));
   server.handle(boardSnapshot, async (_input, { paseo }) => {
     const [rows, catalog] = await Promise.all([discoverSessions(paseo), paseo.projects.list()]);
@@ -39,10 +44,11 @@ export default function contribute(server: PluginServerContext) {
     }
     const titles = new Map([...choices].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
-    await reader.decorate(paseo, sessions, scope);
+    const evidence = await reader.decorate(paseo, sessions, scope);
     const latest = prefs.read();
     const visible = sessions.filter(row => isCurrentMembership(row, latest));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
+    facts.decorate(visible, evidence, visibleNotes);
     for (const row of visible) decorateDecision(row, visibleNotes[row.id], latest);
     return { sessions: visible, notes: visibleNotes,
       projects: [...choices.values()].map(p => ({ ...p, selected: latest.projects.includes(p.id) })), coordinator: latest.coordinator };
@@ -55,6 +61,7 @@ export default function contribute(server: PluginServerContext) {
         if (!catalog.projects.some(p => p.projectId === change.projectId)) throw new Error("이 호스트에서 프로젝트를 찾을 수 없습니다.");
       }
       prefs.change(scope => {
+        if (scope.projects.includes(change.projectId) !== change.enabled) delete scope.factCycle;
         scope.projects = scope.projects.filter(id => id !== change.projectId);
         if (change.enabled) scope.projects.push(change.projectId);
         else {
@@ -89,6 +96,6 @@ export default function contribute(server: PluginServerContext) {
     return { ok: true };
   });
   const removeReport = attachReportTool(server, notes);
-  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, operations.tools);
+  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool]);
   return () => { removeCoordinator(); removeReport(); };
 }

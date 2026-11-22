@@ -6,6 +6,7 @@ import { classify, ConversationReader } from "./conversation";
 import { isCurrentMembership, managedSessions } from "./session-links";
 import { discoverSessions } from "./discovery";
 import type { NoteStore } from "./notes";
+import { verifiedBoardFact } from "./board-facts";
 import { isManagedCoordinator, type Preferences, type PreferenceStore } from "./preferences";
 
 type Sdk = PluginHandlerContext["paseo"];
@@ -135,11 +136,12 @@ export class DecisionSender {
       requireScope(current, input);
       if (!isCurrentMembership(row, current) || (!isCurrentMembership(destination, current) && !isManagedCoordinator(current, destination.id))) throw Error(changed);
       const judgment = current.judgments[row.id];
+      if (verifiedBoardFact(row, evidence, current, note)) throw Error(changed);
       Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined), { evidenceId: evidence.id });
       decorateDecision(row, note, current);
       if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
       current.decisionReceipts[messageId] = {
-        fingerprint, sessionId: row.id, version: input.version, status: "pending", beforeAnswer: current.answers[row.id]?.version, ...(note?.kind === "question" ? { noteRevision: note.revision } : {}),
+        fingerprint, sessionId: row.id, version: input.version, evidenceId: evidence.id, status: "pending", beforeAnswer: current.answers[row.id]?.version, ...(note?.kind === "question" ? { noteRevision: note.revision } : {}),
       };
     });
     try {

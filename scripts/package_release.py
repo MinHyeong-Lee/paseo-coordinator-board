@@ -22,6 +22,8 @@ required = {
     "server/digest.ts", "client/coordinator-pin.tsx", "client/operations.tsx", "client/route-editor.tsx", "client/providers.tsx",
     "client/hosts.tsx", "shared/hosts.ts", "client/route-options.ts",
     "server/decisions.ts", "shared/decision-actions.ts", "client/decision-actions.tsx",
+    "server/board-facts.ts", "shared/board-facts.ts", "client/fact-reply-controls.tsx",
+    "server/recommendation.ts", "shared/recommendation.ts", "client/decision-summary.ts",
     "server/session-links.ts", "shared/session-links.ts", "client/session-links.tsx", "client/language.tsx",
     "package.json", "LICENSE", "OVERVIEW.md", "README.md", "templates/coordinator-session.md",
     "third-party/better-paseo/LICENSE", "THIRD_PARTY_NOTICES.md", "assets/preview.png",
