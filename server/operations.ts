@@ -1,4 +1,6 @@
 import { defineAgentTool, type PluginServerContext } from "@getpaseo/plugin/server";
+import { readAccountUsage } from "./usage-routing";
+import { setUsageRouting } from "../shared/usage-routing";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { askDigest, operationState, requestWork, setProviderInclusion, setupCoordinator, updateRouting } from "../shared/operations";
@@ -39,15 +41,26 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       return { ok: true };
     });
     server.handle(operationState, async (_input, { paseo }) => {
-      const directory = await readProviderDirectory(paseo, undefined, true, true);
+      const [directory,usage] = await Promise.all([readProviderDirectory(paseo, undefined, true, true),readAccountUsage(paseo)]);
       const scope = store.read();
       const catalog = includedCatalog(directory.catalog, scope.excludedProviders);
-      const coordinator = resolveRoute("M", scope.routing, catalog);
+      const coordinator = resolveRoute("M", scope.routing, catalog, false, scope.usageRouting ? usage : []);
       return {
+        usage, usageRouting:scope.usageRouting,
         providers: directory.providers.map(p => ({ ...p, included: !scope.excludedProviders.includes(p.id) })),
         catalog, coordinatorMode: catalog.find(m => m.provider === coordinator?.provider)?.coordinatorMode ?? null,
         routing: scope.routing, revision: scope.routingRevision,
       };
+    });
+    server.handle(setUsageRouting, input => {
+      store.change(scope => {
+        if (scope.routingRevision !== input.expectedRevision) throw new Error("배정 설정이 바뀌었습니다. 새로 고쳐 주세요.");
+        if (scope.usageRouting !== input.enabled) {
+          scope.usageRouting = input.enabled;
+          scope.routingRevision++;
+        }
+      });
+      return {ok:true};
     });
     server.handle(setProviderInclusion, async (input, { paseo }) => {
       const providers = await readProviderAvailability(paseo);
@@ -78,10 +91,12 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       return { ok: true };
     });
     server.handle(setupCoordinator, async (input, { paseo }) => {
-      const catalog = await readCatalog(paseo, undefined, true);
+      const initial = store.read();
+      const checkUsage = initial.usageRouting && !initial.routing.M;
+      const [catalog,usage] = await Promise.all([readCatalog(paseo, undefined, true),checkUsage ? readAccountUsage(paseo) : []]);
       const verifyRoute = (scope: ReturnType<typeof store.read>) => {
-        const route = resolveRoute("M", scope.routing, includedCatalog(catalog, scope.excludedProviders));
-        if (!route || !sameRoute(route, input.expectedRoute))
+        const route = resolveRoute("M", scope.routing, includedCatalog(catalog, scope.excludedProviders), false, scope.usageRouting ? usage : []);
+        if (checkUsage !== (scope.usageRouting && !scope.routing.M) || !route || !sameRoute(route, input.expectedRoute))
           throw new Error("코디네이터 모델 또는 권한 모드가 바뀌었습니다. 설정을 새로 고쳐 주세요.");
       };
       verifyRoute(store.read());
@@ -126,11 +141,12 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
     input: z.strictObject({ needsHooks: z.boolean().optional() }),
     async execute({ needsHooks }, { paseo, agent }) {
       const first = ownerScope(agent.id);
-      const [catalog, workspaces, rows, projectList] = await Promise.all([
+      const [catalog, workspaces, rows, projectList, usage] = await Promise.all([
         readCatalog(paseo),
         readManagedWorkspaces(paseo, first.projects),
         managedRowsForCoordinator(paseo, store, agent.id),
         paseo.projects.list(),
+        first.usageRouting ? readAccountUsage(paseo) : [],
       ]);
       const latest = ownerScope(agent.id);
       const selected = (id: string) => first.projects.includes(id) && latest.projects.includes(id);
@@ -154,7 +170,7 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
       const allowed = includedCatalog(catalog, latest.excludedProviders);
       const routes = workerGradeSchema.options.map((grade) => ({
         grade,
-        route: resolveRoute(grade, latest.routing, allowed, needsHooks),
+        route: resolveRoute(grade, latest.routing, allowed, needsHooks, latest.usageRouting ? usage : []),
       }));
       return {
         text: JSON.stringify({
@@ -178,7 +194,7 @@ export function createOperations(store: PreferenceStore, workspaceDir: string, f
         text: JSON.stringify(
           await dispatchWorker(paseo, job, () => {
             const scope = ownerScope(agent.id);
-            return { projects: scope.projects, routing: scope.routing, coordinator: agent.id, excludedProviders: scope.excludedProviders };
+            return { projects: scope.projects, routing: scope.routing, coordinator: agent.id, excludedProviders: scope.excludedProviders, usageRouting:scope.usageRouting };
           }),
         ),
       };

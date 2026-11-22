@@ -97,7 +97,12 @@ test("발췌·질문분류·결정 전송은 대상 프로젝트를 사용하되
   await run("classify_board_conversation",{sessionId:"worker",evidenceId:e.evidenceId,kind:"question",text:"자막을 선택해 주세요."});
   const card=(await f.board()).sessions.find(s=>s.id==="worker");
   await f.rpc(sendDecision,{projectId:"public",sessionId:"worker",recipientId:"worker",version:card.decision.version,text:"두 줄로 해 주세요.",action:"reply",requestKey:"link-response-key"});
-  expect(f.sent).toEqual([["worker","두 줄로 해 주세요."]]);
+  expect(f.sent).toHaveLength(1);
+  const [recipient,text] = f.sent[0];
+  expect(recipient).toBe("worker");
+  const [,metadata,,...answer]=text.split("\n");
+  expect(JSON.parse(metadata)).toMatchObject({projectId:"public",sourceSessionId:"worker",recipientSessionId:"worker",revision:card.decision.version});
+  expect(answer.join("\n")).toBe("두 줄로 해 주세요.");
   await expect(run("assign_board_worker",{job:{projectId:"public",workspaceId:"w-origin",title:"테스트",prompt:"검토",grade:"D",expectedRoute:{provider:"codex",model:"any",effort:null},requestKey:"assignment-key-1"}})).rejects.toThrow("선택한 프로젝트에서 작업 가능한 워크스페이스");
 });
 

@@ -30,10 +30,12 @@ const schema = z.object({
   sessionLinks: z.record(z.string(), sessionLinkSchema).default({}),
   routing: routePolicySchema.default({}),
   excludedProviders: z.array(z.string().min(1).max(256)).default([]),
+  usageRouting: z.boolean().default(true),
   routingRevision: z.number().int().nonnegative().default(0),
   answers: z.record(z.string(), z.object({ version: z.string(), noteRevision: z.number().optional() })).default({}),
   decisionReceipts: z.record(z.string(), z.object({
     activity: replyDetails.optional(), response: z.string().optional(),
+    messageHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),
     fingerprint: z.string(), sessionId: z.string(), version: z.string(), status: z.enum(["pending", "sent"]),
     evidenceId: z.string().optional(),
     noteRevision: z.number().optional(), beforeAnswer: z.string().optional(), messageId: z.string().optional(),

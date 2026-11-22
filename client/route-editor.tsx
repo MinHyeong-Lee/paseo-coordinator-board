@@ -63,7 +63,7 @@ function CandidateList({ data, theme, busy, grade, save }: Props & { grade: Grad
   const [provider, setProvider] = useState<string | null>(null);
   const [edit, setSelection] = useState<RouteChoice | null>(null);
   const color = theme.colors.foreground;
-  const route = resolveRoute(grade, data.routing, data.catalog);
+  const route = resolveRoute(grade, data.routing, data.catalog, false, data.usageRouting ? data.usage : undefined);
   const saved = data.routing[grade]?.length;
   const browser = browseModels(data, grade, provider, query, limit, t, route);
   const editAvailable = edit && data.catalog.some(m => m.provider === edit.provider && m.model === edit.model &&

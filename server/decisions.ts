@@ -1,3 +1,5 @@
+import { describePhotos } from "./reply-photos";
+import { sessionReplyMessage } from "./decision-message";
 import { createHash } from "node:crypto";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { Decision, DecisionInput } from "../shared/decision-actions";
@@ -60,7 +62,10 @@ export class DecisionSender {
 
   send(paseo: Sdk, input: DecisionInput): Promise<Receipt> {
     const messageId = messageUuid(input.requestKey);
-    const fingerprint = hash([input.projectId, input.sessionId, input.recipientId, input.version, input.action, input.text]);
+    const photos = describePhotos(input.images);
+    const content = [input.projectId, input.sessionId, input.recipientId, input.version, input.action, input.text];
+    // Keep text-only keys compatible with receipts written before photo support.
+    const fingerprint = hash(photos.length ? [...content, photos] : content);
     const running = this.active.get(messageId);
     if (running) {
       if (running.fingerprint === fingerprint) return running.result;
@@ -113,7 +118,8 @@ export class DecisionSender {
       requireScope(latestScope, input);
       if (!isCurrentMembership(row, latestScope) || (!isCurrentMembership(destination, latestScope) && !isManagedCoordinator(latestScope, destination.id))) throw Error(changed);
       const accepted = !page.error && !page.gap && !page.staleCursor && page.entries.some(({ item }) =>
-        item.type === "user_message" && (item.clientMessageId === messageId || item.messageId === messageId) && item.text === input.text);
+        item.type === "user_message" && (item.clientMessageId === messageId || item.messageId === messageId) &&
+        (earlier.messageHash ? hash(item.text) === earlier.messageHash : item.text === input.text));
       if (!accepted) throw Error("이전 전송 결과를 확인하지 못했습니다. 수신 세션에서 확인해 주세요.");
       this.finish(input, messageId, requestId);
       return receipt;
@@ -132,6 +138,7 @@ export class DecisionSender {
       if (id === input.sessionId && row.activityAt !== agent.updatedAt) throw Error(changed);
     }
     const note = this.notes.visible(new Set([row.id]))[row.id];
+    let text = "";
     this.store.change(current => {
       requireScope(current, input);
       if (!isCurrentMembership(row, current) || (!isCurrentMembership(destination, current) && !isManagedCoordinator(current, destination.id))) throw Error(changed);
@@ -140,14 +147,18 @@ export class DecisionSender {
       Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === current.coordinator), { evidenceId: evidence.id });
       decorateDecision(row, note, current);
       if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
+      text = sessionReplyMessage(row,input);
       current.decisionReceipts[messageId] = {
-        activity: { title: row.decision.question || row.title, at: new Date().toISOString(), projectId: input.projectId,
+        messageHash:hash(text),
+        activity: { origin:{sessionId:row.id, cardId:row.id, revision:input.version, questions:[{id:input.version}]},
+          title: row.decision.question || row.title, at: new Date().toISOString(), projectId: input.projectId,
+          ...(input.images?.length ? {imageCount:input.images.length} : {}),
           answer: input.text, recipientId: input.recipientId, coordinator: input.action === "coordinate" },
         fingerprint, sessionId: row.id, version: input.version, evidenceId: evidence.id, status: "pending", beforeAnswer: current.answers[row.id]?.version, ...(note?.kind === "question" ? { noteRevision: note.revision } : {}),
       };
     });
     try {
-      await recipient.send(input.text, { messageId, activeTurnBehavior: "steer" });
+      await recipient.send(text, { messageId, activeTurnBehavior: "steer", ...(input.images?.length ? {images:input.images} : {}) });
     } catch {
       throw Error("전송 결과를 확인하지 못했습니다. 같은 요청을 다시 확인하거나 수신 세션을 열어 주세요.");
     }

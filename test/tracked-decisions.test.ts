@@ -6,6 +6,7 @@ import {TrackedDecisionStore} from "../server/tracked-decisions";
 import {mentionsSecurityGate, resolveTrackedDecision, suggestedTrackedReply, trackedAnswerText, trackedPullTarget, trackedRecipient, trackedCoverage, trackedDecisionViewSchema} from "../shared/tracked-decisions";
 import type {SessionRow} from "../shared/contract";
 import type {PullRequestView} from "../shared/prs";
+import {readReplyPhoto} from "../shared/reply-history";
 
 const directories:string[]=[];
 afterEach(()=>{for(const dir of directories.splice(0))rmSync(dir,{recursive:true,force:true});});
@@ -139,15 +140,15 @@ test("an unavailable source preserves healthy cards and never acknowledges a mis
   expect(f.close(healthy).status).toBe("unavailable");
 });
 
-test("only the local resolution RPC is exposed and a failed scope check or stale version cannot acknowledge content",async()=>{
+test("only resolution and receipt-photo reads are exposed and failed scope checks cannot acknowledge content",async()=>{
   const f=fixture();f.write([row("a",{ask:["Deploy it"]})]);const item=f.read().items[0];
   const map=new Map(),calls:string[]=[];let changes=0;
   f.service.register({handle:(def,fn)=>{map.set(def.name,fn);calls.push(def.name);}},()=>f.selected,()=>changes++);
-  expect(calls).toEqual([resolveTrackedDecision.name]);
+  expect(calls.sort()).toEqual([resolveTrackedDecision.name,readReplyPhoto.name].sort());
   const input={source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint};
   expect(resolveTrackedDecision.input.safeParse({...input,answer:"x".repeat(4001)}).success).toBe(false);
-  f.selected.clear();expect((await map.get(calls[0])(input,{})).status).toBe("out-of-scope");expect(changes).toBe(0);
-  f.selected.add("p");expect((await map.get(calls[0])(input,{})).status).toBe("closed");expect(changes).toBe(1);
+  f.selected.clear();expect((await map.get(resolveTrackedDecision.name)(input,{})).status).toBe("out-of-scope");expect(changes).toBe(0);
+  f.selected.add("p");expect((await map.get(resolveTrackedDecision.name)(input,{})).status).toBe("closed");expect(changes).toBe(1);
 });
 
 test("tracked reply reaches the chosen recipient once and records the exact visible answer",async()=>{
@@ -156,7 +157,7 @@ test("tracked reply reaches the chosen recipient once and records the exact visi
   const input={source:first.source,projectId:first.projectId,id:first.id,fingerprint:first.fingerprint,recipientId:"coordinator",answer:"Publish on Tuesday"};
   let sends=0;
   const prepare=async()=>({ready:true,stillCurrent:()=>true,accepted:async()=>false,send:async(text:string)=>{
-    expect(text).toBe(input.answer);sends++;expect(f.close(f.read().items.find(r=>r.id==="other")!).status).toBe("closed");
+    expect(text).toContain(first.id);expect(text).toContain(first.fingerprint);expect(text.endsWith(input.answer)).toBe(true);sends++;expect(f.close(f.read().items.find(r=>r.id==="other")!).status).toBe("closed");
   }});
   expect((await f.service.deliver(input,()=>f.selected,prepare)).status).toBe("sent");
   expect((await f.service.deliver(input,()=>f.selected,prepare)).status).toBe("sent");
@@ -239,4 +240,109 @@ test("merge follow-up choices carry only their own answers, including after the 
   }
   expect(trackedPullTarget({...item,ask:[url+" "+url],kind:"answer"})).toBeNull();
   expect(trackedPullTarget({...item,ask:[url+"0"],mergeTarget:target})).toEqual(target);
+});
+
+test("two older Q3 cards forwarded to one coordinator keep their own source sessions, questions and versions",async()=>{
+  const f=fixture();
+  const createCard=(id:string,sessionId:string,question:string)=>row(id,{
+    projectTitle:"Video editor",sessionId,where:"manager",title:"Choose a clip boundary",
+    questions:[{id:"Q1",text:"Separate unanswered question"},{id:"Q3",text:question}],since:"2026-11-12T10:00:00Z",
+  });
+  const records=[createCard("end-padding","original-worker-a","Time after a sentence?"),
+    createCard("start-padding","original-worker-b","Time before a sentence?")];
+  f.write(records);
+  const [first,second]=f.read().items;
+  const answer="0.10 seconds";
+  const inputFor=item=>({source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint,
+    recipientId:"coordinator",questionIndexes:[1],answer});
+  const sent:string[]=[];
+  const target={ready:true,stillCurrent:()=>true,accepted:async()=>false,send:async(body:string)=>{sent.push(body);}};
+  // A decision changes after the click and while the recipient is being resolved.
+  const stale=await f.service.deliver(inputFor(first),()=>f.selected,async()=>{
+    f.write([{...records[0],questions:[{id:"Q3",text:"A completely different question?"}]},records[1]]);
+    return target;
+  });
+  expect(stale.status).toBe("changed");expect(sent).toBeEmpty();
+  f.write(records);
+  for(const [index,item] of [first,second].entries()) {
+    expect((await f.service.deliver(inputFor(item),()=>f.selected,async()=>target)).status).toBe("sent");
+    const body=sent[index];
+    const [header,metadata,blank,...raw] = body.split("\n");
+    expect(header).toContain("Coordinator Board");
+    expect(JSON.parse(metadata)).toMatchObject({
+      cardId:item.id,revision:item.fingerprint,source:item.source,projectId:item.projectId,projectTitle:item.projectTitle,
+      sourceSessionId:item.sessionId,recipientSessionId:"coordinator",
+      questions:[{id:"Q3",text:item.questions[1].text}],
+    });
+    expect(blank).toBe("");
+    expect(raw.join("\n")).toBe(answer);
+    expect(body).not.toContain(records[1-index].sessionId);
+  }
+  expect(f.read().history?.map(r=>r.answer)).toEqual([answer,answer]);
+});
+
+const replyPhoto={mimeType:"image/png" as const,data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mOYvLAHAAOLAcF4E9p3AAAAAElFTkSuQmCC"};
+const otherPhoto={mimeType:"image/webp" as const,data:"UklGRi4AAABXRUJQVlA4ICIAAABwAQCdASoBAAEAAUAmJZQCdAFAAAD+67eowmknPaRBAAAA"};
+
+test("tracked photo-only replies keep the exact media and the context on retry without persisting the delivered pixels",async()=>{
+  const f=fixture();
+  f.write([row("photo-check",{sessionId:"photo-worker",where:"manager",title:"Which camera frame?"})]);
+  const [item]=f.read().items;
+  const input={source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint,recipientId:"coordinator",images:[replyPhoto]};
+  expect(resolveTrackedDecision.input.safeParse(input).success).toBe(true);
+  const calls=[];
+  const target={ready:true,stillCurrent:()=>true,
+    send:async(body,messageId,images)=>{calls.push({body,messageId,images});throw Error("Uncertain delivery");},
+    accepted:async(body,messageId)=>calls.some(call=>call.body===body && call.messageId===messageId),
+  };
+  const attempt=(request=input)=>f.service.deliver(request,()=>f.selected,async()=>target);
+  expect((await attempt()).status).toBe("unconfirmed");
+  const receipt=readFileSync(join(f.dir,"tracked-decisions.resolved.json"),"utf8");
+  expect(receipt).not.toContain(replyPhoto.data);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].images).toEqual([replyPhoto]);
+  expect(calls[0].body).toContain("Which camera frame?");
+  expect((await attempt({...input,images:[otherPhoto]})).status).toBe("changed");
+  expect((await attempt()).status).toBe("sent");
+  expect(calls).toHaveLength(1);
+  expect(f.read().history?.[0]).toMatchObject({status:"sent",imageCount:1});
+});
+
+test("a pending receipt written by an older board is acknowledged using the original plain answer",async()=>{
+  const f=fixture();
+  f.write([row("legacy",{where:"manager"})]);
+  const [card]=f.read().items;
+  const input={source:card.source,projectId:card.projectId,id:card.id,fingerprint:card.fingerprint,recipientId:"coordinator",answer:"Keep the existing value"};
+  const messageId="c96bfed2-f9ef-41ff-aca6-9f8b138a141f";
+  writeFileSync(join(f.dir,"tracked-decisions.resolved.json"),JSON.stringify({version:1,items:[{
+    key:card.key,fingerprint:card.fingerprint,recipientId:input.recipientId,answer:input.answer,
+    at:"2026-11-21T05:00:00.000Z",messageId,pending:true,
+  }]}));
+  let sends=0;
+  const target={ready:true,stillCurrent:()=>true,send:async()=>{sends++;},
+    accepted:async(body,id)=>body===input.answer && id===messageId};
+  expect((await f.service.deliver(input,()=>f.selected,async()=>target)).status).toBe("sent");
+  expect(sends).toBe(0);
+  expect(f.read().history?.[0]).toMatchObject({status:"sent",answer:input.answer});
+});
+
+test("an image attached to a local decision is retrievable only inside the project that recorded it",async()=>{
+  const f=fixture();
+  f.write([row("offline-card",{title:"Save a screenshot",where:"unknown"})]);
+  const [item]=f.read().items;
+  const handlers=new Map();
+  f.service.register({handle:(contract,handler)=>handlers.set(contract.name,handler)},()=>f.selected);
+  const local=resolveTrackedDecision.input.parse({
+    source:item.source,projectId:item.projectId,id:item.id,fingerprint:item.fingerprint,images:[replyPhoto],
+  });
+  expect(await handlers.get(resolveTrackedDecision.name)(local,{})).toEqual({status:"closed"});
+  const history=f.read().history?.[0];
+  expect(history).toMatchObject({status:"recorded",imageCount:1,localPhotos:true});
+  const handler=handlers.get(readReplyPhoto.name);
+  expect(handler).toBeFunction();
+  expect(await handler({key:history.key,index:0},{})).toEqual({image:replyPhoto});
+  expect(await handler({key:history.key,index:1},{})).toEqual({image:null});
+  f.selected.clear();f.selected.add("other-project");
+  expect(await handler({key:history.key,index:0},{})).toEqual({image:null});
+  expect(await handler({key:"../../anywhere",index:0},{})).toEqual({image:null});
 });

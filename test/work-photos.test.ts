@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkPhotoSelection, clipboardPhotos } from "../client/work-photos";
+import { checkPhotoSelection, clipboardPhotos, isFileDrag } from "../client/work-photos";
 import { MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES, MAX_WORK_IMAGES_BYTES } from "../shared/operations";
 
 const png = {type: "image/png", name: "shot.png", size: 100};
@@ -29,4 +29,13 @@ test("paste extracts a file once, including WebViews that expose it only as a cl
   expect(clipboardPhotos(clipboard([screenshot], [entry]))).toEqual([screenshot]);
   expect(clipboardPhotos(clipboard([], [{kind: "string"}, entry]))).toEqual([screenshot]);
   expect(clipboardPhotos(clipboard([], [{kind: "string"}]))).toEqual([]);
+});
+
+test("file dragging recognizes protected dragover and actual dropped files while keeping normal text drops", () => {
+  const shot = new File(["photo"], "shot.png", {type:"image/png"});
+  const transfer = (types:string[], files:File[], items:unknown[]) => ({types, files, items} as unknown as DataTransfer);
+  expect(isFileDrag(transfer(["Files"], [], []))).toBe(true);
+  expect(isFileDrag(transfer([], [], [{kind:"file"}]))).toBe(true);
+  expect(isFileDrag(transfer([], [shot], []))).toBe(true);
+  expect(isFileDrag(transfer(["text/plain", "text/uri-list"], [], [{kind:"string"}]))).toBe(false);
 });

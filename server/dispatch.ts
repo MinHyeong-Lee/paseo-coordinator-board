@@ -5,6 +5,7 @@ import {
   dispatchInputSchema, includedCatalog, resolveRoute, sameRoute,
   type CatalogModel, type DispatchInput, type ProviderEntry, type RouteChoice, type RoutePolicy, type WorkspaceChoice,
 } from "../shared/dispatch";
+import { readAccountUsage } from "./usage-routing";
 import { readPages } from "./discovery";
 
 export { resolveRoute, validateCandidates } from "../shared/dispatch";
@@ -12,7 +13,7 @@ export { resolveRoute, validateCandidates } from "../shared/dispatch";
 type Sdk = PluginHandlerContext["paseo"];
 type PaseoWorkspace = Awaited<ReturnType<Sdk["workspaces"]["list"]>>["entries"][number];
 type PaseoAgentConfig = Parameters<Sdk["agents"]["create"]>[0]["config"];
-type DispatchScope = { projects: string[]; routing: RoutePolicy; coordinator: string | null; excludedProviders: string[] };
+type DispatchScope = { projects: string[]; routing: RoutePolicy; coordinator: string | null; excludedProviders: string[]; usageRouting?: boolean };
 type Directory = { providers: Omit<ProviderEntry, "included">[]; catalog: CatalogModel[] };
 
 // Only built-in adapters with a known permission contract and a Paseo tool transport.
@@ -137,9 +138,9 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     const state = getScope();
     if (typeof state.coordinator !== "string" || !state.coordinator) throw new Error("현재 기기의 코디네이터를 먼저 지정해 주세요.");
     if (!state.projects.includes(input.projectId)) throw new Error("이 호스트에서 관리할 프로젝트를 먼저 선택해 주세요.");
-    return { coordinator: state.coordinator, routing: state.routing, excluded: state.excludedProviders };
+    return { coordinator: state.coordinator, routing: state.routing, excluded: state.excludedProviders, usageRouting: state.usageRouting !== false };
   };
-  scopeForProject();
+  const initial = scopeForProject();
   const sessionId = creationUuid(input.requestKey, "agent");
   const fingerprint = createHash("sha256").update(JSON.stringify([
     input.projectId, input.workspaceId, input.grade, input.title, input.prompt, !!input.needsHooks,
@@ -163,9 +164,15 @@ export async function dispatchWorker(paseo: Pick<Sdk, "agents" | "workspaces" | 
     // An agent snapshot alone does not confirm that its initial prompt was accepted.
     // Replay the original creation key/payload so the daemon settles that operation.
   } else {
-    const catalog = await readCatalog(paseo, target.workspaceDirectory);
+    const checkUsage = initial.usageRouting && !initial.routing[input.grade];
+    const [catalog, usage] = await Promise.all([
+      readCatalog(paseo, target.workspaceDirectory), checkUsage ? readAccountUsage(paseo) : [],
+    ]);
     const state = scopeForProject();
-    const selected = resolveRoute(input.grade, state.routing, includedCatalog(catalog, state.excluded), input.needsHooks);
+    if (checkUsage !== (state.usageRouting && !state.routing[input.grade])) {
+      throw new Error("배정 설정이 바뀌었습니다. 미리보기를 다시 확인해 주세요.");
+    }
+    const selected = resolveRoute(input.grade, state.routing, includedCatalog(catalog, state.excluded), input.needsHooks, state.usageRouting ? usage : []);
     if (!selected || !sameRoute(route, selected)) {
       throw new Error("현재 배정 결과가 미리보기와 다릅니다. 호스트와 모델을 다시 확인해 주세요.");
     }

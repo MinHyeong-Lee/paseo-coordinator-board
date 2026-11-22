@@ -3,7 +3,7 @@ import {
   MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES, MAX_WORK_IMAGES_BYTES, WORK_IMAGE_MIME_TYPES, type WorkImage,
 } from "../shared/operations";
 
-export type DraftPhoto = { id: number; name: string; size: number; image: WorkImage; preview: string };
+export type DraftPhoto = { id: number; name: string; size: number; image: WorkImage; preview: string; questionIndex?: number };
 export type PhotoError = "format" | "count" | "size" | "total" | "read";
 
 function photoType(file: Pick<File, "type" | "name">): WorkImage["mimeType"] | undefined {
@@ -43,4 +43,9 @@ export function clipboardPhotos(data: DataTransfer): File[] {
     const file = item.kind === "file" ? item.getAsFile() : null;
     return file ? [file] : [];
   });
+}
+
+export function isFileDrag(data: DataTransfer): boolean {
+  // Browsers hide the FileList until drop, but expose the drag's type during dragover.
+  return Array.from(data.types).includes("Files") || data.files.length > 0 || Array.from(data.items).some(item => item.kind === "file");
 }

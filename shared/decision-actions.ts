@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { workImages } from "./work-images";
 
 export const decisionFields = z.object({
   question: z.string().trim().min(1).max(2000).optional(),
@@ -18,15 +19,17 @@ export const decisionSchema = decisionFields.extend({
 export type Decision = z.output<typeof decisionSchema>;
 
 const id = z.string().min(1).max(256);
-export const sendDecision = defineRpc({
-  name: "board.send-decision",
-  input: z.strictObject({
+export const decisionRequest = z.strictObject({
     projectId: z.string().min(1).max(4096), sessionId: id, recipientId: id,
     version: z.string().min(1).max(64),
     action: z.enum(["reply", "question", "coordinate"]),
-    text: z.string().min(1).max(24000).refine(text => text.trim().length > 0),
+    text: z.string().max(24000),
+    images: workImages.optional(),
     requestKey: z.string().min(12).max(96).regex(/^[A-Za-z0-9_-]+$/),
-  }),
+});
+export const sendDecision = defineRpc({
+  name: "board.send-decision",
+  input: decisionRequest.refine(input => !!input.text.trim() || !!input.images?.length, "Provide text or a photo."),
   output: z.object({ ok: z.literal(true), recipientId: id, messageId: z.string().uuid() }),
 });
 export type DecisionInput = z.input<typeof sendDecision.input>;

@@ -4,7 +4,10 @@ import { dirname, join, parse } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import type { SessionRow } from "../shared/contract";
-import type { ReplyEntry } from "../shared/reply-history";
+import { readReplyPhoto, replyOrigin, type ReplyEntry } from "../shared/reply-history";
+import { MAX_WORK_IMAGES, WORK_IMAGE_MIME_TYPES, type WorkImage } from "../shared/work-images";
+import { describePhotos, readLocalPhoto, saveLocalPhotos } from "./reply-photos";
+import { trackedReplyMessage, trackedReplyOrigin } from "./decision-message";
 import type { Evidence } from "./conversation";
 import type { PullRequestView } from "../shared/prs";
 import {
@@ -14,15 +17,24 @@ import {
 
 const maxBytes = 8 * 1024 * 1024;
 const feed = z.union([z.object({version:z.literal(1),items:z.array(z.unknown())}).transform(v=>v.items),z.array(z.unknown())]);
-const receipt = z.object({title:z.string().optional(), coordinator:z.boolean().optional(), response:z.string().optional(),key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const photoReference = z.object({mimeType:z.enum(WORK_IMAGE_MIME_TYPES), digest:sha256});
+const receipt = z.object({
+  origin:replyOrigin.optional(), messageHash:sha256.optional(), photos:z.array(photoReference).max(MAX_WORK_IMAGES).optional(),
+  reviewedBy:z.string().optional(), reviewReason:z.string().optional(), title:z.string().optional(), coordinator:z.boolean().optional(), response:z.string().optional(),key:z.string(),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),at:z.string().datetime(),answer:z.string().max(4000).optional(), recipientId:z.string().optional(), messageId:z.string().uuid().optional(), pending:z.boolean().optional()});
 const receipts = z.object({version:z.literal(1),items:z.array(receipt)});
 type SourceStatus = TrackedDecisionView["status"];
 type InputRow = {key:string;fingerprint:string;item:TrackedDecisionInput};
 type Receipt = z.output<typeof receipt>;
-type PendingDelivery = { ready:boolean; send:(answer:string,messageId:string)=>Promise<void>; accepted:(answer:string,messageId:string)=>Promise<boolean>; stillCurrent:()=>boolean };
+type PendingDelivery = { ready:boolean; send:(answer:string,messageId:string,images?:WorkImage[])=>Promise<void>; accepted:(answer:string,messageId:string)=>Promise<boolean>; stillCurrent:()=>boolean };
 type Attempt = z.output<typeof resolveTrackedDecision.output>;
 type AdditionalSources = unknown[] | {items:unknown[];partial:boolean};
 type ReadSources = (selected:Set<string>)=>AdditionalSources;
+
+function validQuestions(row:TrackedDecisionInput,input:TrackedResolution) {
+  return !input.questionIndexes || (new Set(input.questionIndexes).size===input.questionIndexes.length &&
+    input.questionIndexes.every(i=>Number.isInteger(i) && i>=0 && i<row.questions.length));
+}
 
 function receiptKey(key: string, fingerprint: string): string {
   return JSON.stringify([key, fingerprint]);
@@ -52,8 +64,10 @@ function readJson(path:string):{data:unknown;status:"ok"} | {status:"absent"|"in
 
 export class TrackedDecisionStore {
   private readonly resolutionPath:string;
+  private readonly photoDirectory:string;
   constructor(private readonly path:string, private readonly readSources?:ReadSources) {
     const file=parse(path);
+    this.photoDirectory=join(file.dir, file.name+".photos");
     this.resolutionPath=join(file.dir,file.name+".resolved.json");
   }
 
@@ -115,9 +129,11 @@ export class TrackedDecisionStore {
         Object.assign(receipt, {title, coordinator, response:response ?? receipt.response});
         updated = true;
       }
-      history.push({key:version, title, projectId, coordinator, at:receipt.at, answer:receipt.answer,
+      history.push({key:version, ...(receipt.origin ? {origin:receipt.origin} : {}), title, projectId, coordinator, at:receipt.at, answer:receipt.answer,
         recipientId:receipt.recipientId, messageId:receipt.messageId, response:receipt.response,
-        status:receipt.pending ? "pending" : receipt.recipientId ? "sent" : receipt.answer ? "recorded" : "closed"});
+        ...(receipt.photos?.length ? {imageCount:receipt.photos.length, localPhotos:!receipt.recipientId} : {}),
+        ...(receipt.reviewedBy ? {reviewedBy:receipt.reviewedBy, reviewReason:receipt.reviewReason} : {}),
+        status:receipt.pending ? "pending" : receipt.recipientId ? "sent" : (receipt.answer || receipt.photos?.length) ? "recorded" : "closed"});
     }
     if (updated) this.save(resolved);
     const scopedSessions=sessions.filter(s=>selected.has(s.projectId));
@@ -131,25 +147,44 @@ export class TrackedDecisionStore {
     return {items,status,...(history.length ? {history} : {})};
   }
 
-  resolve(input:TrackedResolution,getScope:()=>Set<string>):Attempt {
-    const allowed=(scope:Set<string>)=>input.projectId===null || scope.has(input.projectId);
+  readPhoto(key:string,index:number,selected:Set<string>):WorkImage|null {
+    const record=this.recorded()?.get(key);
+    const photo=record?.photos?.[index];
+    if (!photo || !record || record.recipientId || record.pending || !selected.size) return null;
+    let ref:unknown;
+    try { ref=JSON.parse(record.key); } catch { return null; }
+    if (!Array.isArray(ref) || ref.length!==3 || !(ref[1]===null || selected.has(ref[1]))) return null;
+    return readLocalPhoto(this.photoDirectory,key,index,photo);
+  }
+
+  resolve(input:TrackedResolution,getScope:()=>Set<string>,proof?:{coordinatorId:string;reason:string}):Attempt {
+    const allowed=(scope:Set<string>)=>scope.size>0 && (input.projectId===null || scope.has(input.projectId));
     const selected=getScope();
     if(!allowed(selected))return {status:"out-of-scope"};
     const data=this.load(selected);
     if(data.status==="invalid" || data.status==="unavailable")return {status:"unavailable"};
     const row=data.rows.get(trackedKey(input));
     if(!row)return {status:data.status==="partial"?"unavailable":"changed"};
-    if(row.fingerprint!==input.fingerprint)return {status:"changed"};
+    if(row.fingerprint!==input.fingerprint || !validQuestions(row.item,input))return {status:"changed"};
     const records=this.recorded();
     if(!records)return {status:"unavailable"};
     if(!allowed(getScope()))return {status:"out-of-scope"};
     const version=receiptKey(row.key,row.fingerprint);
     const previous=records.get(version);
     if(previous?.pending || input.recipientId)return {status:"unconfirmed"};
-    if(previous)
-      return {status:input.answer && input.answer!==previous.answer?"changed":"already-closed"};
-    records.set(version,{title:row.item.title,key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),...(input.answer?{answer:input.answer}:{})});
-    return this.save(records) ? {status:"closed"} : {status:"unavailable"};
+    const photos=describePhotos(input.images);
+    const origin=trackedReplyOrigin(row.item,input);
+    if(previous) {
+      const differentAnswer=input.answer && input.answer!==previous.answer;
+      const samePhotos=JSON.stringify(photos)===JSON.stringify(previous.photos ?? []);
+      const differentQuestion=input.questionIndexes && previous.origin && JSON.stringify(previous.origin.questions)!==JSON.stringify(origin.questions);
+      return {status:differentAnswer || !samePhotos || differentQuestion ? "changed" : "already-closed"};
+    }
+    records.set(version,{origin,title:row.item.title,key:row.key,fingerprint:row.fingerprint,at:new Date().toISOString(),
+      ...(input.answer?{answer:input.answer}:{}), ...(photos.length ? {photos} : {}),
+      ...(proof ? {reviewedBy:proof.coordinatorId, reviewReason:proof.reason} : {})});
+    const saved=saveLocalPhotos(this.photoDirectory,version,input.images ?? [],()=>this.save(records));
+    return {status:saved ? "closed" : "unavailable"};
   }
 
   private save(records:Map<string,Receipt>) {
@@ -171,24 +206,28 @@ export class TrackedDecisionStore {
     const key=trackedKey(input), version=receiptKey(key,input.fingerprint);
     const current=()=>this.load(getScope()).rows.get(key);
     const row=current();
-    if (!row || row.fingerprint!==input.fingerprint || !input.answer || !input.recipientId) return {status:"changed"};
+    if (!row || row.fingerprint!==input.fingerprint || !validQuestions(row.item,input) || (!input.answer?.trim() && !input.images?.length) || !input.recipientId) return {status:"changed"};
     const target=await prepare(row.item);
     if (!target || !target.stillCurrent() || current()?.fingerprint!==input.fingerprint) return {status:"changed"};
     const records=this.recorded();
     if (!records) return {status:"unavailable"};
     const previous=records.get(version);
-    if (previous && (previous.recipientId!==input.recipientId || previous.answer!==input.answer)) return {status:"changed"};
+    const photos=describePhotos(input.images);
+    const text=trackedReplyMessage(row.item,input);
+    const messageHash=createHash("sha256").update(text).digest("hex");
+    if (previous && (previous.recipientId!==input.recipientId || (previous.answer ?? "")!==(input.answer ?? "") ||
+        JSON.stringify(previous.photos ?? [])!==JSON.stringify(photos) || (previous.messageHash && previous.messageHash!==messageHash))) return {status:"changed"};
     if (previous && !previous.pending) return {status:"sent"};
     const messageId=previous?.messageId ?? randomUUID();
-    const receipt:Receipt={title:row.item.title,coordinator:row.item.where==="human" || row.item.where==="manager",key,fingerprint:input.fingerprint,at:previous?.at ?? new Date().toISOString(),answer:input.answer,recipientId:input.recipientId,messageId,pending:true};
+    const receipt:Receipt=previous ?? {origin:trackedReplyOrigin(row.item,input),messageHash,...(photos.length ? {photos} : {}),title:row.item.title,coordinator:row.item.where==="human" || row.item.where==="manager",key,fingerprint:input.fingerprint,at:new Date().toISOString(),answer:input.answer,recipientId:input.recipientId,messageId,pending:true};
     try {
       if (previous) {
-        if (!(await target.accepted(input.answer,messageId))) return {status:"unconfirmed"};
+        if (!(await target.accepted(previous.messageHash ? text : (input.answer ?? ""),messageId))) return {status:"unconfirmed"};
       } else {
         if (!target.ready) return {status:"busy"};
         records.set(version,receipt);
         if (!this.save(records)) return {status:"unavailable"};
-        await target.send(input.answer,messageId);
+        await target.send(text,messageId,input.images);
       }
     } catch { return {status:"unconfirmed"}; }
     // Other decisions can be answered while the session receives this message.
@@ -200,6 +239,7 @@ export class TrackedDecisionStore {
 
   register(server:PluginServerContext,getScope:()=>Set<string>,onChange?:()=>void,
     prepare?: (row:TrackedDecisionInput, target:string, ctx:import("@getpaseo/plugin/server").PluginHandlerContext)=>Promise<PendingDelivery|null>) {
+    server.handle(readReplyPhoto,({key,index})=>({image:this.readPhoto(key,index,getScope())}));
     server.handle(resolveTrackedDecision,async (input,ctx)=>{
       const result=input.recipientId && prepare
         ? await this.deliver(input,getScope,row=>prepare(row,input.recipientId!,ctx))

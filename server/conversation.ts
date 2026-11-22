@@ -5,7 +5,7 @@ import type { Preferences } from "./preferences";
 
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
-export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean };
+export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean; at?: string };
 export type Evidence = {
   id: string; turns: Turn[];
   replies?: Map<string, string>;
@@ -24,7 +24,7 @@ export function excerpt(page: Page): Evidence {
   const deliveries: NonNullable<Evidence["deliveries"]> = [];
   const replies = new Map<string, string>();
   let messageIds: string[] = [];
-  for (const { item, seqEnd } of page.entries) {
+  for (const { item, seqEnd, timestamp } of page.entries) {
     if (item.type === "tool_call" && (item.agentMessage || item.name === "heartbeat")) {
       messageIds = [];
       laterInputs.push(item.callId);
@@ -44,7 +44,7 @@ export function excerpt(page: Page): Evidence {
     }
     if (!text) continue;
     laterInputs.length = 0;
-    turns.push({ role, text: text.slice(-2000), ...(text.length > 2000 ? { truncated: true } : {}) });
+    turns.push({ role, text: text.slice(-2000), ...(timestamp ? { at:timestamp } : {}), ...(text.length > 2000 ? { truncated: true } : {}) });
     digest.update(JSON.stringify([seqEnd, role, text]));
   }
   if (laterInputs.length) digest.update(JSON.stringify(laterInputs));

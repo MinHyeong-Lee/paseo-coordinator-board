@@ -119,18 +119,20 @@ export class ProjectPullRequests {
     }
   }
 
+  async lifecycle(paseo: Sdk, input: MergeTarget) {
+    try {
+      return await this.limited(async () => {
+        const current = await this.mergeScope(paseo, input);
+        if (!current()) return "UNKNOWN" as const;
+        const state = await this.lookupLifecycle(input);
+        return current() ? state : "UNKNOWN" as const;
+      });
+    } catch { return "UNKNOWN" as const; }
+  }
+
   register(server:PluginServerContext,onInvalidated?:()=>void) {
     const merges=new PullMerges(this.mergeApi,this.deps.now,repo=>{this.sources.delete(repo);onInvalidated?.();});
-    server.handle(readPullLifecycle, async (input, {paseo}) => {
-      try {
-        return await this.limited(async () => {
-          const current = await this.mergeScope(paseo, input);
-          if (!current()) return {state:"UNKNOWN" as const};
-          const state = await this.lookupLifecycle(input);
-          return {state:current() ? state : "UNKNOWN" as const};
-        });
-      } catch { return {state:"UNKNOWN" as const}; }
-    });
+    server.handle(readPullLifecycle, async (input, {paseo}) => ({state: await this.lifecycle(paseo, input)}));
     server.handle(previewPullRequestMerge,(input,{paseo})=>merges.preview(input,()=>this.mergeScope(paseo,input)));
     server.handle(confirmPullRequestMerge,(input,{paseo})=>merges.confirm(input,()=>this.mergeScope(paseo,input)));
     server.handle(setProjectRepository,async input=>{

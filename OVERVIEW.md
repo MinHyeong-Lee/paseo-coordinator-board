@@ -23,7 +23,7 @@ Click **Start with recommended settings** to create the coordinator, or select *
 
 Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn this off in **Settings → Sidebar pinning**. Replacing the coordinator in the same workspace preserves its existing pin state. For an existing coordinator, click **Pin current coordinator workspace**.
 
-On desktop or web, select photos next to the request field or paste a screenshot into it. Review the images, remove any you do not want to share, then choose **Send to coordinator**. You can send images with or without text. Attach up to four PNG, JPEG, or WebP images, up to 5 MiB each and 12 MiB combined. On the native mobile app, open the coordinator session and attach photos in its conversation composer.
+On desktop or web, drop photos onto the coordinator request field or a decision reply, paste a screenshot, or choose the paperclip labeled **Add attachment**. Review the images, remove any you do not want to share, then choose **Send to coordinator**. You can send images with or without text. Attach up to four PNG, JPEG, or WebP images, up to 5 MiB each and 12 MiB combined. On the native mobile app, open the coordinator session and attach photos in its conversation composer.
 
 Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
 
@@ -34,6 +34,10 @@ A worker asking “Which project does this session belong to?” can receive a v
 - **Reply to a session.** The suggested reply and **Send this reply** appear in a single control. Long replies open in full before you can send. Choose an option to change the proposed message. **Edit reply** and **Write a reply** let you send your own wording.
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
 - **Respond to a native approval.** Choose **Assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
+
+Decision replies include the original project, session when known, card, question, and revision alongside the answer. A saved local reply can retain photos. Personal checks have a **I checked this** checkbox. During a digest, the coordinator can archive a verified merge-only record or a completed source-session check. Review evidence is visible in recent activity.
+
+Open Settings to see the remaining quota and reset times for accounts that report them to this host. Usage-aware routing compares fresh, matching quota windows for eligible providers at the requested grade. An explicitly saved model order takes precedence.
 
 ## GitHub pull requests
 

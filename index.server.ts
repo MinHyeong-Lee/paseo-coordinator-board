@@ -14,6 +14,7 @@ import { discoverSessions } from "./server/discovery";
 import { attachReportTool } from "./server/reporting";
 import { ConversationReader } from "./server/conversation";
 import { setCoordinator, PreferenceStore } from "./server/preferences";
+import { trackedReviewTool } from "./server/tracked-review";
 import { attachCoordinatorTools } from "./server/coordinator";
 import { createOperations } from "./server/operations";
 import { hostVisibility } from "./shared/hosts";
@@ -144,8 +145,8 @@ export default function contribute(server: PluginServerContext) {
     if (!current() || !agent || agent.id!==targetId || agent.internal || agent.archivedAt) return null;
     return {
       stillCurrent:current,
-      send:async (answer,messageId)=>{
-        await handle.send(answer,{messageId,activeTurnBehavior:"steer"});
+      send:async (answer,messageId,images)=>{
+        await handle.send(answer,{messageId,activeTurnBehavior:"steer",...(images?.length ? {images} : {})});
       },
       accepted:async (answer,messageId)=>{
         const page=await handle.timeline.refetch({direction:"tail",projection:"projected",limit:128});
@@ -206,6 +207,6 @@ export default function contribute(server: PluginServerContext) {
     return { ok: true };
   });
   const removeReport = attachReportTool(server, notes);
-  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool]);
+  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool, trackedReviewTool(prefs, tracked, prs, reader, invalidateCount)]);
   return () => { removeCoordinator(); removeReport(); };
 }

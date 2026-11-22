@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { preferCapacity, type AccountUsage } from "./usage-routing";
 
 const identifier = z.string().min(1).max(256);
 const projectId = z.string().min(1).max(4096);
@@ -94,7 +95,7 @@ export function validateCandidates(grade: Grade, candidates: RouteChoice[], cata
   }
 }
 
-export function resolveRoute(grade: Grade, policy: RoutePolicy, catalog: CatalogModel[], needsHooks = false): RouteChoice | null {
+export function resolveRoute(grade: Grade, policy: RoutePolicy, catalog: CatalogModel[], needsHooks = false, usage:readonly AccountUsage[] = []): RouteChoice | null {
   const providers = new Set(catalog.map(m => m.provider));
   for (const provider of providers) {
     if (!eligibleProvider(grade, provider, needsHooks, catalog)) providers.delete(provider);
@@ -102,10 +103,16 @@ export function resolveRoute(grade: Grade, policy: RoutePolicy, catalog: Catalog
   const allowed = catalog.filter(m => providers.has(m.provider));
   const overrides = policy[grade];
   if (overrides) return overrides.find(choice => available(choice, allowed)) ?? null;
+  const choices: RouteChoice[] = [];
   for (const [provider, model, effort] of recommendations[grade]) {
     const match = allowed.find(m => m.provider === provider && m.model === model);
-    if (match) return { provider, model, effort: match.efforts.includes(effort) ? effort : null };
+    if (match) choices.push({provider,model,effort:match.efforts.includes(effort) ? effort : null});
   }
-  const fallback = allowed.find(m => m.isDefault) ?? allowed[0];
-  return fallback ? { provider: fallback.provider, model: fallback.model, effort: null } : null;
+  const seen = new Set(choices.map(choice => choice.provider));
+  for (const model of [...allowed.filter(m => m.isDefault),...allowed]) {
+    if (seen.has(model.provider)) continue;
+    seen.add(model.provider);
+    choices.push({provider:model.provider,model:model.model,effort:null});
+  }
+  return preferCapacity(choices,usage);
 }

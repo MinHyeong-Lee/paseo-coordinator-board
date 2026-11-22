@@ -5,12 +5,13 @@ import { MAX_WORK_IMAGES, WORK_IMAGE_MIME_TYPES } from "../shared/operations";
 import { Button, type Theme } from "./controls";
 import { useBoardLanguage } from "./language";
 import { wrap } from "./route-editor";
-import { checkPhotoSelection, clipboardPhotos, readWorkPhoto, type DraftPhoto, type PhotoError } from "./work-photos";
+import { checkPhotoSelection, clipboardPhotos, isFileDrag, readWorkPhoto, type DraftPhoto, type PhotoError } from "./work-photos";
 
 export function usePhotoDraft() {
   const [photos, setPhotos] = useState<DraftPhoto[]>([]);
   const latest = useRef<DraftPhoto[]>([]);
   const [error, setError] = useState<PhotoError | null>(null);
+  const [inputScope, setInputScope] = useState<number>();
   const [reading, setReading] = useState(false);
   const readPending = useRef(false);
   const sequence = useRef(0);
@@ -20,8 +21,9 @@ export function usePhotoDraft() {
     setPhotos(next);
   }
 
-  async function add(files: File[]) {
+  async function add(files: File[], questionIndex?: number) {
     if (!files.length || readPending.current) return;
+    setInputScope(questionIndex);
     const reason = checkPhotoSelection(latest.current, files);
     setError(reason);
     if (reason) return;
@@ -31,7 +33,7 @@ export function usePhotoDraft() {
       const batch: DraftPhoto[] = [];
       for (const file of files) {
         const image = await readWorkPhoto(file);
-        batch.push({ id: ++sequence.current, name: file.name, size: file.size, image, preview: `data:${image.mimeType};base64,${image.data}` });
+        batch.push({ id: ++sequence.current, name: file.name, size: file.size, questionIndex, image, preview: `data:${image.mimeType};base64,${image.data}` });
       }
       update([...latest.current, ...batch]);
     } catch {
@@ -51,18 +53,19 @@ export function usePhotoDraft() {
     update([]);
     setError(null);
   }
-  return { photos, latest, error, reading, readPending, add, remove, clear };
+  return { photos, latest, error, reading, inputScope, readPending, add, remove, clear };
 }
 
 type Props = {
   children: ReactNode; theme: Theme; disabled: boolean; draft: ReturnType<typeof usePhotoDraft>;
-  text: string; openSession?: () => void;
+  text?: string; openSession?: () => void; questionIndex?: number; showHint?: boolean;
 };
 
-export function PhotoComposer({ children, theme, disabled, draft, text, openSession }: Props) {
+export function PhotoComposer({ children, theme, disabled, draft, text = "", openSession, questionIndex, showHint }: Props) {
   const { t } = useBoardLanguage();
   const fileInput = useRef<HTMLInputElement>(null);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const supportsPicker = Platform.OS === "web" && typeof document !== "undefined" && typeof FileReader !== "undefined";
   const colors = theme.colors;
   if (!supportsPicker) {
@@ -87,6 +90,10 @@ export function PhotoComposer({ children, theme, disabled, draft, text, openSess
   }
 
   const locked = disabled || draft.reading;
+  const photos = draft.photos.filter(photo => photo.questionIndex === questionIndex);
+  const attachLabel = t("첨부 파일 추가", "Add attachment");
+  const atLimit = draft.photos.length >= MAX_WORK_IMAGES;
+  const readingHere = draft.reading && draft.inputScope === questionIndex;
   const errorText = {
     format: t("JPEG, PNG 또는 WebP 사진을 선택해 주세요.", "Choose JPEG, PNG or WebP photos."),
     count: t("사진은 요청당 최대 4장까지 첨부할 수 있습니다.", "Attach up to 4 photos per request."),
@@ -94,30 +101,57 @@ export function PhotoComposer({ children, theme, disabled, draft, text, openSess
     total: t("첨부한 사진의 합계는 12MiB 이하여야 합니다.", "Attached photos must total at most 12 MiB."),
     read: t("사진을 읽지 못했습니다. 파일을 다시 선택해 주세요.", "Could not read the photo. Select the file again."),
   };
-  return <div style={{ display: "flex", flexDirection: "column", gap: 6 }} onPaste={event => {
-    if (locked || draft.readPending.current) return;
-    const files = clipboardPhotos(event.clipboardData);
-    if (!files.length) return;
-    if (!event.clipboardData.getData("text/plain")) event.preventDefault();
-    void draft.add(files);
-  }}>
+  return <div style={{ display: "flex", flexDirection: "column", gap: 6, borderRadius: 6, outline: dragging ? `2px dashed ${colors.accent}` : undefined }}
+    onDragOver={event => {
+      if (!isFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = locked ? "none" : "copy";
+      setDragging(!locked);
+    }}
+    onDragLeave={event => {
+      if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+    }}
+    onDrop={event => {
+      if (!isFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDragging(false);
+      if (!locked && !draft.readPending.current) void draft.add(clipboardPhotos(event.dataTransfer), questionIndex);
+    }}
+    onPaste={event => {
+      if (locked || draft.readPending.current) return;
+      const files = clipboardPhotos(event.clipboardData);
+      if (!files.length) return;
+      if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+      event.stopPropagation();
+      void draft.add(files, questionIndex);
+    }}>
     {children}
     <input ref={fileInput} type="file" multiple hidden accept={WORK_IMAGE_MIME_TYPES.join(",")} disabled={locked}
       onChange={event => {
         if (locked || draft.readPending.current) return;
         const files = Array.from(event.currentTarget.files ?? []);
         event.currentTarget.value = "";
-        void draft.add(files);
+        void draft.add(files, questionIndex);
       }} />
     <View style={{ ...wrap, alignItems: "center" }}>
-      <Button theme={theme} label={t("사진 추가", "Add photos")} disabled={locked || draft.photos.length >= MAX_WORK_IMAGES} onPress={() => fileInput.current?.click()} />
-      <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted }}>{draft.reading ? t("사진 읽는 중…", "Reading photos…")
-        : draft.photos.length ? t(`사진 ${draft.photos.length}장`, `${draft.photos.length} photo${draft.photos.length === 1 ? "" : "s"}`)
-        : t("입력창에 스크린샷을 붙여넣을 수 있습니다.", "You can also paste a screenshot into the request.")}</Text>
+      <button type="button" aria-label={attachLabel} title={attachLabel} disabled={locked || atLimit}
+        style={{ display: "inline-grid", placeItems: "center", width: 34, height: 34, borderRadius: 7, color: colors.foreground,
+          background: colors.surface0, border: `1px solid ${colors.border}`, opacity: locked || atLimit ? 0.6 : 1, cursor: locked || atLimit ? "default" : "pointer" }}
+        onClick={() => fileInput.current?.click()}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false">
+          <path d="m20.5 11.3-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8L14 2.2a3.8 3.8 0 0 1 5.4 5.4l-10 10a2.1 2.1 0 0 1-3-3l9.1-9.1" />
+        </svg>
+      </button>
+      {(readingHere || photos.length > 0 || dragging || showHint) && <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted }}>{readingHere ? t("사진 읽는 중…", "Reading photos…")
+        : dragging ? t("여기에 사진 놓기", "Drop photos here")
+        : photos.length ? t(`사진 ${photos.length}장`, `${photos.length} photo${photos.length === 1 ? "" : "s"}`)
+        : t("입력창에 사진을 끌어 놓거나 붙여넣으세요.", "Drop or paste photos into the input.")}</Text>}
     </View>
-    {draft.photos.map((photo, index) => {
+    {photos.map(photo => {
       const name = photo.name || t(`사진 ${photo.id}`, `Photo ${photo.id}`);
-      const ordinal = index + 1;
+      const ordinal = draft.photos.indexOf(photo) + 1;
       const distinguish = draft.photos.some(other => other.id !== photo.id && other.name === photo.name);
       const displayName = distinguish ? `${ordinal}. ${name}` : name;
       return <View key={photo.id} style={{ ...wrap, alignItems: "center" }}>
@@ -128,6 +162,6 @@ export function PhotoComposer({ children, theme, disabled, draft, text, openSess
           disabled={locked} onPress={() => draft.remove(photo.id)} />
       </View>;
     })}
-    {draft.error && <Text accessibilityLiveRegion="polite" style={{ color: colors.statusDanger }}>{errorText[draft.error]}</Text>}
+    {draft.error && draft.inputScope === questionIndex && <Text accessibilityLiveRegion="polite" style={{ color: colors.statusDanger }}>{errorText[draft.error]}</Text>}
   </div>;
 }
