@@ -13,7 +13,7 @@ import { boardDecisionCount, boardScope, boardSnapshot, reportingKey, saveNote, 
 import { discoverSessions } from "./server/discovery";
 import { attachReportTool } from "./server/reporting";
 import { ConversationReader, excerpt } from "./server/conversation";
-import { setCoordinator, PreferenceStore } from "./server/preferences";
+import { isManagedCoordinator, setCoordinator, PreferenceStore } from "./server/preferences";
 import { trackedReviewTool } from "./server/tracked-review";
 import { attachCoordinatorTools } from "./server/coordinator";
 import { createOperations } from "./server/operations";
@@ -131,13 +131,18 @@ export default function contribute(server: PluginServerContext) {
       if (observed) evidence.set(coordinatorRow.id, observed);
     }
     const clarifying = new Set(Object.values(scope.clarifications).flatMap(entry => {
+      if (entry.status === "pending" && (entry.card.projectId === null ? scope.projects.length : scope.projects.includes(entry.card.projectId))) {
+        return [entry.recipientId];
+      }
       const original = sourceQuestion(entry.card);
       return original && entry.savedDecision && original.version !== scope.answers[original.sessionId]?.version
         ? [entry.recipientId] : [];
     }));
-    // The regular reader skips running sessions. Their original question may
-    // remain open while the worker is explaining a choice.
-    for (const row of sessions) {
+    // A running recipient may already have accepted a clarification, even
+    // though the regular reader skips its timeline until the turn finishes.
+    const recipients = coordinatorRow && isManagedCoordinator(scope, coordinatorRow.id) && !sessions.some(s => s.id === coordinatorRow.id)
+      ? [...sessions, coordinatorRow] : sessions;
+    for (const row of recipients) {
       if (!clarifying.has(row.id) || evidence.has(row.id) || row.nativePending || row.status === "closed") continue;
       try {
         const page = await paseo.agents.ref(row.id).timeline.refetch({ direction: "tail", projection: "projected", limit: 48 });

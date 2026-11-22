@@ -6,11 +6,12 @@ import type { Preferences } from "./preferences";
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
 export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean; at?: string };
+type ClarificationObservation = { bodyHash: string; response?: string };
 export type Evidence = {
   id: string; turns: Turn[];
   replies?: Map<string, string>;
   lastInputIds?: string[];
-  clarificationReplies?: Map<string, string>;
+  clarificationMessages?: Map<string, ClarificationObservation>;
   laterInput?: boolean;
   deliveries?: { id: string; sender: string; bodyHash: string }[];
 };
@@ -26,12 +27,12 @@ export function excerpt(page: Page): Evidence {
   const deliveries: NonNullable<Evidence["deliveries"]> = [];
   const replies = new Map<string, string>();
   let messageIds: string[] = [];
-  let clarification = false;
-  const clarificationReplies = new Map<string, string>();
+  let clarification: ClarificationObservation | undefined;
+  const clarificationMessages = new Map<string, ClarificationObservation>();
   for (const { item, seqEnd, timestamp } of page.entries) {
     if (item.type === "tool_call" && (item.agentMessage || item.name === "heartbeat")) {
       messageIds = [];
-      clarification = false;
+      clarification = undefined;
       laterInputs.push(item.callId);
       const prefix = "paseo-agent-message:";
       if (item.status === "completed" && item.callId.startsWith(prefix) && item.agentMessage?.event === "message") {
@@ -43,12 +44,14 @@ export function excerpt(page: Page): Evidence {
     const role = item.type === "assistant_message" ? "assistant" : "user";
     const text = item.text.trim();
     if (item.type === "user_message") {
-      clarification = text.startsWith("[Coordinator Board · 추가 질문]");
       messageIds = [item.messageId, item.clientMessageId].filter((id): id is string => !!id);
-    } else if (text) {
+      clarification = text.startsWith("[Coordinator Board · 추가 질문]")
+        ? { bodyHash: createHash("sha256").update(item.text).digest("hex") } : undefined;
       if (clarification) {
-        for (const id of messageIds) clarificationReplies.set(id, text.slice(0, 16000));
+        for (const id of messageIds) clarificationMessages.set(id, clarification);
       }
+    } else if (text) {
+      if (clarification) clarification.response = text.slice(0, 16000);
       for (const id of messageIds) replies.set(id, text.length > 1200 ? text.slice(0, 1199) + "…" : text);
     }
     if (!text) continue;
@@ -59,7 +62,7 @@ export function excerpt(page: Page): Evidence {
   if (laterInputs.length) digest.update(JSON.stringify(laterInputs));
   return { id: digest.digest("hex").slice(0, 24), turns: turns.slice(-4),
     ...(clarification && messageIds.length ? { lastInputIds: messageIds } : {}),
-    ...(clarificationReplies.size ? { clarificationReplies } : {}),
+    ...(clarificationMessages.size ? { clarificationMessages } : {}),
     ...(replies.size ? { replies } : {}), ...(laterInputs.length ? {laterInput:true} : {}), ...(deliveries.length ? {deliveries} : {}) };
 }
 
