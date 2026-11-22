@@ -243,6 +243,14 @@ export class ClarificationSender {
         )
           throw Error(changed);
       }
+      if (target.sourceCoordinatorId === input.recipientId) {
+        const rows = await discoverSessions(sdk);
+        const scopeNow = this.store.read();
+        const visible = managedSessions(rows, scopeNow).some(r => r.id === input.recipientId);
+        const operating = scopeNow.coordinator === input.recipientId && isManagedCoordinator(scopeNow, input.recipientId) &&
+          rows.some(r => r.id === input.recipientId);
+        if (!visible && !operating) throw Error(changed);
+      }
       if (!this.isCurrentRecord(input.card, view)) throw Error(changed);
       const text = body(input, target);
       const preserve = original && source?.decision && source.decision.version === original.version &&

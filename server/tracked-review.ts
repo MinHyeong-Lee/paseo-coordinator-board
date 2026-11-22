@@ -1,6 +1,6 @@
 import { defineAgentTool } from "@getpaseo/plugin/server";
 import { z } from "zod";
-import { trackedPullTarget, type TrackedDecision } from "../shared/tracked-decisions";
+import { trackedPullTarget, usesSourceCoordinator, type TrackedDecision } from "../shared/tracked-decisions";
 import { managedRowsForCoordinator } from "./coordinator";
 import { isCurrentMembership } from "./session-links";
 import type { ConversationReader, Evidence } from "./conversation";
@@ -55,7 +55,8 @@ export function trackedReviewTool(prefs: PreferenceStore, tracked: TrackedDecisi
         if (current.coordinator !== agent.id || !current.projects.length) throw Error("Coordinator scope changed");
         return new Set(current.projects);
       };
-      const {items} = tracked.read(scope(), sessions, {items:[], projects:[]});
+      const records = tracked.read(scope(), sessions, {items:[], projects:[]});
+      const items = records.items.filter(item => !usesSourceCoordinator(item) || item.sourceCoordinatorId === agent.id);
       const close = (item: TrackedDecision, reason: string) => {
         const {status} = tracked.resolve({source:item.source, projectId:item.projectId, id:item.id, fingerprint:item.fingerprint}, scope,
           {coordinatorId:agent.id, reason});

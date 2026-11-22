@@ -2,7 +2,7 @@ import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useRef, useState, type ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
-import { resolveTrackedDecision, mentionsSecurityGate, suggestedTrackedReply, trackedAnswerText, trackedPullTarget, type TrackedDecision } from "../shared/tracked-decisions";
+import { resolveTrackedDecision, mentionsSecurityGate, suggestedTrackedReply, trackedAnswerText, trackedPullTarget, usesSourceCoordinator, type TrackedDecision } from "../shared/tracked-decisions";
 import { Button, SessionChip, type Theme } from "./controls";
 import { TrackedPullStatus } from "./pull-requests";
 import { useBoardLanguage } from "./language";
@@ -47,6 +47,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
   const resolve = useRpc(resolveTrackedDecision);
   const [expanded, setExpanded] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [confirmedOwner, setConfirmedOwner] = useState(item.sourceCoordinatorId);
   const [skipped, setSkipped] = useState<Record<number, boolean>>({});
   const [freeReply, setFreeReply] = useState("");
   const [typed, setTyped] = useState<Record<number, string>>({});
@@ -84,7 +85,11 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
   const suggested = suggestedTrackedReply(item);
   const quickReply = suggested && suggested.length <= 4000 && !/<[^>]+>/.test(suggested) ? suggested : "";
   const followupOnly = isMerge && item.questions.length > 0;
-  const sendLabel = item.where === "session"
+  const owned = usesSourceCoordinator(item);
+  const changedOwner = owned && item.sourceCoordinatorId !== confirmedOwner;
+  const sendLabel = owned
+    ? followupOnly ? t("운영 코디네이터에 후속 답변 보내기", "Send follow-up to ledger owner") : t("운영 코디네이터에 답 보내기", "Send answer to ledger owner")
+    : item.where === "session"
     ? followupOnly ? t("담당 세션에 후속 답변만 보내기", "Send follow-up answer only to assigned session") : t("담당 세션에 답장 보내기", "Send reply to assigned session")
     : followupOnly ? t("코디네이터에 후속 답변만 보내기", "Send follow-up answer only to coordinator") : t("코디네이터에 답 보내기", "Send answer to coordinator");
   const hasPhotos = attachments.photos.length > 0;
@@ -118,6 +123,7 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
   }
   async function acknowledge(mode: "send" | "save" | "review") {
     const send = mode === "send";
+    if (send && (!recipientId || changedOwner)) return;
     const text = send ? sendText : answer;
     if (pending.current || attachments.readPending.current || isClosed || needsRefresh || outstanding || tooLong) return;
     if (mode === "review" ? hasDraft || attachments.latest.current.length > 0 || item.matchedSessionId : !text && !hasPhotos) return;
@@ -194,11 +200,19 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children, 
       {!!answer && !!item.questions.length && <Lines theme={theme} title={isMerge ? t("선택한 후속 답변", "Selected follow-up answer") : t("기록할 답", "Answers to record")} lines={[answer]} />}
       {tooLong && <Text style={{ color: c.statusWarning }}>{t("답을 4,000자 이내로 줄여 주세요.", "Shorten the answer to 4,000 characters.")}</Text>}
       <View style={{ gap: 6 }}>
-        {!recipientId && !item.matchedSessionId && <Text style={{color:c.foregroundMuted,fontSize:12}}>{t("전송할 세션이 확인되지 않아 답을 보드에 기록합니다.","No verified recipient. You can save your answer on the board.")}</Text>}
+        {owned && item.sourceCoordinatorId && <Text selectable style={{color:c.foregroundMuted,fontSize:12}}>
+          {t("원장 소유 세션", "Ledger owner session")} · {item.sourceCoordinatorId}
+        </Text>}
+        {!recipientId && !item.matchedSessionId && <Text style={{color:c.foregroundMuted,fontSize:12}}>
+          {owned ? t("이 호스트에서 원장의 운영 코디네이터를 확인할 수 없습니다. 답은 보드에 저장할 수 있습니다.", "The ledger owner could not be verified on this host. You can save your answer on the board.")
+            : t("전송할 세션이 확인되지 않아 답을 보드에 기록합니다.","No verified recipient. You can save your answer on the board.")}
+        </Text>}
+        {changedOwner && recipientId && <Button theme={theme} label={t("변경된 운영 코디네이터 확인", "Confirm new ledger owner")}
+          onPress={() => setConfirmedOwner(item.sourceCoordinatorId)} />}
         {outstanding && <Text style={{ color: c.foregroundMuted }}>{t("각 질문에 답하거나 건너뛰기를 선택하세요.", "Answer or explicitly skip each question.")}</Text>}
         <View style={wrap}>
           {recipientId && recordActions && <Button theme={theme} {...named(sendLabel + (!hasAnswer && quickReply ? " · " + quickReply : ""))}
-            selected={!!(sendText || hasPhotos) && !outstanding} disabled={busy || attachments.reading || (!sendText && !hasPhotos) || outstanding || tooLong} onPress={() => void acknowledge("send")} />}
+            selected={!!(sendText || hasPhotos) && !outstanding} disabled={busy || changedOwner || attachments.reading || (!sendText && !hasPhotos) || outstanding || tooLong} onPress={() => void acknowledge("send")} />}
           {hasAnswer && <Button theme={theme} {...named(t("보드에 답 기록하고 닫기", "Save answer on board and close"))}
             selected={!recipientId} disabled={busy || attachments.reading || outstanding || tooLong} onPress={() => void acknowledge("save")} />}
           {humanCheck && !hasDraft && (Platform.OS === "web" ? <label style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: 5, fontSize: 13, color: c.foregroundMuted }}>
