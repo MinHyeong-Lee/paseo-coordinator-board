@@ -25,7 +25,8 @@ async function fixture(matchedQuestion?: string) {
   const sent:{id:string;text:string;messageId:string}[]=[];
   let loseAck=false;
   const append=(id:string,item:unknown)=>{timelines.get(id)!.push(item);stamp.set(id,stamp.get(id)!+1);};
-  const actor=(id:string)=>({id,title:"Studio "+id,status:"idle",updatedAt:String(stamp.get(id)),workspaceId:"space",pendingPermissions:[]});
+  const running = new Set<string>();
+  const actor=(id:string)=>({id,title:"Studio "+id,status:running.has(id)?"running":"idle",updatedAt:String(stamp.get(id)),workspaceId:"space",pendingPermissions:[]});
   const page=entries=>({entries,pageInfo:{hasMore:false,nextCursor:null}});
   const sdk={
     projects:{list:async()=>({projects:[{projectId:"studio",projectDisplayName:"Studio",projectRootPath:""}]})},
@@ -50,7 +51,11 @@ async function fixture(matchedQuestion?: string) {
   await rpc(boardScope,{kind:"project",projectId:"studio",enabled:true});
   await rpc(boardScope,{kind:"coordinator",sessionId:"coordinator"});
   const snapshot=()=>rpc(boardSnapshot,{fresh:true});
-  return {snapshot,answer:input=>rpc(sendDecision,input),ask:(input)=>rpc(askClarification,input),sent,append,loseAck:(value:boolean)=>{loseAck=value;},restart:()=>{rpc=load();}};
+  function replaceReceivedText(id: string, text: string) {
+    timelines.get(id)!.at(-1).text = text;
+    stamp.set(id, stamp.get(id)! + 1);
+  }
+  return {snapshot,replaceReceivedText,running,answer:input=>rpc(sendDecision,input),ask:(input)=>rpc(askClarification,input),sent,append,loseAck:(value:boolean)=>{loseAck=value;},restart:()=>{rpc=load();}};
 }
 
 test("clarifications for two Q3s route, persist, and surface on their original open cards through public RPCs",async()=>{
@@ -165,5 +170,37 @@ test("a clarification on a tracked card with inline native controls keeps the th
   expect(next.question).toBe(original.question);
   expect(next.version).not.toBe(original.version);
   await expect(f.ask({...input,requestKey:"fixture-matched-request-after-revision"})).rejects.toThrow();
+  expect(f.sent).toHaveLength(2);
+});
+
+test("reopening the board confirms the exact accepted question before the assistant replies", async () => {
+  const f = await fixture();
+  const board = await f.snapshot();
+  const record = board.trackedDecisions.items[0];
+  const card = trackedClarificationCard(record, board.sessions);
+  const question = { card, recipientId: record.sessionId, requestKey: "fixture-lost-confirmation", question: "Which take?" };
+  f.loseAck(true);
+  await expect(f.ask(question)).rejects.toThrow();
+  f.loseAck(false);
+  f.restart();
+
+  const received = f.sent[0];
+  f.replaceReceivedText(received.id, received.text + " changed");
+  const mismatch = await f.snapshot();
+  expect(mismatch.clarifications[0].status).toBe("pending");
+  const another = { ...question, requestKey: "fixture-second-question", question: "Which speaker?" };
+  await expect(f.ask(another)).rejects.toThrow();
+  expect(f.sent).toHaveLength(1);
+
+  f.running.add(received.id);
+  f.replaceReceivedText(received.id, received.text);
+  const recovered = await f.snapshot();
+  expect(recovered.clarifications[0]).toMatchObject({ messageId: received.messageId, status: "sent" });
+  expect(recovered.clarifications[0].response).toBeUndefined();
+  f.restart();
+  expect((await f.ask(question)).messageId).toBe(received.messageId);
+  expect(f.sent).toHaveLength(1);
+  f.running.delete(received.id);
+  await f.ask(another);
   expect(f.sent).toHaveLength(2);
 });
