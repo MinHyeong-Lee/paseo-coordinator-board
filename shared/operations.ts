@@ -1,5 +1,8 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { accountUsage } from "./usage-routing";
+import { workImages } from "./work-images";
+export { WORK_IMAGE_MIME_TYPES, MAX_WORK_IMAGES, MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, type WorkImage } from "./work-images";
 import { catalogModelSchema, providerEntrySchema, gradeSchema, routeChoiceSchema, routePolicySchema } from "./dispatch";
 
 export const operationState = defineRpc({
@@ -8,6 +11,7 @@ export const operationState = defineRpc({
   output: z.object({
     catalog: z.array(catalogModelSchema),
     providers: z.array(providerEntrySchema),
+    usage: z.array(accountUsage).optional(), usageRouting: z.boolean().optional(),
     coordinatorMode: z.object({ id: z.string(), label: z.string() }).nullable(),
     routing: routePolicySchema,
     revision: z.number().int().nonnegative(),
@@ -64,32 +68,13 @@ export const askDigest = defineRpc({
   input: z.strictObject({ ...messageFields, language: z.enum(["ko", "en"]).optional(), handleBoardFacts: z.boolean().optional() }),
   output: z.object({ ok: z.boolean() }),
 });
-export const WORK_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
-export const MAX_WORK_IMAGES = 4;
-export const MAX_WORK_IMAGE_BYTES = 5 * 1024 * 1024;
-export const MAX_WORK_IMAGES_BYTES = 12 * 1024 * 1024;
-const workImage = z.strictObject({
-  mimeType: z.enum(WORK_IMAGE_MIME_TYPES),
-  data: z.string().min(4).max(4 * Math.ceil(MAX_WORK_IMAGE_BYTES / 3)),
-});
-export type WorkImage = z.infer<typeof workImage>;
-
-function decodedLength(data: string) {
-  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  return (data.length / 4) * 3 - padding;
-}
-
 export const requestWork = defineRpc({
   name: "board.request-work",
   input: z.strictObject({
     ...messageFields,
     text: z.string().trim().max(24000),
-    images: z.array(workImage).max(MAX_WORK_IMAGES).optional(),
-  }).refine(({text, images}) => !!text || !!images?.length, "Provide text or a photo.")
-    .refine(({images}) => {
-      const sizes = images?.map(image => decodedLength(image.data)) ?? [];
-      return sizes.every(size => size <= MAX_WORK_IMAGE_BYTES) && sizes.reduce((a,b) => a + b, 0) <= MAX_WORK_IMAGES_BYTES;
-    }, "Photo size exceeds the request limit."),
+    images: workImages.optional(),
+  }).refine(({text, images}) => !!text || !!images?.length, "Provide text or a photo."),
   output: z.object({ ok: z.boolean() }),
 });
 export type Operations = z.output<typeof operationState.output>;

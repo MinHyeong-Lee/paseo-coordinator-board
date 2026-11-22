@@ -14,6 +14,8 @@ import {
 import { resolveRoute } from "../shared/dispatch";
 import { Button, SessionChip, type Theme } from "./controls";
 import { PhotoComposer, usePhotoDraft } from "./photo-composer";
+import { setUsageRouting } from "../shared/usage-routing";
+import { UsageRouting } from "./usage-routing";
 import { ProviderSettings } from "./providers";
 import { FactReplyControls } from "./fact-reply-controls";
 import { CoordinatorPinControls } from "./coordinator-pin";
@@ -35,6 +37,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const fetchState = useRpc(operationState),
     setup = useRpc(setupCoordinator),
     includeProvider = useRpc(setProviderInclusion),
+    changeUsageRouting = useRpc(setUsageRouting),
     savePolicy = useRpc(updateRouting);
   const sendWork = useRpc(requestWork),
     sendDigest = useRpc(askDigest);
@@ -147,7 +150,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     }
   }
   if (!settings && !configured && !coordinator) return null;
-  const model = data && resolveRoute("M", data.routing, data.catalog);
+  const model = data && resolveRoute("M", data.routing, data.catalog, false, data.usageRouting ? data.usage : undefined);
   const mode = data?.coordinatorMode;
   const modeText = mode ? t(`도구 권한 · ${mode.label}`, `Tool permissions · ${mode.label}`) : t("권한 모드를 확인할 수 없습니다. 설정에서 실행기·모델을 새로 고쳐 주세요.", "Permission mode unavailable. Refresh providers and models in Settings.");
   const color = theme.colors.foreground;
@@ -188,6 +191,11 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       }} />}
       {feedbackArea === "provider" && feedback}
     </View>
+    {data && <UsageRouting theme={theme} providers={data.providers} reports={data.usage ?? []} enabled={data.usageRouting ?? false} busy={busy || loading || !data.usage}
+      onToggle={() => void (async () => {
+        const result = await act(() => changeUsageRouting({enabled:!data.usageRouting,expectedRevision:data.revision}), t("사용량 기반 배정 설정을 저장했습니다.","Saved the usage routing preference."), "routing");
+        if (live.current) await refresh(!!result);
+      })()} />}
     <View style={section}>
       <Text accessibilityRole="header" style={heading}>{t("모델 배정", "Model routing")}</Text>
       <Text style={{ color: muted }}>{t("추천 설정은 연결된 실행기에서 사용할 수 있는 모델을 고릅니다. 직접 정하려면 후보를 원하는 순서대로 저장하세요.", "Recommended settings use available models from connected providers. To customize a grade, save its models in order of preference.")}</Text>
@@ -229,7 +237,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     </View>
     {coordinator ? <>
       <Text style={{ color, fontWeight: "600" }}>{t("코디네이터에게 맡길 일", "Request for the coordinator")}</Text>
-      <PhotoComposer theme={theme} disabled={busy} draft={photoDraft} text={text}
+      <PhotoComposer theme={theme} disabled={busy} draft={photoDraft} text={text} showHint
         openSession={openCoordinator ? () => openCoordinator(coordinator) : undefined}>
         <TextInput accessibilityLabel={t("코디네이터에게 맡길 일", "Request for the coordinator")} placeholder={t("예: 초안 작성과 자료 검증을 나눠 맡겨 주세요", "Example: Assign the first draft and source checks separately.")} value={text}
           placeholderTextColor={muted} style={{ minHeight: 64, padding: 10, textAlignVertical: "top", color,

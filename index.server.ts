@@ -12,8 +12,9 @@ import { join } from "node:path";
 import { boardDecisionCount, boardScope, boardSnapshot, reportingKey, saveNote, setReporting } from "./shared/contract";
 import { discoverSessions } from "./server/discovery";
 import { attachReportTool } from "./server/reporting";
-import { ConversationReader } from "./server/conversation";
+import { ConversationReader, excerpt } from "./server/conversation";
 import { setCoordinator, PreferenceStore } from "./server/preferences";
+import { trackedReviewTool } from "./server/tracked-review";
 import { attachCoordinatorTools } from "./server/coordinator";
 import { createOperations } from "./server/operations";
 import { hostVisibility } from "./shared/hosts";
@@ -22,6 +23,8 @@ import { sendDecision } from "./shared/decision-actions";
 import { isCurrentMembership, managedSessions, registerSessionLinks, releaseUnmanagedCoordinator } from "./server/session-links";
 import { registerRecommendation } from "./server/recommendation";
 import { NoteStore } from "./server/notes";
+import { askClarification, sourceQuestion } from "./shared/clarifications";
+import { ClarificationSender, clarificationHistory, restoreClarifiedDecision } from "./server/clarifications";
 import { BoardFacts } from "./server/board-facts";
 
 export default function contribute(server: PluginServerContext) {
@@ -55,7 +58,7 @@ export default function contribute(server: PluginServerContext) {
     const scope = prefs.read();
     return { configured: scope.projects.length > 0, coordinator: scope.coordinator };
   });
-  async function buildSnapshot(paseo: PluginHandlerContext["paseo"]) {
+  async function buildSnapshot(paseo: PluginHandlerContext["paseo"], refreshPulls=false) {
     // GitHub can take seconds even when Paseo already knows the current sessions.
     // Start both paths together, and consume both rejections via Promise.all.
     const catalogRead = paseo.projects.list();
@@ -64,14 +67,17 @@ export default function contribute(server: PluginServerContext) {
         const [catalog, rows] = await Promise.all([catalogRead, discoverSessions(paseo)]);
         return buildSessionView(paseo, catalog, rows);
       })(),
-      catalogRead.then(({ projects }) => prs.read(paseo, { projects })),
+      catalogRead.then(({ projects }) => prs.read(paseo, { projects, refresh:refreshPulls })),
     ]);
     const { choices, sessions, evidence, coordinatorRow } = sessionView;
     const latest = prefs.read();
     const visible = sessions.filter(row => isCurrentMembership(row, latest));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
     facts.decorate(visible, evidence, visibleNotes);
-    for (const row of visible) decorateDecision(row, visibleNotes[row.id], latest);
+    for (const row of visible) {
+      decorateDecision(row, visibleNotes[row.id], latest);
+      restoreClarifiedDecision(row, visibleNotes[row.id], latest, evidence.get(row.id));
+    }
     const selected = new Set(latest.projects);
     const pullRequests = {
       projects: fetched.projects.filter(p => selected.has(p.projectId)),
@@ -101,7 +107,8 @@ export default function contribute(server: PluginServerContext) {
       entry.recipientState = target.lane === "running" ? "running" : target.status === "idle" || target.status === "closed" || target.status === "error" ? target.status : "unknown";
     }
     const replyHistory = activity.sort((a,b) => b.at.localeCompare(a.at));
-    return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory,
+    const clarifications = clarificationHistory(prefs, targets, evidence);
+    return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory, ...(clarifications.length ? { clarifications } : {}),
       projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
   }
   async function buildSessionView(paseo: PluginHandlerContext["paseo"],
@@ -123,6 +130,22 @@ export default function contribute(server: PluginServerContext) {
       const observed = await reader.read(paseo, coordinatorRow).catch(() => null);
       if (observed) evidence.set(coordinatorRow.id, observed);
     }
+    const clarifying = new Set(Object.values(scope.clarifications).flatMap(entry => {
+      const original = sourceQuestion(entry.card);
+      return original && entry.savedDecision && original.version !== scope.answers[original.sessionId]?.version
+        ? [entry.recipientId] : [];
+    }));
+    // The regular reader skips running sessions. Their original question may
+    // remain open while the worker is explaining a choice.
+    for (const row of sessions) {
+      if (!clarifying.has(row.id) || evidence.has(row.id) || row.nativePending || row.status === "closed") continue;
+      try {
+        const page = await paseo.agents.ref(row.id).timeline.refetch({ direction: "tail", projection: "projected", limit: 48 });
+        evidence.set(row.id, excerpt(page));
+      } catch {
+        // Fall back to Paseo's current state when the timeline is unavailable.
+      }
+    }
     return { choices, sessions, evidence, coordinatorRow };
   }
   const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
@@ -130,6 +153,25 @@ export default function contribute(server: PluginServerContext) {
     return JSON.stringify([projects, sessionLinks, coordinator, projectRepositories]);
   }, decisionCount);
   const invalidateCount = () => reads.invalidate();
+  const clarifications = new ClarificationSender(prefs, (sdk, card) => buildSnapshot(sdk, card.kind === "pull"), (card, view) => {
+    const original = sourceQuestion(card);
+    if (original) {
+      const latest = notes.visible(new Set([original.sessionId]))[original.sessionId];
+      if (latest?.revision !== view.notes[original.sessionId]?.revision) return false;
+    }
+    if (card.kind !== "tracked") return true;
+    const scope = prefs.read();
+    const records = tracked.read(new Set(scope.projects), [], { items: [], projects: [] });
+    return records.items.some(item => item.source === card.source && item.projectId === card.projectId &&
+      item.id === card.id && item.fingerprint === card.fingerprint);
+  });
+  server.handle(askClarification, async (input, { paseo }) => {
+    try {
+      return await clarifications.send(paseo, input);
+    } finally {
+      invalidateCount();
+    }
+  });
   prs.register(server, invalidateCount);
   tracked.register(server, () => new Set(prefs.read().projects), invalidateCount, async (item,targetId,{paseo}) => {
     const rows=await discoverSessions(paseo);
@@ -144,8 +186,8 @@ export default function contribute(server: PluginServerContext) {
     if (!current() || !agent || agent.id!==targetId || agent.internal || agent.archivedAt) return null;
     return {
       stillCurrent:current,
-      send:async (answer,messageId)=>{
-        await handle.send(answer,{messageId,activeTurnBehavior:"steer"});
+      send:async (answer,messageId,images)=>{
+        await handle.send(answer,{messageId,activeTurnBehavior:"steer",...(images?.length ? {images} : {})});
       },
       accepted:async (answer,messageId)=>{
         const page=await handle.timeline.refetch({direction:"tail",projection:"projected",limit:128});
@@ -206,6 +248,6 @@ export default function contribute(server: PluginServerContext) {
     return { ok: true };
   });
   const removeReport = attachReportTool(server, notes);
-  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool]);
+  const removeCoordinator = attachCoordinatorTools(server, prefs, reader, [...operations.tools, facts.tool, trackedReviewTool(prefs, tracked, prs, reader, invalidateCount)]);
   return () => { removeCoordinator(); removeReport(); };
 }

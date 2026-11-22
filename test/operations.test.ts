@@ -8,6 +8,7 @@ import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin
 import { MAX_WORK_IMAGE_BYTES, MAX_WORK_IMAGES_BYTES, askDigest, operationState, requestWork, setupCoordinator, setProviderInclusion, updateRouting } from "../shared/operations";
 import { coordinatorPinSettings, pinCurrentCoordinator, setCoordinatorAutoPin } from "../shared/operations";
 import type { DispatchInput } from "../shared/dispatch";
+import { setUsageRouting } from "../shared/usage-routing";
 import { createOperations } from "../server/operations";
 import { PreferenceStore } from "../server/preferences";
 
@@ -42,7 +43,7 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
   const sessions = new Map<string, CreateInput>();
   const sent: { agentId: string; text: string; messageId: string }[] = [];
   const events: string[] = [];
-  const activity = { modes: [{id:"auto",label:"Default Permissions"}, {id:"auto-review",label:"Auto-review"}], beforeModelList: () => {}, providers: ["codex", "cursor"] };
+  const activity = { quotas: {} as Record<string,number>, modes: [{id:"auto",label:"Default Permissions"}, {id:"auto-review",label:"Auto-review"}], beforeModelList: () => {}, providers: ["codex", "cursor"] };
   const runtime = { supportsToolInvocations:true, supportsMcpServers:true };
   const paseo = {
     projects: { list: async () => ({projects: workspaces.map(w => ({projectId: w.projectId, projectDisplayName: w.projectDisplayName, projectRootPath: w.workspaceDirectory}))}) },
@@ -74,6 +75,9 @@ function scenario(facts?: Parameters<typeof createOperations>[2]) {
       }, send: async (text: string, options: {messageId: string}) => { sent.push({agentId:id, text, messageId:options.messageId}); } }),
     },
     providers: {
+      listUsage: async () => ({requestId:"usage",fetchedAt:new Date().toISOString(),providers:Object.entries(activity.quotas).map(([providerId,remainingPct])=>({
+        providerId,displayName:providerId,status:"available",planLabel:null,windows:[{id:"weekly",label:"Weekly",remainingPct}],
+      }))}),
       listAvailable: async () => { events.push("providers.list"); return {providers: activity.providers.map(provider => ({provider,available:provider !== "offline"}))}; },
       listModes: async () => ({modes:activity.modes}),
       snapshot: async () => ({entries: [{provider: "custom-agent", label: "My Code Studio"}]}),
@@ -439,4 +443,22 @@ test("only a digest click with enabled factual handling binds the exact coordina
   expect(s.sent.slice(0, 3).every(msg => !msg.text.includes("answer_board_fact"))).toBe(true);
   expect(s.sent[3].text).toContain(cycle);
   expect(s.sent[3].text).toContain("answer_board_fact");
+});
+
+test("usage-aware worker plans and dispatch agree, recheck capacity before creation and honor the saved toggle",async()=>{
+  const s=scenario();
+  s.activity.quotas={codex:10,cursor:70};
+  const preview=async()=> (await s.tool("plan_board_assignment",{})).routes.find(r=>r.grade==="C").route;
+  expect((await s.call(operationState,{})).usage).toHaveLength(2);
+  expect(await preview()).toEqual(alternate);
+  s.activity.quotas={codex:90,cursor:20};
+  await expect(s.tool("assign_board_worker",{job:{...job,expectedRoute:alternate}})).rejects.toThrow(/미리보기/);
+  expect(s.sessions.size).toBe(0);
+  s.activity.quotas={codex:10,cursor:70};
+  expect((await s.tool("assign_board_worker",{job:{...job,expectedRoute:alternate}})).route).toEqual(alternate);
+  const status=await s.call(operationState,{});
+  await s.call(setUsageRouting,{enabled:false,expectedRevision:status.revision});
+  expect((await s.call(operationState,{})).usageRouting).toBe(false);
+  await expect(s.call(setUsageRouting,{enabled:true,expectedRevision:status.revision})).rejects.toThrow();
+  expect(await preview()).toEqual(route);
 });

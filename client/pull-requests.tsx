@@ -1,5 +1,5 @@
 import { openExternalUrl, useRpc } from "@getpaseo/plugin/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Platform, Text, TextInput, View } from "react-native";
 import { confirmPullRequestMerge, previewPullRequestMerge, pullUrl, readPullLifecycle, setProjectRepository, type MergeMethod, type MergePreview, type MergeReason, type MergeResult, type PullRequestView } from "../shared/prs";
 import { Button, SessionChip, type Theme } from "./controls";
@@ -100,8 +100,8 @@ export function TrackedPullStatus({repo, number, projectId, theme, securityGate}
   </View>;
 }
 
-export function PullRequestCard({ pr, projectId, theme, decision = false, securityGate = false, openCoordinator, workSessions, onResult }: {
-  pr: PullRequest; projectId: string; theme: Theme; workSessions: WorkSessionLink[]; decision?: boolean; securityGate?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void;
+export function PullRequestCard({ pr, projectId, theme, decision = false, securityGate = false, openCoordinator, workSessions, onResult, clarification }: {
+  pr: PullRequest; projectId: string; theme: Theme; workSessions: WorkSessionLink[]; decision?: boolean; securityGate?: boolean; openCoordinator?: () => void; onResult: (notice: MergeNotice) => void; clarification?: ReactNode;
 }) {
   const { t } = useBoardLanguage();
   const c = theme.colors;
@@ -166,8 +166,9 @@ export function PullRequestCard({ pr, projectId, theme, decision = false, securi
         <Button theme={theme} {...named(t("취소", "Cancel"))} disabled={!!busy} onPress={() => { setPreview(null); setMethod(null); }} />
       </View>
     </View>}
-    {ready && !preview && <View style={wrap}>
-      <Button theme={theme} {...named(busy === "read" ? t("병합 정보 조회 중…", "Loading merge details…") : t("보드에서 병합", "Merge on board"))} selected={decision} disabled={!!busy} onPress={() => void inspect()} />
+    {((ready && !preview) || clarification) && <View style={wrap}>
+      {ready && !preview && <Button theme={theme} {...named(busy === "read" ? t("병합 정보 조회 중…", "Loading merge details…") : t("보드에서 병합", "Merge on board"))} selected={decision} disabled={!!busy} onPress={() => void inspect()} />}
+      {clarification}
     </View>}
     {lookupError && <Text accessibilityLiveRegion="polite" style={{color:c.statusWarning}}>{t("병합 정보를 불러오지 못했습니다. 다시 조회하거나 GitHub에서 확인하세요.", "Could not load merge details. Try again or open GitHub.")}</Text>}
     {notice && notice.status !== "merged" && notice.status !== "already-merged" && <MergeFeedback notice={notice} theme={theme} />}

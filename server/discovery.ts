@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readPages } from "../shared/pages";
 export { readPages } from "../shared/pages";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
@@ -11,9 +12,19 @@ type Entry = AgentPage["entries"][number];
 type WorkspacePage = Awaited<ReturnType<Sdk["workspaces"]["list"]>>;
 type Workspace = WorkspacePage["entries"][number];
 
+export function permissionVersion(agent: Entry["agent"]) {
+  const requests = agent.pendingPermissions.map(p => [p.id, p.title, p.name, p.description]);
+  if (!requests.length && (agent.attentionReason !== "permission" || !agent.updatedAt)) return undefined;
+  return createHash("sha256").update(JSON.stringify(requests.length ? requests : agent.updatedAt)).digest("hex");
+}
+
 function observedState(agent: Entry["agent"]): Pick<SessionRow, "lane" | "detail" | "nativePending"> {
   const pending = agent.pendingPermissions.length;
-  if (pending) return { lane: "human", nativePending: true, detail: `응답을 기다리는 요청 ${pending}건` };
+  if (pending) {
+    const labels = agent.pendingPermissions.map(p => p.title || p.name).filter(Boolean);
+    const detail = [`응답을 기다리는 요청 ${pending}건`, ...labels].join(" · ").slice(0, 2000);
+    return { lane: "human", nativePending: true, detail };
+  }
   if (agent.attentionReason === "permission") return { lane: "human", nativePending: true, detail: "세션에서 응답 요청 확인" };
   if (agent.status === "error" || agent.attentionReason === "error") {
     return { lane: "review", detail: "오류 확인 필요" };
@@ -50,6 +61,7 @@ export async function discoverSessions(paseo: Pick<Sdk, "agents" | "workspaces">
       continue;
     }
     const work = workspace && !workspace.internal ? workspacePull(workspace) : undefined;
+    const permission = permissionVersion(agent);
     rows.set(agent.id, {
       ...(work ? { workspacePull: work } : {}),
       id: agent.id,
@@ -62,6 +74,7 @@ export async function discoverSessions(paseo: Pick<Sdk, "agents" | "workspaces">
       ...(agent.metadata?.[reportingKey] === true ? { reporting: true } : {}),
       status: agent.status, activityAt: agent.updatedAt,
       ...observedState(agent),
+      ...(permission ? { permissionVersion: permission } : {}),
     });
   }
   return [...rows.values()];

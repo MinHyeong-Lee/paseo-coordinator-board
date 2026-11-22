@@ -1,19 +1,52 @@
-import { useState } from "react";
-import { Text, View } from "react-native";
-import type { ReplyEntry } from "../shared/reply-history";
+import { useEffect, useRef, useState } from "react";
+import { useRpc } from "@getpaseo/plugin/client";
+import { Image, Text, View } from "react-native";
+import { readReplyPhoto, type ReplyEntry } from "../shared/reply-history";
 import { Button, SessionChip, type Theme } from "./controls";
 import { HistoryMarkdown } from "./history-markdown";
 import { useBoardLanguage } from "./language";
 
 type Props = { entry: ReplyEntry; theme: Theme; open?: (id:string) => void };
+
+function LocalPhoto({ entryKey, index, theme }: { entryKey: string; index: number; theme: Theme }) {
+  const {t} = useBoardLanguage();
+  const read = useRpc(readReplyPhoto);
+  const reader = useRef(read);
+  reader.current = read;
+  const [uri, setUri] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let current = true;
+    setFailed(false); setUri(null);
+    void reader.current({ key: entryKey, index }).then(({image}) => {
+      if (!current) return;
+      if (image) setUri(`data:${image.mimeType};base64,${image.data}`);
+      else setFailed(true);
+    }).catch(() => { if (current) setFailed(true); });
+    return () => { current = false; };
+  }, [entryKey, index, attempt]);
+  const label = t(`첨부 사진 ${index + 1}`, `Attached photo ${index + 1}`);
+  if (failed) return <View style={{alignItems:"flex-start",gap:4}}>
+    <Text accessibilityLiveRegion="polite" style={{color:theme.colors.foregroundMuted}}>{t("사진을 불러오지 못했습니다.", "Could not load the photo.")}</Text>
+    <Button theme={theme} label={t("다시 불러오기", "Retry loading")} onPress={() => setAttempt(n => n + 1)} />
+  </View>;
+  if (!uri) return <Text accessibilityLiveRegion="polite" style={{color:theme.colors.foregroundMuted}}>{t("사진 불러오는 중…","Loading photo…")}</Text>;
+  return <Image accessible accessibilityLabel={label} source={{uri}} resizeMode="contain" onError={() => setFailed(true)}
+    style={{ height:200, width:"100%", borderRadius:5, backgroundColor:theme.colors.surface1 }} />;
+}
+
 export function ReplyCard({entry, theme, open}:Props) {
   const {t,language} = useBoardLanguage();
   const colors = theme.colors;
   const [full,setFull] = useState(false);
+  const [showOrigin,setShowOrigin] = useState(false);
+  const [photoIndex,setPhotoIndex] = useState<number | null>(null);
+  const origin = entry.origin;
   const long = [entry.answer,entry.response].some(text => text && (text.length > 160 || text.split("\n").length > 3));
   const status = {
     sent:t("전송됨","Sent"), pending:t("전송 확인 중","Delivery unconfirmed"),
-    recorded:t("보드에 기록함","Saved on board"), closed:t("기록 닫음","Record closed"),
+    recorded:t("보드에 기록함","Saved on board"), closed:entry.reviewedBy ? t("코디네이터가 확인함","Reviewed by coordinator") : t("기록 닫음","Record closed"),
   }[entry.status];
   const states = {running:t("진행 중","Running"), idle:t("대기 중","Idle"), closed:t("대화 종료","Closed"),
     error:t("오류","Error"), unknown:t("미확인","Unknown")};
@@ -23,7 +56,18 @@ export function ReplyCard({entry, theme, open}:Props) {
   return <View style={{gap:5,padding:9,borderRadius:7,backgroundColor:colors.surface0,borderWidth:1,borderColor:colors.border}}>
     <HistoryMarkdown theme={theme} source={entry.title} heading />
     <Text selectable style={{color:colors.foregroundMuted,fontSize:12}}>{[status, date, recipient].filter(Boolean).join(" · ")}</Text>
+    {!!entry.reviewReason && <HistoryMarkdown theme={theme} source={entry.reviewReason} />}
     {!!entry.answer && <HistoryMarkdown theme={theme} source={entry.answer} preview={long && !full} />}
+    {!!entry.imageCount && <View style={{gap:4}}>
+      <Text style={{color:colors.foregroundMuted,fontSize:12}}>{t(`첨부 사진 ${entry.imageCount}장`, `${entry.imageCount} attached photo${entry.imageCount === 1 ? "" : "s"}`)}</Text>
+      {entry.localPhotos && <>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:5}}>{Array.from({length:entry.imageCount}, (_, index) =>
+          <Button key={index} theme={theme} label={t(`사진 ${index + 1}`, `Photo ${index + 1}`)} expanded={photoIndex === index}
+            accessibilityLabel={entry.title + " · " + t(`사진 ${index + 1}`, `Photo ${index + 1}`)}
+            onPress={() => setPhotoIndex(current => current === index ? null : index)} />)}</View>
+        {photoIndex !== null && <LocalPhoto key={entry.key + "/" + photoIndex} entryKey={entry.key} index={photoIndex} theme={theme} />}
+      </>}
+    </View>}
     {entry.status === "sent" && (entry.response
       ? <View style={{gap:3}}>
           <Text style={{color:colors.foregroundMuted,fontSize:12}}>{t("세션의 후속 응답","Session follow-up")}</Text>
@@ -31,6 +75,15 @@ export function ReplyCard({entry, theme, open}:Props) {
         </View>
       : <Text style={{color:colors.foregroundMuted,fontSize:12}}>{t("후속 응답 미확인","No verified follow-up yet")}</Text>)}
     {long && <Button theme={theme} expanded={full} label={full ? t("접기","Show less") : t("내용 펼치기","Read more")} onPress={()=>setFull(value=>!value)} />}
+    {origin && <View style={{alignItems:"flex-start",gap:3}}>
+      <Button theme={theme} expanded={showOrigin} label={t("답변 출처", "Reply source")} onPress={() => setShowOrigin(value => !value)} />
+      {showOrigin && <Text selectable style={{color:colors.foregroundMuted,fontSize:12}}>{[
+        t("원본 카드", "Source card") + " · " + origin.cardId,
+        origin.questions.length ? t("질문", "Question") + " · " + origin.questions.map(q => q.id).join(", ") : "",
+        origin.sessionId && t("원래 세션", "Source session") + " · " + [origin.sessionHost,origin.sessionId].filter(Boolean).join(" · "),
+        t("기록 버전", "Revision") + " · " + origin.revision,
+      ].filter(Boolean).join("\n")}</Text>}
+    </View>}
     {entry.recipientId && entry.canOpen && open && <SessionChip theme={theme}
       label={[t("받은 세션","Recipient session"),entry.recipientState && states[entry.recipientState]].filter(Boolean).join(" · ")}
       accessibilityLabel={t(`받은 세션 열기 · ${entry.title}`,`Open recipient session · ${entry.title}`)} onPress={()=>open(entry.recipientId!)} />}

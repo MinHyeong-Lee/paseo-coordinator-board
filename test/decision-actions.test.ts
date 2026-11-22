@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendDecision, type DecisionInput } from "../shared/decision-actions";
@@ -34,8 +35,8 @@ async function fixture() {
       ref: id => ({
         refresh: async () => { state.beforeRefresh(); return { agent: actors[id] }; },
         timeline: { refetch: async () => ({ epoch: id, entries: timelines[id].map((item, seqEnd) => ({ item, seqEnd })) }) },
-        send: async (text, { messageId }) => {
-          sent.push({ id, text, messageId });
+        send: async (text, { messageId, images }) => {
+          sent.push({ id, text, messageId, ...(images ? {images} : {}) });
           timelines[id].push({ type: "user_message", text, clientMessageId: messageId });
           if (state.loseReceipt) throw Error("Lost receipt");
         },
@@ -72,7 +73,16 @@ test("구조화 질문·추천·선택은 해당 근거에만 붙고 자유 입�
   await expect(f.send()).rejects.toThrow("바뀌었습니다");
   const text = "두 줄로 나눠 주세요.\n마지막 자막은 유지해 주세요.";
   const r = await f.send({ version: current.decision.version, text });
-  expect(f.sent).toEqual([{ id: "worker", text, messageId: r.messageId }]);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]).toMatchObject({id: "worker", messageId: r.messageId});
+  const [header,metadata,blank,...body] = f.sent[0].text.split("\n");
+  expect(header).toContain("Coordinator Board");
+  expect(JSON.parse(metadata)).toMatchObject({
+    projectId:current.projectId,sourceSessionId:current.id,recipientSessionId:"worker",revision:current.decision.version,
+    questions:[{id:current.decision.version,text:current.decision.question}],
+  });
+  expect(blank).toBe("");
+  expect(body.join("\n")).toBe(text);
   expect((await f.row()).decisionAnswered).toBe(true);
 });
 
@@ -83,6 +93,10 @@ test("질문과 조율은 답변 처리하지 않으며 지정한 세션 이외�
   await f.send({ action: "coordinate", recipientId: "coordinator", text: "두 작업의 순서를 조율해 주세요." });
   expect((await f.row()).decision?.source).toBe("conversation");
   expect(f.sent[0].id).toBe("coordinator");
+  for (const field of ["worker","coordinator",f.input.version,"자막을 한 줄로 할까요?"]) {
+    expect(f.sent[0].text).toContain(field);
+  }
+  expect(f.sent[0].text.endsWith("두 작업의 순서를 조율해 주세요.")).toBe(true);
   await f.send({ action: "question", text: "두 줄로 나누면 어디에서 끊나요?", requestKey: "send-000000002" });
   expect(f.sent[1].id).toBe("worker");
   expect(f.prefs.read().answers).toEqual({});
@@ -181,4 +195,52 @@ test("a native card keeps a single durable record with the original question, re
   expect(owned).toHaveLength(1);
   expect(owned[0][0]).toBe(delivered.messageId);
   expect(owned[0][1]).toMatchObject({status:"sent",activity:{projectId:"project",title:original.decision.question,answer:"Use two lines",recipientId:"worker",coordinator:false}});
+});
+
+const replyPng = {mimeType:"image/png" as const,data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mOYvLAHAAOLAcF4E9p3AAAAAElFTkSuQmCC"};
+const replyWebp = {mimeType:"image/webp" as const,data:"UklGRi4AAABXRUJQVlA4ICIAAABwAQCdASoBAAEAAUAmJZQCdAFAAAD+67eowmknPaRBAAAA"};
+
+test("a photo-only decision reply reaches the original session and a lost acknowledgement never sends different photos", async () => {
+  const f = await fixture();
+  const request = {text:"",images:[replyPng]};
+  expect(sendDecision.input.safeParse({...f.input,...request}).success).toBe(true);
+  expect(sendDecision.input.safeParse({...f.input,text:"   ",images:[]}).success).toBe(false);
+  await expect(async () => f.send({...request,images:[{...replyPng,data:replyWebp.data}]})).toThrow();
+  expect(f.sent).toBeEmpty();
+  f.state.loseReceipt = true;
+  await expect(f.send(request)).rejects.toThrow("전송 결과");
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]).toMatchObject({id:"worker",images:[replyPng]});
+  expect(f.sent[0].text).toContain("자막을 한 줄로 할까요?");
+  expect(f.sent[0].text).not.toContain(replyPng.data);
+  await expect(f.send({...request,images:[replyWebp]})).rejects.toThrow();
+  const restarted = new DecisionSender(f.prefs,f.notes,new ConversationReader());
+  const received = f.timelines.worker.at(-1);
+  received.text = "A different event";
+  await expect(restarted.send(f.sdk,{...f.input,...request})).rejects.toThrow();
+  received.text = f.sent[0].text;
+  const result = await restarted.send(f.sdk,{...f.input,...request,requestKey:"after-restart-photo-01"});
+  expect(result.messageId).toBe(f.sent[0].messageId);
+  expect(f.sent).toHaveLength(1);
+  expect(JSON.stringify(f.prefs.read())).not.toContain(replyPng.data);
+});
+
+test("an in-flight text reply from before envelopes remains recoverable after the upgrade", async () => {
+  const f = await fixture();
+  const original = await f.row();
+  const digest = (value:unknown)=>createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  const hash = digest(["coordinator-board/decision",f.input.requestKey]);
+  const messageId = [hash.slice(0,8),hash.slice(8,12),"4"+hash.slice(13,16),"8"+hash.slice(17,20),hash.slice(20,32)].join("-");
+  const {projectId,sessionId,recipientId,version,action,text}=f.input;
+  f.prefs.change(current=>{
+    current.decisionReceipts[messageId]={
+      fingerprint:digest([projectId,sessionId,recipientId,version,action,text]), sessionId, version,
+      evidenceId:original.evidenceId, status:"pending",
+      activity:{projectId,title:original.decision.question,at:"2026-11-21T05:00:00.000Z",answer:text,recipientId,coordinator:false},
+    };
+  });
+  f.timelines.worker.push({type:"user_message",text,clientMessageId:messageId});
+  expect((await f.send()).messageId).toBe(messageId);
+  expect(f.prefs.read().decisionReceipts[messageId].status).toBe("sent");
+  expect(f.sent).toBeEmpty();
 });

@@ -5,10 +5,12 @@ import type { Preferences } from "./preferences";
 
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
-export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean };
+export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean; at?: string };
 export type Evidence = {
   id: string; turns: Turn[];
   replies?: Map<string, string>;
+  lastInputIds?: string[];
+  clarificationReplies?: Map<string, string>;
   laterInput?: boolean;
   deliveries?: { id: string; sender: string; bodyHash: string }[];
 };
@@ -24,9 +26,12 @@ export function excerpt(page: Page): Evidence {
   const deliveries: NonNullable<Evidence["deliveries"]> = [];
   const replies = new Map<string, string>();
   let messageIds: string[] = [];
-  for (const { item, seqEnd } of page.entries) {
+  let clarification = false;
+  const clarificationReplies = new Map<string, string>();
+  for (const { item, seqEnd, timestamp } of page.entries) {
     if (item.type === "tool_call" && (item.agentMessage || item.name === "heartbeat")) {
       messageIds = [];
+      clarification = false;
       laterInputs.push(item.callId);
       const prefix = "paseo-agent-message:";
       if (item.status === "completed" && item.callId.startsWith(prefix) && item.agentMessage?.event === "message") {
@@ -38,17 +43,23 @@ export function excerpt(page: Page): Evidence {
     const role = item.type === "assistant_message" ? "assistant" : "user";
     const text = item.text.trim();
     if (item.type === "user_message") {
+      clarification = text.startsWith("[Coordinator Board · 추가 질문]");
       messageIds = [item.messageId, item.clientMessageId].filter((id): id is string => !!id);
     } else if (text) {
+      if (clarification) {
+        for (const id of messageIds) clarificationReplies.set(id, text.slice(0, 16000));
+      }
       for (const id of messageIds) replies.set(id, text.length > 1200 ? text.slice(0, 1199) + "…" : text);
     }
     if (!text) continue;
     laterInputs.length = 0;
-    turns.push({ role, text: text.slice(-2000), ...(text.length > 2000 ? { truncated: true } : {}) });
+    turns.push({ role, text: text.slice(-2000), ...(timestamp ? { at:timestamp } : {}), ...(text.length > 2000 ? { truncated: true } : {}) });
     digest.update(JSON.stringify([seqEnd, role, text]));
   }
   if (laterInputs.length) digest.update(JSON.stringify(laterInputs));
   return { id: digest.digest("hex").slice(0, 24), turns: turns.slice(-4),
+    ...(clarification && messageIds.length ? { lastInputIds: messageIds } : {}),
+    ...(clarificationReplies.size ? { clarificationReplies } : {}),
     ...(replies.size ? { replies } : {}), ...(laterInputs.length ? {laterInput:true} : {}), ...(deliveries.length ? {deliveries} : {}) };
 }
 

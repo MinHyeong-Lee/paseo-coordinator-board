@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { workImages } from "./work-images";
 import { repositorySlug, type PullRequestView } from "./prs";
 import type { SessionRow } from "./contract";
 
@@ -80,7 +81,7 @@ export function trackedRecipient(item:TrackedDecisionInput, coordinator:string|n
 
 export const resolveTrackedDecision = defineRpc({
   name:"board.resolve-tracked-decision",
-  input: reference.extend({fingerprint,answer:z.string().trim().min(1).max(4000).optional(),recipientId:id.optional()}).strict().refine(v => !v.recipientId || !!v.answer),
+  input: reference.extend({fingerprint,answer:z.string().max(4000).optional(),recipientId:id.optional(),images:workImages.optional(),questionIndexes:z.array(z.number().int().min(0).max(127)).max(128).optional()}).strict().refine(v => !v.recipientId || !!v.answer?.trim() || !!v.images?.length),
   output:z.object({status:z.enum(["closed","already-closed","changed","out-of-scope","unavailable","sent","busy","unconfirmed"])}),
 });
 export type TrackedResolution = z.output<typeof resolveTrackedDecision.input>;

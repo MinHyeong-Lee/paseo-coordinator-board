@@ -23,7 +23,7 @@ Click **Start with recommended settings** to create the coordinator, or select *
 
 Paseo pins a new coordinator workspace in the host’s sidebar by default. Turn this off in **Settings → Sidebar pinning**. Replacing the coordinator in the same workspace preserves its existing pin state. For an existing coordinator, click **Pin current coordinator workspace**.
 
-On desktop or web, select photos next to the request field or paste a screenshot into it. Review the images, remove any you do not want to share, then choose **Send to coordinator**. You can send images with or without text. Attach up to four PNG, JPEG, or WebP images, up to 5 MiB each and 12 MiB combined. On the native mobile app, open the coordinator session and attach photos in its conversation composer.
+On desktop or web, drop photos onto the coordinator request field or a decision reply, paste a screenshot, or choose the paperclip labeled **Add attachment**. Review the images, remove any you do not want to share, then choose **Send to coordinator**. You can send images with or without text. Attach up to four PNG, JPEG, or WebP images, up to 5 MiB each and 12 MiB combined. On the native mobile app, open the coordinator session and attach photos in its conversation composer.
 
 Use **Send to coordinator** to delegate work. **Request digest** asks the designated session to inspect the latest excerpts and record which decisions need a person. The board displays that evidence and refreshes while open. A new message can invalidate the coordinator's earlier judgment.
 
@@ -34,6 +34,10 @@ A worker asking “Which project does this session belong to?” can receive a v
 - **Reply to a session.** The suggested reply and **Send this reply** appear in a single control. Long replies open in full before you can send. Choose an option to change the proposed message. **Edit reply** and **Write a reply** let you send your own wording.
 - **Ask for clarification.** Use **Ask a question** to send a question to the assigned session. To coordinate across tasks, choose **Ask coordinator to coordinate**, review the recipient, then use **Send request to coordinator**.
 - **Respond to a native approval.** Choose **Assigned session** to open Paseo's permission or plan dialog. A delivery receipt confirms that the session received your message. Verify the result before recording completion.
+
+Decision replies include the original project, session when known, card, question, and revision alongside the answer. A saved local reply can retain photos. Personal checks have a **I checked this** checkbox. During a digest, the coordinator can archive a verified merge-only record or a completed source-session check. Review evidence is visible in recent activity.
+
+Open Settings to see the remaining quota and reset times for accounts that report them to this host. Usage-aware routing compares fresh, matching quota windows for eligible providers at the requested grade. An explicitly saved model order takes precedence.
 
 ## GitHub pull requests
 
@@ -55,3 +59,5 @@ Project progress shows occupied lanes side by side on desktop and stacked on a p
 Project owners can supply independent records in `tracked-decisions.json` in the plugin data directory, or link existing project ledgers through `tracked-sources.json`. This retains manual checks, multiple questions tied to one session, and release decisions that include a second question. Recording a choice closes that version of the record. Sending a message and confirming a GitHub merge are separate actions. [Configuration example](README.md#프로젝트별-칸반과-결정-원장)
 
 Use the project buttons directly under the board title to filter pending decisions, recent activity, and project progress together. Select multiple names, press a selected name to remove it, or choose **All** to reset. Counts show pending decisions. Shared pull requests count once. A merge decision retains its GitHub link after the PR closes. A follow-up question on a merged PR sends only the answer to that question. A verified workspace match adds a session chip with its host and status to the PR card. For a tracked decision, select the named recipient to send your answer or choose **Save answer on board and close** to keep a local record.
+
+Before deciding, select **Ask a question** on the card. Check the recipient, write a question or attach a screenshot, then select **Send question**. The card stays open and shows the exchange under **Questions and answers**.
