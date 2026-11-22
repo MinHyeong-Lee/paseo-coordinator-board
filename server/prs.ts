@@ -2,7 +2,7 @@ import { execCommand, type PluginHandlerContext, type PluginServerContext } from
 import { stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { confirmPullRequestMerge, previewPullRequestMerge, pullReason, repositorySlug, setProjectRepository,
+import { confirmPullRequestMerge, previewPullRequestMerge, pullLifecycle, pullReason, pullUrl, readPullLifecycle, repositorySlug, setProjectRepository,
   type MergeTarget, type PullRequestItem, type PullRequestView } from "../shared/prs";
 import { githubMergeApi, PullMerges } from "./pr-merge";
 import { githubRepository } from "../shared/github-repository";
@@ -53,7 +53,7 @@ export function parseOpenPulls(repo:string, json:string):Source {
     const why = reason(p);
     const head = repositorySlug.safeParse(p.headRepo);
     items.push({repo, number:p.number, ...(head.success && p.headBranch ? {headRepo:head.data,headBranch:p.headBranch} : {}), title:p.title.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g," ").slice(0,512),
-      url:`https://github.com/${repo}/pull/${p.number}`, lane:why==="ready"?"review":"progress",reason:why,updatedAt:p.updatedAt});
+      url:pullUrl(repo,p.number), lane:why==="ready"?"review":"progress",reason:why,updatedAt:p.updatedAt});
     seen.add(p.number);
   }
   return {items,status:rows.length>scanLimit?"truncated":"ok"};
@@ -87,6 +87,12 @@ const githubPulls = async (repo:string) => parseOpenPulls(repo,await run("gh",[
   "pr","list","--repo","github.com/"+repo,"--state","open","--limit",String(scanLimit+1),"--json",fields,"--jq",projection,
 ]));
 
+async function githubLifecycle(target: MergeTarget) {
+  const output = await run("gh", ["pr", "view", String(target.number), "--repo", "github.com/" + target.repo, "--json", "state,url"]);
+  const row = z.object({state:pullLifecycle, url:z.string()}).parse(JSON.parse(output));
+  return row.url.toLowerCase() === pullUrl(target.repo, target.number) ? row.state : "UNKNOWN";
+}
+
 type Mapping = {mode:"auto"|"manual"|"off";repo:string|null};
 function mapping(scope:Preferences, id:string):Mapping {
   const saved=Object.hasOwn(scope.projectRepositories,id)?scope.projectRepositories[id]:undefined;
@@ -100,7 +106,7 @@ export class ProjectPullRequests {
   private readonly waiting: (() => void)[] = [];
   private running = 0;
   constructor(private store:PreferenceStore,private readonly deps = {localOrigin,githubPulls,now:Date.now},
-    private readonly mergeApi=githubMergeApi(args=>run("gh",args))) {}
+    private readonly mergeApi=githubMergeApi(args=>run("gh",args)), private readonly lookupLifecycle=githubLifecycle) {}
 
   private async limited<T>(task:()=>Promise<T>):Promise<T> {
     if (this.running >= 3) await new Promise<void>(resolve=>this.waiting.push(resolve));
@@ -115,6 +121,16 @@ export class ProjectPullRequests {
 
   register(server:PluginServerContext,onInvalidated?:()=>void) {
     const merges=new PullMerges(this.mergeApi,this.deps.now,repo=>{this.sources.delete(repo);onInvalidated?.();});
+    server.handle(readPullLifecycle, async (input, {paseo}) => {
+      try {
+        return await this.limited(async () => {
+          const current = await this.mergeScope(paseo, input);
+          if (!current()) return {state:"UNKNOWN" as const};
+          const state = await this.lookupLifecycle(input);
+          return {state:current() ? state : "UNKNOWN" as const};
+        });
+      } catch { return {state:"UNKNOWN" as const}; }
+    });
     server.handle(previewPullRequestMerge,(input,{paseo})=>merges.preview(input,()=>this.mergeScope(paseo,input)));
     server.handle(confirmPullRequestMerge,(input,{paseo})=>merges.confirm(input,()=>this.mergeScope(paseo,input)));
     server.handle(setProjectRepository,async input=>{

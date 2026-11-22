@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectPullRequests, githubRepository, parseOpenPulls } from "../server/prs";
-import { pullRequestViewSchema, setProjectRepository } from "../shared/prs";
+import { pullRequestViewSchema, readPullLifecycle, setProjectRepository } from "../shared/prs";
 import { PreferenceStore } from "../server/preferences";
 
 const paths: string[] = [];
@@ -14,7 +14,7 @@ const raw = (number=1,extra={}) => ({
   ...extra,
 });
 const page = (entries:unknown[]) => ({entries,pageInfo:{hasMore:false,nextCursor:null}});
-function fixture(ids = ["root","checkout","runtime"]) {
+function fixture(ids = ["root","checkout","runtime"], lookupLifecycle?: ConstructorParameters<typeof ProjectPullRequests>[3]) {
   const dir = mkdtempSync(join(tmpdir(),"project-prs-"));paths.push(dir);
   const store = new PreferenceStore(join(dir,"prefs.json"));
   store.change(s=>{s.projects=ids;});
@@ -36,12 +36,13 @@ function fixture(ids = ["root","checkout","runtime"]) {
       log.gh.push(repo);log.active++;log.max=Math.max(log.max,log.active);
       try{await behavior.delay();behavior.after();if(behavior.fail)throw Error("private host error");return parseOpenPulls(repo,JSON.stringify([raw()]));}finally{log.active--;}
     }};
-  const prs=new ProjectPullRequests(store,deps);
-  let onMapping;
-  prs.register({handle:(rpc,fn)=>{if(rpc.name===setProjectRepository.name)onMapping=fn;}});
+  const prs=new ProjectPullRequests(store,deps,undefined,lookupLifecycle);
+  let onMapping, onLifecycle;
+  prs.register({handle:(rpc,fn)=>{if(rpc.name===setProjectRepository.name)onMapping=fn; if(rpc.name===readPullLifecycle.name)onLifecycle=fn;}});
   const update=(input)=>onMapping(setProjectRepository.input.parse(input));
   const read=(refresh=false)=>prs.read(sdk,{refresh});
-  return {store,sdk,read,log,behavior,roots,spaces,update,tick:n=>{now+=n;}};
+  const lifecycle = (input) => onLifecycle(readPullLifecycle.input.parse(input), {paseo:sdk});
+  return {store,sdk,read,log,behavior,roots,spaces,update,lifecycle,tick:n=>{now+=n;}};
 }
 test("GitHub remotes normalize one owner/repo and reject credentials, extra components and shell input",()=>{
   for(const remote of ["https://github.com/Dev-Team/Repo.git","ssh://git@github.com/Dev-Team/Repo","git@github.com:Dev-Team/Repo.git"])
@@ -103,4 +104,20 @@ test("repository fetches observe the same host-wide concurrency cap across two o
   f.store.change(s=>{for(const id of ids)s.projectRepositories[id]={mode:"manual",repo:"test/"+id};});
   f.behavior.delay=async()=>{await new Promise(resolve=>setTimeout(resolve,3));};
   await Promise.all([f.read(),f.read()]);expect(f.log.max).toBe(3);expect(f.log.gh).toHaveLength(9);
+});
+
+test("tracked PR lifecycle reads distinguish merged, closed, open and unavailable outside the open-PR list", async () => {
+  const target = {repo:"org/example",number:170,projectId:"root"};
+  for (const state of ["MERGED", "CLOSED", "OPEN"] as const) {
+    const f = fixture(["root"], async input => { expect(input).toEqual(target); return state; });
+    expect(await f.lifecycle(target)).toEqual({state});
+  }
+  let calls = 0;
+  const f = fixture(["root"], async () => { calls++; throw Error("offline"); });
+  expect(await f.lifecycle(target)).toEqual({state:"UNKNOWN"});
+  expect(await f.lifecycle({...target,repo:"other/repo"})).toEqual({state:"UNKNOWN"});
+  expect(await f.lifecycle({...target,projectId:"unselected"})).toEqual({state:"UNKNOWN"});
+  expect(calls).toBe(1);
+  const moving = fixture(["root"], async () => { moving.store.change(s => {s.projects=[];}); return "MERGED"; });
+  expect(await moving.lifecycle(target)).toEqual({state:"UNKNOWN"});
 });

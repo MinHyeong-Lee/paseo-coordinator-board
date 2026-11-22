@@ -36,6 +36,41 @@ export const trackedDecisionViewSchema = z.object({
   items:z.array(trackedDecisionSchema),status:z.enum(["ok","partial","absent","invalid","unavailable"]),
 });
 export type TrackedDecisionView = z.output<typeof trackedDecisionViewSchema>;
+// Older ledgers may contain only the GitHub link in the request. An unambiguous
+// link can identify the PR for reading, but never binds a merge action.
+export function trackedPullTarget(item: TrackedDecisionInput) {
+  if (item.kind !== "merge") return null;
+  if (item.mergeTarget) return item.mergeTarget;
+  const found = new Map<string, {repo:string; number:number}>();
+  for (const line of item.ask) {
+    for (const match of line.matchAll(/(?:^|[\s(<\[])(https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/([1-9]\d*))(?=$|[\s)>\]])/gi)) {
+      const repo = repositorySlug.safeParse(match[2]);
+      const number = Number(match[3]);
+      if (repo.success && Number.isSafeInteger(number) && number <= 2147483647) {
+        found.set(pullKey(repo.data, number), {repo:repo.data, number});
+      }
+    }
+  }
+  return found.size === 1 ? [...found.values()][0] : null;
+}
+
+export function mentionsSecurityGate(item: TrackedDecisionInput) {
+  return item.kind === "merge" && [item.title, ...item.ask, ...item.steps]
+    .some(line => /보안\s*게이트|security[- ]gate/i.test(line));
+}
+
+export function trackedAnswerText(item: TrackedDecisionInput, replies: string[], freeReply: string) {
+  const answers = item.questions.flatMap((question, index) => {
+    const value = replies[index];
+    return value ? [[question.id, question.text].filter(Boolean).join(" · ") + " — " + value] : [];
+  });
+  return [...answers, freeReply.trim()].filter(Boolean).join("\n");
+}
+
+export function suggestedTrackedReply(item: TrackedDecision) {
+  return item.kind !== "merge" && !item.questions.length && !item.matchedSessionId ? item.howToAnswer?.trim() ?? "" : "";
+}
+
 export function trackedRecipient(item:TrackedDecisionInput, coordinator:string|null, sessions:readonly SessionRow[]) {
   if (item.where === "manager" || item.where === "human") return coordinator;
   if (item.where !== "session" || item.sessionHost || !item.sessionId) return null;

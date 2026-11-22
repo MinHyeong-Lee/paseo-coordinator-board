@@ -58,6 +58,30 @@ export function factStatus({ delivery, kind }: Pick<NonNullable<Session["boardFa
   return words[delivery];
 }
 
+export function projectFilterNames(projects: Pick<Snapshot["projects"][number], "id" | "title" | "path">[]) {
+  const names = new Map<string, string>();
+  for (const project of projects) {
+    const others = projects.filter(other => other.id !== project.id && other.title === project.title);
+    let label = project.title;
+    if (others.length) {
+      const parts = (path: string) => path.split(/[\\/]+/).filter(Boolean);
+      const own = parts(project.path);
+      const paths = others.map(other => parts(other.path));
+      let suffix = project.id;
+      for (let depth = 1; depth <= own.length; depth++) {
+        const tail = own.slice(-depth).join("/");
+        if (paths.every(path => path.slice(-depth).join("/") !== tail)) {
+          suffix = tail;
+          break;
+        }
+      }
+      label += " · " + suffix;
+    }
+    names.set(project.id, label);
+  }
+  return names;
+}
+
 export function projectCards(snapshot: Snapshot) {
   const projects = new Map<string, { id: string; title: string; cards: Card[] }>();
   const human: Card[] = [];

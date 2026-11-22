@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { decisionCount } from "../shared/decision-count";
 import type { PullRequestItem } from "../shared/prs";
-import { projectCards } from "../client/model";
+import { projectCards, projectFilterNames } from "../client/model";
 import type { Note, SessionRow } from "../shared/contract";
 
 test("the digest and projects share one classification; new work takes priority over past completion", () => {
@@ -44,4 +44,15 @@ test("사이드바에서 네이티브 승인, 사용자 질문과 여러 프로�
   expect(decisionCount({ sessions, notes })).toBe(2);
   expect(decisionCount({ sessions: [], notes: {}, pullRequests: { projects: [], items: [ready] } })).toBe(1);
   expect(decisionCount({ sessions: [], notes: {} })).toBe(0);
+});
+
+test("project filters distinguish same-name checkouts and keep unrelated names short", () => {
+  const labels = projectFilterNames([
+    {id:"first",title:"Example",path:"/work/first/Example"},
+    {id:"second",title:"Example",path:"C:\\work\\second\\Example"},
+    {id:"third",title:"Other",path:"/work/Other"},
+    {id:"fourth",title:"Shared",path:"/work/shared"},
+    {id:"fifth",title:"Shared",path:"/work/shared"},
+  ]);
+  expect([...labels.values()]).toEqual(["Example · first/Example","Example · second/Example","Other","Shared · fourth","Shared · fifth"]);
 });

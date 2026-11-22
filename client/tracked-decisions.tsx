@@ -2,13 +2,14 @@ import { TextInput } from "@getpaseo/plugin/client/ui";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { resolveTrackedDecision, type TrackedDecision } from "../shared/tracked-decisions";
+import { resolveTrackedDecision, mentionsSecurityGate, suggestedTrackedReply, trackedAnswerText, trackedPullTarget, type TrackedDecision } from "../shared/tracked-decisions";
 import { Button, SessionChip, type Theme } from "./controls";
+import { TrackedPullStatus } from "./pull-requests";
 import { useBoardLanguage } from "./language";
 
 type Resolution = ReturnType<typeof resolveTrackedDecision.output.parse>["status"];
 type Props = {
-  item: TrackedDecision; theme: Theme; recipientId?:string|null; open?: () => void; children?: ReactNode;
+  item: TrackedDecision; theme: Theme; recipientId?:string|null; open?: () => void; children?: ReactNode; pull?: ReactNode;
   onResolved: (result: Resolution) => Promise<void> | void;
 };
 const kinds = {
@@ -39,7 +40,7 @@ export function TrackedDecisionCard(props: Props) {
   return <DecisionRecord key={JSON.stringify([props.item.key, props.item.fingerprint])} {...props} />;
 }
 
-function DecisionRecord({ item, theme, open, recipientId, onResolved, children }: Props) {
+function DecisionRecord({ item, theme, open, recipientId, onResolved, children, pull }: Props) {
   const { t } = useBoardLanguage();
   const resolve = useRpc(resolveTrackedDecision);
   const [expanded, setExpanded] = useState(false);
@@ -54,7 +55,12 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children }
   const pending = useRef(false);
   const c = theme.colors;
   const words = kinds[item.kind];
-  const headline = item.ask[0];
+  const isMerge = item.kind === "merge";
+  const target = trackedPullTarget(item);
+  const headline = isMerge ? undefined : item.ask[0];
+  const securityGate = mentionsSecurityGate(item);
+  const articleChoice = item.questions.length === 1 && /(?:글|블로그|blog|article)/i.test(item.questions[0].text);
+  const followupTitle = articleChoice ? t("글 작성 선택", "Article writing choice") : t("후속 질문", "Follow-up questions");
   const source = item.projectTitle || item.projectId;
   const where = item.where === "human" ? t("직접 처리", "Your action")
     : item.where === "session" ? t("담당 세션", "Assigned session")
@@ -69,13 +75,13 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children }
     return question.options.filter((_, choice) => selected[index]?.includes(choice)).map(option => option.key + " · " + option.text).join(", ");
   });
   const outstanding = replies.some((value, index) => !value && !skipped[index]);
-  const answers = replies.flatMap((value, index) => {
-    const question = item.questions[index];
-    return value ? [[question.id, question.text].filter(Boolean).join(" · ") + " — " + value] : [];
-  });
-  const answer = answers.length || freeReply.trim() ? [...answers, freeReply.trim()].filter(Boolean).join("\n") : "";
-  const suggested = !item.questions.length && !item.matchedSessionId ? item.howToAnswer?.trim() : "";
+  const answer = trackedAnswerText(item, replies, freeReply);
+  const suggested = suggestedTrackedReply(item);
   const quickReply = suggested && suggested.length <= 4000 && !/<[^>]+>/.test(suggested) ? suggested : "";
+  const followupOnly = isMerge && item.questions.length > 0;
+  const sendLabel = item.where === "session"
+    ? followupOnly ? t("담당 세션에 후속 답변만 보내기", "Send follow-up answer only to assigned session") : t("담당 세션에 답장 보내기", "Send reply to assigned session")
+    : followupOnly ? t("코디네이터에 후속 답변만 보내기", "Send follow-up answer only to coordinator") : t("코디네이터에 답 보내기", "Send answer to coordinator");
   const sendText = answer || quickReply;
   const tooLong = answer.length > 4000;
 
@@ -119,14 +125,15 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children }
       <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>{[source || t("보드 공통", "Board-wide"), t(words[0], words[1]), where, item.owner].filter(Boolean).join(" · ")}</Text>
       {open && <SessionChip theme={theme} label={t("연결 세션", "Linked session")} accessibilityLabel={named(t("연결된 세션 열기", "Open linked session")).accessibilityLabel} onPress={open} />}
     </View>
-    <Text accessibilityRole="header" selectable style={{ color: c.foreground, fontSize: 16, fontWeight: "600" }}>{item.title}</Text>
+    <Text accessibilityRole="header" selectable style={{ color: c.foreground, fontSize: 16, fontWeight: "600" }}>{isMerge ? t("PR 병합", "PR merge") : item.title}</Text>
     {!!headline && headline !== item.title && <Text selectable style={{ color: c.foreground }}>{headline}</Text>}
-    {item.kind === "merge" && item.mergeTarget && !item.matchedPull && <Text style={{ color: c.foregroundMuted }}>
-      {t("현재 병합 검토 목록에 없습니다. 아래에 남은 질문을 확인하세요.", "This pull request is outside the current merge review list. Check any remaining questions below.")}
-    </Text>}
+    {isMerge && (pull || (target
+      ? <TrackedPullStatus repo={target.repo} number={target.number} projectId={item.projectId} theme={theme} securityGate={securityGate} />
+      : <Text selectable style={{color:c.foregroundMuted}}>{t("PR 링크와 병합 상태 미확인", "Pull request link and merge status unavailable")}</Text>))}
     {children}
-    <Lines theme={theme} title={t("추천", "Recommendation")} lines={item.recommend.filter(line => line !== headline && line !== item.howToAnswer)} />
+    {!isMerge && <Lines theme={theme} title={t("추천", "Recommendation")} lines={item.recommend.filter(line => line !== headline && line !== item.howToAnswer)} />}
     {!isClosed && !needsRefresh && <View style={{ gap: 8 }}>
+      {isMerge && !!item.questions.length && <Text accessibilityRole="header" style={{color:c.foreground, borderTopWidth:1, borderTopColor:c.border, paddingTop:10, fontSize:16, fontWeight:"600"}}>{followupTitle}</Text>}
       {item.questions.map((question, index) => <View key={index} style={{ gap: 6 }}>
         <Text selectable style={{ color: c.foreground, fontWeight: "600" }}>{question.text}</Text>
         {!!question.options.length && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
@@ -165,14 +172,14 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children }
           label={t("답안 사용", "Use reply") + " · " + item.howToAnswer}
           onPress={() => { setFreeReply(item.howToAnswer!); setConfirming(false); }} /></View>}
       </>}
-      {!!answer && !!item.questions.length && <Lines theme={theme} title={t("기록할 답", "Answers to record")} lines={[answer]} />}
+      {!!answer && !!item.questions.length && <Lines theme={theme} title={isMerge ? t("선택한 후속 답변", "Selected follow-up answer") : t("기록할 답", "Answers to record")} lines={[answer]} />}
       {tooLong && <Text style={{ color: c.statusWarning }}>{t("답을 4,000자 이내로 줄여 주세요.", "Shorten the answer to 4,000 characters.")}</Text>}
       <View style={{ gap: 6 }}>
         {!recipientId && !item.matchedSessionId && <Text style={{color:c.foregroundMuted,fontSize:12}}>{t("전송할 세션이 확인되지 않아 답을 보드에 기록합니다.","No verified recipient. You can save your answer on the board.")}</Text>}
         {outstanding && <Text style={{ color: c.foregroundMuted }}>{t("각 질문에 답하거나 건너뛰기를 선택하세요.", "Answer or explicitly skip each question.")}</Text>}
         {confirming && <Text style={{ color: c.foreground }}>{t("내용을 확인한 것으로 기록하고 이 항목을 닫습니다.", "This marks the record as reviewed and closes it.")}</Text>}
         <View style={wrap}>
-          {recipientId && recordActions && <Button theme={theme} {...named((item.where === "session" ? t("담당 세션에 답장 보내기","Send reply to assigned session") : t("코디네이터에 답 보내기","Send answer to coordinator")) + (!answer && quickReply ? " · " + quickReply : ""))}
+          {recipientId && recordActions && <Button theme={theme} {...named(sendLabel + (!answer && quickReply ? " · " + quickReply : ""))}
             selected={!!sendText && !outstanding} disabled={busy || !sendText || outstanding || tooLong} onPress={() => void acknowledge(true)} />}
           <Button theme={theme} {...named(confirming ? t("기록 닫기 확정", "Confirm closing record") : answer ? t("보드에 답 기록하고 닫기", "Save answer on board and close") : t("확인한 기록 닫기", "Close reviewed record"))}
             selected={confirming || (!!answer && !recipientId)} disabled={busy || outstanding || tooLong} onPress={() => confirming || answer ? void acknowledge() : setConfirming(true)} />
@@ -188,7 +195,12 @@ function DecisionRecord({ item, theme, open, recipientId, onResolved, children }
       {!!item.since && <Text selectable style={{ color: c.foregroundMuted, fontSize: 12 }}>
         {t("기록 시각", "Recorded at")} · {item.since}
       </Text>}
-      <Lines theme={theme} title={t("요청한 일", "Requested action")} lines={item.ask.filter(line => line !== headline)} />
+      {isMerge && <>
+        <Lines theme={theme} title={t("기록 당시 제목", "Original record title")} lines={[item.title]} />
+        <Lines theme={theme} title={t("기록 당시 추천", "Original recommendation")} lines={item.recommend} />
+        {item.howToAnswer && <Lines theme={theme} title={t("기록 당시 답장 예시", "Original example reply")} lines={[item.howToAnswer]} />}
+      </>}
+      <Lines theme={theme} title={isMerge ? t("기록 당시 요청", "Original request") : t("요청한 일", "Requested action")} lines={item.ask.filter(line => line !== headline)} />
       <Lines theme={theme} title={t("진행 단계", "Steps")} lines={item.steps} />
       <Lines theme={theme} title={t("근거", "Evidence")} lines={item.why} />
       <Lines theme={theme} title={t("위험", "Risks")} lines={item.risk} />
