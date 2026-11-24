@@ -3,9 +3,22 @@ import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, syml
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openNoFollow, openNoFollowSync } from "../server/safe-open";
+import { openNoFollow, openNoFollowSync, sameFileIdentity } from "../server/safe-open";
 
 const fallback = { noFollow: 0 };
+
+test("Windows accepts the short and extended volume serial for the same file", () => {
+  const pathStat = { dev: 0x1234567887654321n, ino: 42n };
+  const handleStat = { dev: 0x87654321n, ino: 42n };
+  expect(sameFileIdentity(pathStat, handleStat, "win32")).toBe(true);
+  expect(sameFileIdentity(handleStat, pathStat, "win32")).toBe(true);
+  expect(sameFileIdentity(pathStat, handleStat, "linux")).toBe(false);
+  expect(sameFileIdentity(pathStat, handleStat, "darwin")).toBe(false);
+  expect(sameFileIdentity(pathStat, { ...handleStat, dev: 0x87654322n }, "win32")).toBe(false);
+  expect(sameFileIdentity(pathStat, { ...handleStat, ino: 43n }, "win32")).toBe(false);
+  expect(sameFileIdentity(pathStat, { ...pathStat, dev: 0x1234567987654321n }, "win32")).toBe(false);
+  expect(sameFileIdentity({ ...pathStat, ino: 0n }, { ...handleStat, ino: 0n }, "win32")).toBe(false);
+});
 
 test("the fallback reads, overwrites, and creates regular files", async () => {
   const directory = mkdtempSync(join(tmpdir(), "board-safe-open-"));

@@ -13,8 +13,17 @@ function isMissing(error: unknown) {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
+type FileIdentity = Pick<BigIntStats, "dev" | "ino">;
+
+export function sameFileIdentity(before: FileIdentity, after: FileIdentity, platform = process.platform) {
+  if (before.ino === 0n || before.ino !== after.ino) return false;
+  if (before.dev === after.dev) return true;
+  // Older libuv can report the same Windows volume using its full or short serial.
+  return platform === "win32" && (before.dev === BigInt.asUintN(32, after.dev) || after.dev === BigInt.asUintN(32, before.dev));
+}
+
 function verifyIdentity(path: string, before: BigIntStats, after: BigIntStats) {
-  if (after.isSymbolicLink() || before.ino === 0n || before.dev !== after.dev || before.ino !== after.ino) {
+  if (after.isSymbolicLink() || !sameFileIdentity(before, after)) {
     throw replacedFile(path);
   }
 }
