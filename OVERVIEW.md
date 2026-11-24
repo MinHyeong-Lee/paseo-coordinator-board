@@ -82,6 +82,12 @@ Project progress shows occupied lanes side by side on desktop and stacked on a p
 
 Project owners can supply independent records in `tracked-decisions.json` in the plugin data directory, or link existing project ledgers through `tracked-sources.json`. This retains manual checks, multiple questions tied to one session, and release decisions that include a second question. Recording a choice closes that version of the record. Sending a message and confirming a GitHub merge are separate actions. [Configuration example](README.md#프로젝트별-칸반과-결정-원장)
 
+In a linked project ledger, each `questions[].options[]` entry needs a choice identifier `key` and readable `text`. Optional `does`, `pros`, and `cons` take a string or array of strings. Use `note` for a short explanation and `recommended` for a boolean recommendation flag. The board ignores extra fields such as `label` and `detail`. When `label` is present and the required `text` is missing, the warning explains which field to use.
+
+Valid cards from readable ledgers stay on the board. In **My decisions → Details**, expand a warning to see the source and field paths for a rejected card. If the file cannot be opened or does not contain a readable JSON `items` array, the warning identifies the ledger source.
+
+If a ledger’s reply or question history cannot be read, its cards are read-only. Reply delivery and local recording are available again once the history can be read.
+
 Below the board title, one row shows **All**, any selected filters, and projects with pending decisions, in descending order until the row fills. Unselected projects with zero decisions appear when expanded. Scroll horizontally on narrow screens if the selected filters fill the row. Use **+N** on the right to expand the list, and **Collapse** in the same place to return to one row. The button is hidden when all filters fit. Your device remembers the view. Managed projects using the same folder share one filter. Separate folders with the same title show a path suffix. Counts show pending decisions, with shared pull requests counted once. Select any combination of filters to update **My decisions**, **Recent decision activity**, and **Session progress** together. Press a selected filter to clear it, or choose **All** to reset.
 
 **My decisions** shows the last digest time when available. **Refresh digest** appears after three hours if a new, unclassified work session question has arrived since that digest. After the request is accepted, the button shows **Requested** until the next digest completes.
