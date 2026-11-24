@@ -27,6 +27,8 @@ import { NoteStore } from "./server/notes";
 import { askClarification, sourceQuestion } from "./shared/clarifications";
 import { ClarificationSender, clarificationHistory, restoreClarifiedDecision } from "./server/clarifications";
 import { BoardFacts } from "./server/board-facts";
+import { projectRootKey } from "./server/project-root";
+import { recordDigestCompletion } from "./server/digest";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(hostVisibility);
@@ -72,20 +74,21 @@ export default function contribute(server: PluginServerContext) {
       })(),
       catalogRead.then(({ projects }) => prs.read(paseo, { projects, refresh:refreshPulls })),
     ]);
-    const { choices, sessions, evidence, coordinatorRow } = sessionView;
+    const { choices, sessions, evidence, coordinatorRow, missingTitles } = sessionView;
     const latest = prefs.read();
+    const selected = new Set(latest.projects.filter(id => choices.has(id)));
+    const activeScope = { ...latest, projects: [...selected] };
     // Loading the board should not wait on an idle check or a provider turn.
     if (Object.values(latest.pullMergeHistory).some(entry => entry.pullMerge.notification?.status === "queued")) {
       void mergeNotifications.resume(paseo).catch(() => console.warn("Could not resume queued merge notifications."));
     }
-    const visible = sessions.filter(row => isCurrentMembership(row, latest));
+    const visible = sessions.filter(row => isCurrentMembership(row, activeScope));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
     facts.decorate(visible, evidence, visibleNotes);
     for (const row of visible) {
       decorateDecision(row, visibleNotes[row.id], latest, evidence.get(row.id));
       restoreClarifiedDecision(row, visibleNotes[row.id], latest, evidence.get(row.id));
     }
-    const selected = new Set(latest.projects);
     const pullRequests = {
       projects: fetched.projects.filter(p => selected.has(p.projectId)),
       items: fetched.items.map(pr => ({ ...pr, projectIds: pr.projectIds.filter(id => selected.has(id)) })).filter(pr => pr.projectIds.length),
@@ -122,20 +125,24 @@ export default function contribute(server: PluginServerContext) {
     }
     const replyHistory = activity.sort((a,b) => b.at.localeCompare(a.at));
     const clarifications = clarificationHistory(prefs, targets, evidence);
+    const projects = [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) }));
+    const missingProjects = latest.projects.filter(id => !selected.has(id)).map(id => ({
+      id, title: missingTitles.get(id) ?? id, path: "", selected: true, missing: true as const,
+    }));
     return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory, ...(clarifications.length ? { clarifications } : {}),
-      projects: [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) })), coordinator: latest.coordinator };
+      projects: [...projects, ...missingProjects], coordinator: latest.coordinator, lastDigestAt: latest.lastDigest?.at };
   }
   async function buildSessionView(paseo: PluginHandlerContext["paseo"],
     catalog: Awaited<ReturnType<PluginHandlerContext["paseo"]["projects"]["list"]>>,
     rows: Awaited<ReturnType<typeof discoverSessions>>) {
-    const scope = prefs.read();
-    const choices = new Map(catalog.projects.map(p => {
+    const choices = new Map(await Promise.all(catalog.projects.map(async p => {
       const id = p.projectId;
-      return [id, { id, title: p.projectCustomName || p.projectDisplayName, path: p.projectRootPath, selected: scope.projects.includes(id) }];
-    }));
-    for (const row of rows) {
-      if (!choices.has(row.projectId)) choices.set(row.projectId, { id: row.projectId, title: row.projectTitle, path: "", selected: scope.projects.includes(row.projectId) });
-    }
+      const path = p.projectRootPath;
+      return [id, { id, title: p.projectCustomName || p.projectDisplayName || id, path, rootKey: await projectRootKey(path) }] as const;
+    })));
+    const saved = prefs.read();
+    const scope = { ...saved, projects: saved.projects.filter(id => choices.has(id)) };
+    const missingTitles = new Map(rows.filter(row => !choices.has(row.projectId)).map(row => [row.projectId, row.projectTitle]));
     const titles = new Map([...choices].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
     const evidence = await reader.decorate(paseo, sessions, scope);
@@ -165,7 +172,7 @@ export default function contribute(server: PluginServerContext) {
         // Fall back to Paseo's current state when the timeline is unavailable.
       }
     }
-    return { choices, sessions, evidence, coordinatorRow };
+    return { choices, sessions, evidence, coordinatorRow, missingTitles };
   }
   const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
     const { projects, sessionLinks, coordinator, projectRepositories } = prefs.read();
@@ -208,7 +215,12 @@ export default function contribute(server: PluginServerContext) {
     }
     await mergeNotifications.resume(context.paseo,event.agent.id);
   };
-  const removeMergeTurn = server.addHook("agent.turn.after",onRecipientAvailable);
+  const removeMergeTurn = server.addHook("agent.turn.after", async (event, context) => {
+    await Promise.all([
+      onRecipientAvailable(event, context),
+      recordDigestCompletion(prefs, context.paseo, event).catch(() => console.warn("Could not record the completed digest.")),
+    ]);
+  });
   const removeReplyClose = server.addHook("agent.close.after",async (event,ctx)=>{ if(event.agent?.id) await resumeReplies(ctx,event.agent.id); });
   const removeReplyArchive = server.addHook("agent.archive.after",async (event,ctx)=>{ if(event.agent?.id) await resumeReplies(ctx,event.agent.id); });
   const removeMergePermission = server.addHook("agent.permission.after",onRecipientAvailable);

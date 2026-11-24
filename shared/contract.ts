@@ -59,8 +59,9 @@ export const boardSnapshot = defineRpc({
   name: "board.snapshot",
   input: z.object({ fresh: z.boolean().optional() }),
   output: z.object({ sessions: z.array(session), notes: z.record(z.string(), noteSchema),
-    projects: z.array(z.object({ id: z.string(), title: z.string(), path: z.string(), selected: z.boolean() })),
-    coordinator: sessionId.nullable(), clarifications:z.array(clarificationEntry).optional(), replyHistory: z.array(replyEntry).optional(), trackedDecisions: trackedDecisionViewSchema.optional(), pullRequests: pullRequestViewSchema.optional() }),
+    projects: z.array(z.object({ id: z.string(), title: z.string(), path: z.string(), selected: z.boolean(),
+      rootKey: z.string().optional(), missing: z.literal(true).optional() })),
+    coordinator: sessionId.nullable(), lastDigestAt: z.iso.datetime().optional(), clarifications:z.array(clarificationEntry).optional(), replyHistory: z.array(replyEntry).optional(), trackedDecisions: trackedDecisionViewSchema.optional(), pullRequests: pullRequestViewSchema.optional() }),
 });
 export const boardDecisionCount = defineRpc({
   name: "board.decision-count", input: z.strictObject({}),
