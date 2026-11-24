@@ -116,10 +116,12 @@ export function PhotoComposer({ children, theme, disabled, draft, text = "", ope
     format: t("JPEG, PNG 또는 WebP 사진을 선택해 주세요.", "Choose JPEG, PNG or WebP photos."),
     count: t("사진은 요청당 최대 4장까지 첨부할 수 있습니다.", "Attach up to 4 photos per request."),
     size: t("각 사진은 0바이트보다 크고 5MiB 이하여야 합니다.", "Each photo must be nonempty and at most 5 MiB."),
-    total: t("첨부한 사진의 합계는 12MiB 이하여야 합니다.", "Attached photos must total at most 12 MiB."),
+    total: t("첨부한 사진의 합계가 한도(12MiB)를 넘습니다. 다른 첨부를 빼 주세요.", "Attached photos exceed the 12 MiB total. Remove another attachment."),
     read: t("사진을 읽지 못했습니다. 파일을 다시 선택해 주세요.", "Could not read the photo. Select the file again."),
     shrink: t("사진을 한도(장당 5MiB, 합계 12MiB) 안으로 줄이지 못했습니다. 다른 사진을 선택해 주세요.",
       "Could not shrink the photo to fit the limits (5 MiB each, 12 MiB combined). Choose a different photo."),
+    source: t("사진이 너무 커서 줄일 수 없습니다(최대 50MiB, 5000만 화소). 더 작은 사진을 선택해 주세요.",
+      "The photo is too large to shrink (up to 50 MiB and 50 megapixels). Choose a smaller photo."),
   };
   return <div style={{ display: "flex", flexDirection: "column", gap: 6, borderRadius: 6, outline: dragging ? `2px dashed ${colors.accent}` : undefined }}
     onDragOver={event => {
@@ -181,7 +183,8 @@ export function PhotoComposer({ children, theme, disabled, draft, text = "", ope
         <View style={{ flexShrink: 1 }}>
           <Text selectable style={{ color: colors.foreground }}>{displayName}</Text>
           {summary && <Text selectable style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-            {t(`자동으로 줄임: ${summary.bytes}, ${summary.pixels}`, `Shrunk automatically: ${summary.bytes}, ${summary.pixels}`)}</Text>}
+            {t(`자동으로 줄임: ${summary.bytes}, ${summary.pixels}`, `Shrunk automatically: ${summary.bytes}, ${summary.pixels}`)}
+            {photo.shrunk?.firstFrameOnly ? t(", 첫 프레임만 보냄", ", first frame only") : ""}</Text>}
         </View>
         <Button theme={theme} label={t("제거", "Remove")} accessibilityLabel={t(`사진 제거 · ${displayName}`, `Remove photo · ${displayName}`)}
           disabled={locked} onPress={() => draft.remove(photo.id)} />
