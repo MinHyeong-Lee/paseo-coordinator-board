@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { Switch, Text, View } from "react-native";
 import type { ProviderEntry } from "../shared/dispatch";
 import { hasUsageReading, recentUsage, type AccountUsage } from "../shared/usage-routing";
-import { Button, type Theme } from "./controls";
+import type { Theme } from "./controls";
 import { useBoardLanguage } from "./language";
 
 function AccountCard({label,report,supplemental,issue,theme}: {label:string;report?:AccountUsage;supplemental?:boolean;issue?:AccountUsage["issue"];theme:Theme}) {
@@ -49,8 +49,9 @@ function AccountCard({label,report,supplemental,issue,theme}: {label:string;repo
   </View>;
 }
 
-export function UsageRouting({providers,reports,supplemental=[],enabled,busy,onToggle,theme}:{
-  providers:ProviderEntry[]; reports:AccountUsage[]; supplemental?:AccountUsage[]; enabled:boolean; busy:boolean; onToggle:()=>void; theme:Theme;
+// Accounts with their remaining usage, and which providers routing may use.
+export function UsageRouting({providers,reports,supplemental=[],busy,onInclude,theme}:{
+  providers:ProviderEntry[]; reports:AccountUsage[]; supplemental?:AccountUsage[]; busy:boolean; onInclude:(provider:string,included:boolean)=>void; theme:Theme;
 }) {
   const {t} = useBoardLanguage();
   const c = theme.colors;
@@ -66,18 +67,22 @@ export function UsageRouting({providers,reports,supplemental=[],enabled,busy,onT
     ...providers.filter(p=>!seen.has(p.id)).map(p=>({id:p.id,label:p.label,report:undefined,supplemental:false})),
   ];
   return <View style={{gap:9,padding:12,borderRadius:8,backgroundColor:c.surface1}}>
-    <Text accessibilityRole="header" style={{color:c.foreground,fontWeight:"600"}}>{t("계정별 남은 사용량","Remaining account usage")}</Text>
+    <Text accessibilityRole="header" style={{color:c.foreground,fontWeight:"600"}}>{t("계정과 사용량","Accounts and usage")}</Text>
     <View onLayout={e=>setWidth(e.nativeEvent.layout.width)} style={{flexDirection:"row",flexWrap:"wrap",gap:8,alignItems:"flex-start"}}>
       {cards.map((card,i)=><View key={card.id+":"+i} style={{width:width>=580 ? Math.floor((width-8)/2) : "100%"}}>
         <AccountCard {...card} theme={theme} />
       </View>)}
     </View>
     {!cards.length && <Text style={{color:c.foregroundMuted}}>{t("호스트에 사용량 보고서가 없습니다.","This host has no usage reports.")}</Text>}
-    <View style={{alignItems:"flex-start"}}>
-      <Button theme={theme} selected={enabled} disabled={busy}
-        label={enabled ? t("사용량 기반 자동 배정 켜짐","Usage-aware routing on") : t("사용량 기반 자동 배정 꺼짐","Usage-aware routing off")}
-        onPress={onToggle}/>
-    </View>
-    <Text style={{fontSize:12,color:c.foregroundMuted}}>{t("자동 배정은 같은 등급에서 공통 한도가 있는 계정의 가장 낮은 잔여율을 비교합니다. 직접 저장한 배정 순서가 우선입니다.","Automatic routing compares the lowest fresh headroom for candidates with a shared quota window. Saved route priorities take precedence.")}</Text>
+    {!!providers.length && <View style={{gap:6}}>
+      <Text style={{color:c.foreground,fontWeight:"600",fontSize:13}}>{t("배정에 쓸 실행기","Providers used for routing")}</Text>
+      {providers.map(provider => <View key={provider.id} style={{flexDirection:"row",alignItems:"center",gap:8}}>
+        <Switch accessibilityRole="switch" value={provider.included} disabled={busy} onValueChange={value => onInclude(provider.id,value)}
+          accessibilityLabel={t(`${provider.label} · 배정에 사용`,`Use ${provider.label} for routing`)}
+          trackColor={{false:c.border,true:c.accent}} thumbColor={provider.included ? c.accentForeground : c.foregroundMuted} />
+        <Text style={{flexShrink:1,color:provider.included ? c.foreground : c.foregroundMuted,fontSize:13}}>{provider.label}</Text>
+      </View>)}
+      <Text style={{fontSize:12,color:c.foregroundMuted}}>{t("끈 실행기는 새 작업 배정과 코디네이터 후보에서 빠집니다. 새로 발견한 실행기는 켜진 채로 들어옵니다.","A provider turned off here is left out of new assignments and coordinator candidates. Newly discovered providers start turned on.")}</Text>
+    </View>}
   </View>;
 }
