@@ -96,6 +96,7 @@ function readLedger(source: z.infer<typeof manifest>["sources"][number], selecte
       JSON.stringify(m.ask) === JSON.stringify(row.ask) && selected.has(m.projectId));
     const kind = row.kind === "approval" ? "approve" : row.kind === "human" ? "check"
       : ["check","answer","approve","merge","cleanup"].includes(row.kind ?? "") ? row.kind : "other";
+    const pullTarget = source.repository && row.pr ? { repo: source.repository, number: row.pr } : undefined;
     const since = Date.parse(row.since ?? "");
     const current = (event: History) => Number.isFinite(since) && Date.parse(event.at) >= since;
     const qa = [...row.qa];
@@ -108,7 +109,8 @@ function readLedger(source: z.infer<typeof manifest>["sources"][number], selecte
       dueAt:row.dueAt, blocksWork:row.blocksWork, since:row.since, urgency:row.urgency, howToAnswer:row.howToAnswer, answerLead:row.answerLead, sessionId:row.agentId ?? null, sessionHost:row.sessionHost ?? null,
       questions:row.questions.map(q => ({...q, multi:q.multi ?? /복수|여러\s*개|여럿|select (?:all|multiple)/i.test(q.text)})),
       qa, replyHistory:(answers.get(row.id) ?? []).filter(current),
-      mergeTarget:kind === "merge" && source.repository && row.pr ? {repo:source.repository,number:row.pr} : undefined,
+      pullRepository:source.repository, pullTarget,
+      mergeTarget:kind === "merge" ? pullTarget : undefined,
       sessionMatch:binding ? {projectId:binding.projectId, sessionId:binding.sessionId, question:binding.question} : undefined,
     };
   });
