@@ -30,11 +30,32 @@ export function toggleProjectFilter(groups: readonly ProjectGroup[], chosen: rea
     : [...active, ...group.ids];
 }
 
-export function visibleProjectFilters(groups: readonly ProjectFilter[], selected: ReadonlySet<ProjectId>, expanded: boolean) {
+type FilterMetrics = {
+  rowWidth: number;
+  allWidth: number;
+  toggleWidth: number;
+  gap: number;
+  chipWidth: (group: ProjectFilter) => number;
+};
+
+export function visibleProjectFilters(groups: readonly ProjectFilter[], selected: ReadonlySet<ProjectId>,
+  { rowWidth, allWidth, toggleWidth, gap, chipWidth }: FilterMetrics) {
   const ordered = [...groups].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-  const priority = new Set(ordered.filter(group => group.count > 0).slice(0, 3));
-  const collapsed = ordered.filter(group => priority.has(group) || group.ids.some(id => selected.has(id)));
-  return { visible: expanded ? ordered : collapsed, hiddenCount: ordered.length - collapsed.length };
+  const chips = ordered.map(group => ({ group, space: chipWidth(group) + gap, pinned: group.ids.some(id => selected.has(id)) }));
+  const chipSpace = chips.reduce((total, chip) => total + chip.space, 0);
+  if (!chips.length || allWidth + chipSpace <= rowWidth) {
+    return { ordered, collapsed: ordered, hiddenCount: 0, showToggle: false };
+  }
+
+  const pinnedSpace = chips.reduce((total, chip) => total + (chip.pinned ? chip.space : 0), 0);
+  let available = rowWidth - allWidth - toggleWidth - gap - pinnedSpace;
+  const collapsed = chips.flatMap(({ group, pinned, space }) => {
+    if (pinned) return [group];
+    if (space > available) return [];
+    available -= space;
+    return [group];
+  });
+  return { ordered, collapsed, hiddenCount: ordered.length - collapsed.length, showToggle: true };
 }
 
 export function isTemporaryProject(path: string) {

@@ -34,26 +34,45 @@ test("unverified or distinct roots remain separate and unique project names stay
   expect(groups.map(group => group.ids)).toEqual([["one"], ["alias"], ["case"]]);
 });
 
-test("the collapsed row prioritizes three busy projects and keeps every current selection", () => {
-  const groups = [
-    { ids: ["idle"], label: "Idle", count: 0 },
-    { ids: ["active", "alias"], label: "Active", count: 2 },
-    { ids: ["largest"], label: "Largest", count: 9 },
-    { ids: ["third"], label: "Third", count: 1 },
-    { ids: ["second"], label: "Second", count: 3 },
-    { ids: ["waiting"], label: "Waiting", count: 0 },
-    { ids: [null], label: "Host-wide", count: 0 },
-  ];
-  const chosen = selectedProjectIds(groups, ["third", "idle", null, "missing"]);
-  expect(visibleProjectFilters(groups, chosen, false)).toEqual({
-    visible: [groups[2], groups[4], groups[1], groups[3], groups[6], groups[0]],
-    hiddenCount: 1,
+const filters = [
+  { ids: ["idle"], label: "Idle", count: 0 },
+  { ids: ["active", "alias"], label: "Active", count: 2 },
+  { ids: ["largest"], label: "Largest", count: 9 },
+  { ids: ["second"], label: "Second", count: 3 },
+];
+const metrics = { allWidth: 64, toggleWidth: 92, gap: 6, chipWidth: () => 74 };
+const layout = (rowWidth: number, selected: ReadonlySet<string | null> = new Set()) =>
+  visibleProjectFilters(filters, selected, { ...metrics, rowWidth });
+
+test("collapsed fitting reserves the toggle width and both gaps", () => {
+  // All + two chips + toggle takes 64 + 2 * (74 + 6) + 92 + 6 = 322 pixels.
+  const justFits = layout(322);
+  expect(justFits.collapsed).toEqual([filters[2], filters[3]]);
+  expect(justFits.hiddenCount).toBe(2);
+  expect(justFits.showToggle).toBe(true);
+  expect(layout(321).collapsed).toEqual([filters[2]]);
+  expect(justFits.ordered).toEqual([filters[2], filters[3], filters[1], filters[0]]);
+});
+
+test("all chips fit without a toggle at the exact full-row width", () => {
+  expect(layout(384)).toEqual({
+    ordered: [filters[2], filters[3], filters[1], filters[0]],
+    collapsed: [filters[2], filters[3], filters[1], filters[0]],
+    hiddenCount: 0,
+    showToggle: false,
   });
-  expect(visibleProjectFilters(groups, chosen, true)).toEqual({
-    visible: [groups[2], groups[4], groups[1], groups[3], groups[6], groups[0], groups[5]],
-    hiddenCount: 1,
-  });
-  expect(visibleProjectFilters([], chosen, false)).toEqual({ visible: [], hiddenCount: 0 });
+  expect(layout(383).showToggle).toBe(true);
+  expect(visibleProjectFilters([], new Set(), { ...metrics, rowWidth: 0 }).showToggle).toBe(false);
+});
+
+test("selected chips get space first and remain reachable on an overflowing row", () => {
+  const chosen = selectedProjectIds(filters, ["idle"]);
+  expect(layout(322, chosen).collapsed).toEqual([filters[2], filters[0]]);
+  const allSelected = new Set(filters.flatMap(filter => filter.ids));
+  const narrow = layout(200, allSelected);
+  expect(narrow.collapsed).toEqual(narrow.ordered);
+  expect(narrow.hiddenCount).toBe(0);
+  expect(narrow.showToggle).toBe(true);
 });
 
 test("temporary directory labels respect path boundaries and macOS aliases", () => {

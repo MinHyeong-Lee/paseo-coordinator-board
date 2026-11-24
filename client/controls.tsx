@@ -1,16 +1,24 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { Pressable, Text } from "react-native";
+import { Pressable, Text, View, type ViewProps } from "react-native";
 
 export type Theme = PluginScreenProps["theme"];
-export function Button({ label, accessibilityLabel, describedBy, onPress, theme, selected = false, disabled = false, toggle = false, expanded, singleLine }: {
-  label: string; accessibilityLabel?: string; describedBy?: string; onPress: () => void; theme: Theme; selected?: boolean; disabled?: boolean; toggle?: boolean; expanded?: boolean; singleLine?: boolean;
+const buttonFrame = { borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7, borderWidth: 1 };
+const buttonText = { fontSize: 13, fontWeight: "500" as const };
+
+export function ButtonLabelMeasure({ label, onLayout }: { label: string; onLayout: ViewProps["onLayout"] }) {
+  return <View onLayout={onLayout} style={buttonFrame}>
+    <Text numberOfLines={1} style={buttonText}>{label}</Text>
+  </View>;
+}
+
+export function Button({ label, accessibilityLabel, describedBy, onPress, theme, selected = false, disabled = false, toggle = false, expanded, singleLine, onLayout }: {
+  label: string; accessibilityLabel?: string; describedBy?: string; onPress: () => void; theme: Theme; selected?: boolean; disabled?: boolean; toggle?: boolean; expanded?: boolean; singleLine?: boolean; onLayout?: ViewProps["onLayout"];
 }) {
   const c = theme.colors;
   return (
-    <Pressable accessibilityRole={toggle ? "checkbox" : "button"} aria-checked={toggle ? selected : undefined} aria-expanded={expanded} aria-describedby={describedBy} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={toggle ? { disabled, checked:selected } : { disabled, selected, expanded }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => ({ borderRadius: 7, paddingHorizontal: 10, paddingVertical: 7, opacity: disabled || pressed ? 0.6 : 1,
-        borderWidth: 1, borderColor: selected ? c.accent : c.border, backgroundColor: selected ? c.accent : c.surface0 })}>
-      <Text numberOfLines={singleLine ? 1 : undefined} style={{ fontSize: 13, fontWeight: "500", color: selected ? c.accentForeground : c.foreground }}>{label}</Text>
+    <Pressable accessibilityRole={toggle ? "checkbox" : "button"} aria-checked={toggle ? selected : undefined} aria-expanded={expanded} aria-describedby={describedBy} accessibilityLabel={accessibilityLabel ?? label} accessibilityState={toggle ? { disabled, checked:selected } : { disabled, selected, expanded }} disabled={disabled} onPress={onPress} onLayout={onLayout}
+      style={({ pressed }) => ({ ...buttonFrame, opacity: disabled || pressed ? 0.6 : 1, borderColor: selected ? c.accent : c.border, backgroundColor: selected ? c.accent : c.surface0 })}>
+      <Text numberOfLines={singleLine ? 1 : undefined} style={{ ...buttonText, color: selected ? c.accentForeground : c.foreground }}>{label}</Text>
     </Pressable>
   );
 }
