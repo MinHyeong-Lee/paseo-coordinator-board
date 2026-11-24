@@ -3,7 +3,6 @@ import { SendButton, SendTextInput } from "./send-input";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, useWindowDimensions, View } from "react-native";
 import {
-  askDigest,
   operationState,
   requestWork,
   setupCoordinator,
@@ -20,9 +19,11 @@ import { UsageRouting } from "./usage-routing";
 import { ProviderSettings } from "./providers";
 import { FactReplyControls } from "./fact-reply-controls";
 import { CoordinatorPinControls } from "./coordinator-pin";
+import { CoordinatorReplace } from "./coordinator-replace";
 import { RouteEditor, routeName, wrap } from "./route-editor";
 import { useBoardLanguage } from "./language";
 import { explainEmptyRoute } from "./route-options";
+import { DigestFeedback, type CoordinatorAction, type DigestRequest } from "./digest-request";
 
 type Props = {
   theme: Theme;
@@ -31,9 +32,11 @@ type Props = {
   configured: boolean;
   refreshBoard: () => void;
   openCoordinator?: (id: string) => void;
+  action: CoordinatorAction;
+  digest: DigestRequest;
 };
 
-export function OperationsPanel({ theme, settings, coordinator, configured, refreshBoard, openCoordinator }: Props) {
+export function OperationsPanel({ theme, settings, coordinator, configured, refreshBoard, openCoordinator, action: { pending, busy, setBusy }, digest }: Props) {
   const { t, language } = useBoardLanguage();
   const fetchState = useRpc(operationState),
     setup = useRpc(setupCoordinator),
@@ -41,12 +44,9 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     saveWorkerMode = useRpc(setWorkerMode),
     changeUsageRouting = useRpc(setUsageRouting),
     savePolicy = useRpc(updateRouting);
-  const sendWork = useRpc(requestWork),
-    sendDigest = useRpc(askDigest);
-  const [confirm, setConfirm] = useState(false);
+  const sendWork = useRpc(requestWork);
   const [data, setData] = useState<Operations | null>(null);
-  const [busy, setBusy] = useState(false),
-    [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [text, setText] = useState("");
@@ -54,13 +54,12 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
   const { height: windowHeight } = useWindowDimensions();
   const photoDraft = usePhotoDraft();
   const hasRequest = Boolean(text.trim() || photoDraft.photos.length);
-  const sendRequest = { disabled: busy || !configured || !hasRequest || photoDraft.blocked, onPress: () => void post("work") };
+  const sendRequest = { disabled: busy || !configured || !hasRequest || photoDraft.blocked, onPress: () => void postWork() };
   const [inputFocused, setInputFocused] = useState(false);
   const [feedbackArea, setFeedbackArea] = useState<"provider" | "routing" | "coordinator">("provider");
-  const pending = useRef(false),
-    live = useRef(false),
+  const live = useRef(false),
     generation = useRef(0);
-  const delivery = useRef({ work: { payload: "", key: "" }, digest: { payload: "", key: "" } });
+  const delivery = useRef({ payload: "", key: "" });
   const fetchRef = useRef(fetchState);
   fetchRef.current = fetchState;
   const refresh = useCallback(async (clearError = true, setupPreview = false) => {
@@ -97,11 +96,9 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
     if (needsModels) void refresh(true, !settings);
   }, [needsModels, settings, refresh]);
   useEffect(() => {
-    setConfirm(false);
-    delivery.current = { work: { payload: "", key: "" }, digest: { payload: "", key: "" } };
+    delivery.current = { payload: "", key: "" };
   }, [coordinator]);
   useEffect(() => {
-    setConfirm(false);
     setNotice("");
     setError("");
   }, [settings, language]);
@@ -124,41 +121,35 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       return null;
     } finally {
       pending.current = false;
-      if (live.current) setBusy(false);
+      setBusy(false);
     }
   }
-  async function post(kind: "digest" | "work") {
-    if (!coordinator || pending.current || (kind === "work" ? photoDraft.blocksSubmit() : photoDraft.readPending.current)) return;
+  async function postWork() {
+    if (!coordinator || pending.current || photoDraft.blocksSubmit()) return;
     const images = photoDraft.latest.current;
     const message = text.trim();
-    if (kind === "work" && !message && !images.length) return;
-    const payload = JSON.stringify(kind === "digest" ? [coordinator, language] : [coordinator, message, images.map(photo => photo.id)]);
-    if (delivery.current[kind].payload !== payload)
-      delivery.current[kind] = {
-        payload,
-        key: "board-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2),
-      };
-    const input = { coordinator, requestKey: delivery.current[kind].key };
+    if (!message && !images.length) return;
+    const payload = JSON.stringify([coordinator, message, images.map(photo => photo.id)]);
+    if (delivery.current.payload !== payload) delivery.current = {
+      payload,
+      key: "board-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2),
+    };
     const receipt = await act(
       async () => {
-        const result = kind === "digest" ? await sendDigest({ ...input, language, handleBoardFacts: true })
-          : await sendWork({ ...input, text: message, ...(images.length > 0 && { images: images.map(photo => photo.image) }) });
+        const result = await sendWork({ coordinator, requestKey: delivery.current.key, text: message,
+          ...(images.length > 0 && { images: images.map(photo => photo.image) }) });
         if (!result.ok) throw Error(t("전송을 확인하지 못했습니다. 다시 시도해 주세요.", "Delivery was not confirmed. Please retry."));
         return result;
       },
-      kind === "digest"
-        ? t("다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요.", "Digest requested. Open the coordinator session to read the response.")
-        : images.length
-          ? t(`사진 ${images.length}장과 함께 코디네이터에게 요청을 보냈습니다.`, `Sent the request to the coordinator with ${images.length} photo${images.length === 1 ? "" : "s"}.`)
-          : t("첨부 없이 코디네이터에게 요청을 보냈습니다.", "Sent the request to the coordinator without attachments."),
+      images.length
+        ? t(`사진 ${images.length}장과 함께 코디네이터에게 요청을 보냈습니다.`, `Sent the request to the coordinator with ${images.length} photo${images.length === 1 ? "" : "s"}.`)
+        : t("첨부 없이 코디네이터에게 요청을 보냈습니다.", "Sent the request to the coordinator without attachments."),
     );
     if (receipt && live.current) {
-      delivery.current[kind] = { payload: "", key: "" };
-      if (kind === "work") {
-        setText("");
-        setEditorExpanded(false);
-        photoDraft.clear();
-      }
+      delivery.current = { payload: "", key: "" };
+      setText("");
+      setEditorExpanded(false);
+      photoDraft.clear();
     }
   }
   if (!settings && !configured && !coordinator) return null;
@@ -181,7 +172,6 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       t("운영 세션을 연결했습니다.", "Coordinator session connected."),
     ).then((result) => {
       if (result && live.current) {
-        setConfirm(false);
         if (result.pinFailed) setNotice(t("운영 세션을 연결했습니다. 사이드바 고정은 설정에서 다시 시도해 주세요.", "Coordinator connected. Retry sidebar pinning in Settings."));
       }
     });
@@ -234,19 +224,12 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       />}
       {feedbackArea === "routing" && feedback}
     </View>
-    {configured && coordinator && <View style={section}>
-      <Text accessibilityRole="header" style={heading}>{t("운영 세션 교체", "Replace coordinator")}</Text>
-      <Text style={{ color: muted }}>{t("새 코디네이터를 만들 때 쓸 모델", "Model for the next coordinator")} · {loading ? t("조회 중…", "Loading\u2026") : routeName(model, t)}</Text>
-      {!loading && model && <Text style={{ color: muted }}>{modeText}</Text>}
-      {!loading && data && !model && <Text style={{ color: muted }}>{explainEmptyRoute(data, "M", t)}</Text>}
-      {confirm && <Text style={{ color }}>{t("새 운영 세션이 준비되면 담당자를 바꿉니다. 진행 중인 작업과 결정 카드는 유지됩니다.", "The new session takes over when ready. Current work and decisions stay on the board.")}</Text>}
-      <View style={wrap}>
-        <Button theme={theme} label={confirm ? t("교체 취소", "Cancel replacement") : t("새 코디네이터로 교체…", "Replace coordinator\u2026")}
-          disabled={busy || (!confirm && (loading || !model || !mode))} onPress={() => setConfirm(!confirm)} />
-        {confirm && <Button theme={theme} label={t("새 세션으로 교체", "Switch to new session")} disabled={busy || loading || !model || !mode} onPress={connect} />}
-      </View>
-      {feedbackArea === "coordinator" && feedback}
-    </View>}
+    {configured && coordinator && <CoordinatorReplace theme={theme} coordinator={coordinator} data={data} loading={loading} disabled={busy}
+      reload={() => void refresh()} onReplaced={refreshBoard}
+      extraAction={replacing => <Button theme={theme} label={t("다이제스트 요청", "Request digest")}
+        disabled={busy || replacing || photoDraft.reading}
+        onPress={() => { if (!photoDraft.readPending.current) void digest.request(); }} />}
+      footer={<DigestFeedback theme={theme} feedback={digest.feedback} />} />}
   </View>;
 
   return <View style={section}>
@@ -272,9 +255,8 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       </PhotoComposer>
       <View style={wrap}>
         <SendButton theme={theme} label={t("코디네이터에 요청 보내기", "Send to coordinator")} send={sendRequest} selected={!sendRequest.disabled} />
-        <Button theme={theme} label={t("다이제스트 요청", "Request digest")} disabled={busy || photoDraft.reading || !configured} onPress={() => void post("digest")} />
       </View>
-      <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("작업 요청은 코디네이터에게 전달됩니다. 다이제스트는 내 결정과 추천 답장을 모읍니다. 자동 답장이 켜져 있으면 보드에서 확인한 사실 질문도 처리합니다.", "Requests go to the coordinator. A digest gathers decisions and suggested replies. When automatic replies are on, it also answers verified board questions.")}</Text>
+      <Text style={{ color: muted }}>{!configured ? t("설정에서 관리할 프로젝트를 선택해 주세요.", "Choose a project to manage in Settings.") : t("작업 요청은 코디네이터에게 전달됩니다.", "Work requests go to the coordinator.")}</Text>
     </> : <>
       <Text style={{ color: muted }}>{loading ? t("사용할 수 있는 모델을 확인하고 있습니다.", "Checking available models\u2026") :
         model ? t(`연결된 모델로 운영 세션을 만듭니다 · ${routeName(model, t)}`, `Create a coordinator session with ${routeName(model, t)}`) :
