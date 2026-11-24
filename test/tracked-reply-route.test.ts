@@ -15,6 +15,7 @@ import { projectFolderMap } from "../shared/project-folders";
 import { linkSession } from "../shared/session-links";
 import {
   legacyTrackedAnswer, resolveTrackedDecision, trackedAnswerLead, trackedAnswerText, trackedDecisionSchema, trackedReplyExample, trackedReplyRoute,
+  trackedRecipient,
 } from "../shared/tracked-decisions";
 
 const scratch: string[] = [];
@@ -516,6 +517,18 @@ test("a feed card without a ledger owner falls back to the live board coordinato
   expect(basis("operator", replaced)).not.toBe(basis("general", sessions));
   const owned = {...item, sourceCoordinatorId: "general"};
   expect(trackedBasisRecipient(owned, trackedReplyRoute(owned, "general", sessions))).toBeNull();
+});
+
+test("a tracked reply matches a same-folder session only on the board host", () => {
+  const item = trackedDecisionSchema.parse({source: "production", projectId: "studio", id: "feed", title: "Feed card", key: "f",
+    fingerprint: "b".repeat(64), matchedSessionId: null, matchedPull: null, kind: "answer", where: "session", sessionId: "worker"});
+  const folders = {studio: "shared-folder", "studio-copy": "shared-folder"};
+  const local = {id: "worker", projectId: "studio-copy", status: "idle"};
+  const remote = {...local, serverId: "win-host"};
+  expect(trackedRecipient(item, null, [local] as never[], folders)).toBe("worker");
+  expect(trackedReplyRoute(item, null, [local] as never[], folders).recipientId).toBe("worker");
+  expect(trackedRecipient(item, null, [remote] as never[], folders)).toBeNull();
+  expect(trackedReplyRoute(item, null, [remote] as never[], folders)).toMatchObject({recipientId: null, blocked: "other-host"});
 });
 
 test("a redirected reply is refused once the card's own session can take it", async () => {

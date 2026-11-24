@@ -108,13 +108,13 @@ export function usesSourceCoordinator(item:RoutedTrackedDecision) {
 export function sourceCoordinatorRecipient(item:RoutedTrackedDecision, coordinator:string|null, sessions:readonly SessionRow[]) {
   const owner = item.sourceCoordinatorId;
   if (owner === undefined) return coordinator;
-  return owner && (owner === coordinator || sessions.some(s => s.id === owner)) ? owner : null;
+  return owner && (owner === coordinator || sessions.some(s => s.id === owner && !s.serverId)) ? owner : null;
 }
 
 // The card's own session among this host's sessions. A session in another Paseo project counts when both projects
 // open the same folder. The reply route and the card's session chip use the same check.
 export function trackedSession(item:Pick<RoutedTrackedDecision,"sessionId"|"projectId">, sessions:readonly SessionRow[], folders:ProjectFolders = {}) {
-  return item.sessionId ? sessions.find(s => s.id === item.sessionId && sameProject(s.projectId, item.projectId, folders)) : undefined;
+  return item.sessionId ? sessions.find(s => s.id === item.sessionId && !s.serverId && sameProject(s.projectId, item.projectId, folders)) : undefined;
 }
 
 export function trackedRecipient(item:RoutedTrackedDecision, coordinator:string|null, sessions:readonly SessionRow[], folders:ProjectFolders = {}) {
@@ -153,7 +153,10 @@ export function trackedReplyRoute(item:RoutedTrackedDecision, coordinator:string
   if (!item.sessionId) return blocked("no-session");
   if (item.sessionHost) return blocked("other-host");
   const session = trackedSession(item,sessions,folders);
-  if (!session) return blocked(sessions.some(s => s.id === item.sessionId) ? "other-project" : "missing");
+  if (!session) {
+    const observed = sessions.find(s => s.id === item.sessionId);
+    return blocked(observed?.serverId ? "other-host" : observed ? "other-project" : "missing");
+  }
   const ended = endedState(session.id,sessions);
   return ended ? blocked(ended,session.id) : {targetId:session.id, recipientId:session.id, fallbackId};
 }

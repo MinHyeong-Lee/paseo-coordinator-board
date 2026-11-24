@@ -14,6 +14,7 @@ import { ReplyFollowupCard } from "./reply-followup-card";
 import { TrackedSessionChips, type TrackedSessionLinks } from "./tracked-session-chips";
 import { plainDecisionTitle } from "./decision-summary";
 import { HistoryMarkdown } from "./history-markdown";
+import { assignmentReasons } from "../shared/host-assignment";
 import { QuestionContext } from "./question-context";
 import { decisionChoiceNotice } from "./choice-display";
 type ColumnKind = Lane;
@@ -53,7 +54,8 @@ function CardView({ card, theme, onOpen, onEdit, sessionHostLabel }: { card: Car
             : session.detail ? sessionDetail(session.detail, t) : laneLabel(card.lane, t)}
         </Text>
         {!!sessionHostLabel && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
-          {t("실행 호스트", "Host")} · {sessionHostLabel}
+          {t("실행 호스트", "Host")} · {session.assignment?.label ?? sessionHostLabel}
+          {session.assignment ? " · " + t(...assignmentReasons[session.assignment.reason]) : ""}
         </Text>}
       </Pressable>
       {onOpen && <SessionChip theme={theme} label={t("세션", "Session")} accessibilityLabel={t(`세션 열기 · ${session.title}`, `Open session · ${session.title}`)} onPress={() => onOpen(session.id)} />}
