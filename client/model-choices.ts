@@ -56,7 +56,7 @@ export function modelChoices(data: ModelDirectory, grade: Grade, query: string, 
   const listed = new Set(data.catalog.map(model => model.provider));
   const unavailable = data.providers.filter(provider => !listed.has(provider.id)).map(provider => ({
     provider: provider.id, label: provider.label,
-    reason: !provider.included ? t("배정에서 제외한 실행기", "Provider excluded from routing")
+    reason: !provider.included ? t("자동 배정에서 꺼짐", "Turned off for automatic assignment")
       : !provider.available || provider.status === "unavailable" ? t("연결을 확인할 실행기", "Check the provider connection")
         : provider.status === "error" ? t("모델 조회 실패", "Model lookup failed") : t("선택할 모델 없음", "No models available"),
   }));

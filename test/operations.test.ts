@@ -748,3 +748,37 @@ test("the server checks every saved candidate again: effort, catalog, grade and 
   expect(state.routing).toEqual({});
   expect(state.revision).toBe(1);
 });
+
+// Turning an account off for automatic assignment is stored as leaving its provider out.
+test("an account turned off is left out of the recommendation and of usage-based selection, and comes back when turned on", async () => {
+  const s = scenario();
+  // Usage favours cursor for C, so the board would pick it.
+  s.activity.quotas = {codex:10, cursor:90};
+  const routeFor = async (grade: string) => (await s.tool("plan_board_assignment", {})).routes.find(r => r.grade === grade).route;
+  expect(await routeFor("C")).toEqual(alternate);
+  const first = await s.call(operationState, {});
+  await s.call(setProviderInclusion, {provider:"cursor", included:false, expectedRevision:first.revision});
+  expect(await routeFor("C")).toEqual(route);
+  expect(await routeFor("D")).toEqual(route);
+  const off = await s.call(operationState, {});
+  expect(off.providers.find(p => p.id === "cursor").included).toBe(false);
+  expect(off.catalog.some(m => m.provider === "cursor")).toBe(false);
+  // A stale screen cannot flip it back.
+  await expect(s.call(setProviderInclusion, {provider:"cursor", included:true, expectedRevision:first.revision})).rejects.toThrow(/바뀌었습니다/);
+  await s.call(setProviderInclusion, {provider:"cursor", included:true, expectedRevision:off.revision});
+  expect(await routeFor("C")).toEqual(alternate);
+});
+
+test("with every account turned off nothing is assigned, and an unknown account cannot be switched", async () => {
+  const s = scenario();
+  await s.call(setProviderInclusion, {provider:"codex", included:false, expectedRevision:0});
+  await s.call(setProviderInclusion, {provider:"cursor", included:false, expectedRevision:1});
+  const state = await s.call(operationState, {});
+  expect(state.catalog).toEqual([]);
+  expect(state.providers.every(p => !p.included)).toBe(true);
+  for (const entry of (await s.tool("plan_board_assignment", {})).routes) expect(entry.route).toBeNull();
+  await expect(s.tool("assign_board_worker", {job})).rejects.toThrow(/미리보기/);
+  await expect(s.call(setupCoordinator, {replace:true, expectedCoordinator:coordinator, expectedRoute:route, selection:"once"})).rejects.toThrow(/사용할 수 있는/);
+  await expect(s.call(setProviderInclusion, {provider:"not-on-this-host", included:false, expectedRevision:state.revision})).rejects.toThrow(/실행기/);
+  expect(s.sessions.size).toBe(0);
+});

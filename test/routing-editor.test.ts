@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { modelChoices, pickedRoute, providerHeadroom, routeEfforts } from "../client/model-choices";
 import {
-  addCandidate, canAdd, canRemove, dismissFailure, editableCandidates, expireEdits, lostToAnotherChange, maxCandidates, moveFirst, moveUp, nextExpiry, removeCandidate,
-  saveConflicted, saveFailed, saveStarted, saveSucceeded, sameList, setEffort, undoTarget, undoWindowMs, type RoutingEdits,
+  addCandidate, boardCandidates, canAdd, canRemove, dismissFailure, editAnnouncement, editableCandidates, expireEdits, lostToAnotherChange, maxCandidates, moveFirst, moveUp, nextExpiry, removeCandidate,
+  saveConflicted, saveFailed, saveStarted, saveSucceeded, sameList, setEffort, undoIssue, undoTarget, undoWindowMs, type RoutingEdits,
 } from "../client/routing-edit";
 import { gradeLabel, gradePurpose, modeLabel, routeLabel, routingGrades, routingOverview, routingRow } from "../client/routing-overview";
 import type { CatalogModel, ProviderEntry, RouteChoice } from "../shared/dispatch";
@@ -97,7 +97,9 @@ test("a grade decided by remaining usage says so, and a saved list is never over
   const row = routingRow(directory({ usageRouting: true, usage: reports }), "C");
   expect(row.mode).toBe("usage");
   expect(row.active).toEqual(sol);
-  expect(row.candidates.map(candidate => candidate.active)).toEqual([false, true, false, false]);
+  // The candidate in use is listed first: that is the order a first change would save.
+  expect(row.candidates.map(candidate => candidate.route)).toEqual([sol, opus, sonnet, gemini]);
+  expect(row.candidates.map(candidate => candidate.active)).toEqual([true, false, false, false]);
   expect(row.fallbacks).toBe(3);
   expect(routingRow(directory({ usageRouting: false, usage: reports }), "C").mode).toBe("recommended");
   expect(routingRow(directory({ usageRouting: true, usage: [usage("claude", 90), usage("codex", 5)] }), "C").mode).toBe("recommended");
@@ -125,6 +127,49 @@ test("a host with one provider, or none, still fills every row", () => {
 test("the first change to an unsaved grade starts from the candidates the person was looking at", () => {
   expect(editableCandidates(directory(), "C")).toEqual([opus, sol, sonnet, gemini]);
   expect(editableCandidates(directory({ routing: { C: [gemini] } }), "C")).toEqual([gemini]);
+});
+
+test("a first change on a grade decided by usage keeps the model in use instead of returning to the board's first", () => {
+  const byUsage = directory({ usageRouting: true, usage: [usage("claude", 3), usage("codex", 90)] });
+  expect(boardCandidates(byUsage, "C")).toEqual([sol, opus, sonnet, gemini]);
+  // Changing only the second candidate's effort saves a list that still starts with the model in use.
+  const next = setEffort(editableCandidates(byUsage, "C"), 1, "xhigh");
+  expect(next).toEqual([sol, { ...opus, effort: "xhigh" }, sonnet, gemini]);
+  expect(routingRow({ ...byUsage, routing: { C: next } }, "C")).toMatchObject({ mode: "custom", active: sol });
+  // Without usage in play the board's own order stands.
+  expect(boardCandidates(directory({ usageRouting: false, usage: byUsage.usage }), "C")).toEqual([opus, sol, sonnet, gemini]);
+  expect(boardCandidates(directory({ providers: [], catalog: [] }), "C")).toEqual([]);
+  // The row remembers that the change left usage-based selection, so it can say so.
+  const edits = saveSucceeded({}, "C", [], now, true);
+  expect(edits.C).toMatchObject({ note: "saved", leftUsage: true });
+  expect(saveSucceeded({}, "C", [], now).C?.leftUsage).toBeUndefined();
+  expect(saveSucceeded({}, "C", null, now, true).C?.leftUsage).toBeUndefined();
+});
+
+test("undo is not offered when the earlier list holds a candidate the server would now refuse", () => {
+  const gone: RouteChoice = { provider: "codex", model: "retired-model", effort: null };
+  // The dead candidate was just removed: the saved list no longer keeps it, so it cannot come back.
+  const cleaned = directory({ routing: { C: [sol] } });
+  expect(undoIssue(cleaned, "C", [gone, sol])).toContain("retired-model");
+  expect(undoIssue(cleaned, "C", [gone, sol], en)).toContain("Cannot undo");
+  // Still saved, it is accepted as before. Usable candidates and the recommendation always can be restored.
+  expect(undoIssue(directory({ routing: { C: [sol, gone] } }), "C", [gone, sol])).toBeNull();
+  expect(undoIssue(cleaned, "C", [opus, sol])).toBeNull();
+  expect(undoIssue(cleaned, "C", [])).toBeNull();
+  const excluded = directory({ routing: { C: [sol] }, providers: [provider("claude", { included: false }), provider("codex"), provider("cursor")],
+    catalog: directory().catalog.filter(m => m.provider !== "claude") });
+  expect(undoIssue(excluded, "C", [opus, sol])).toContain("claude-opus-5-5");
+});
+
+test("each change of a row's state has words for a screen reader, in both languages", () => {
+  const label = "C · 중간";
+  expect(editAnnouncement(undefined, label)).toBeNull();
+  expect(editAnnouncement({ saving: true }, label)).toBeNull();
+  expect(editAnnouncement(saveSucceeded({}, "C", [opus], now).C, label)).toBe("C · 중간 저장됨.");
+  expect(editAnnouncement(saveSucceeded({}, "C", null, now).C, label)).toContain("되돌렸습니다");
+  expect(editAnnouncement(saveConflicted({}, "C", now).C, label)).toContain("다른 화면");
+  expect(editAnnouncement(saveFailed({}, "C", [opus], "synthetic refusal").C, label)).toContain("synthetic refusal");
+  expect(editAnnouncement(saveSucceeded({}, "C", [opus], now).C, "C · Medium", en)).toBe("C · Medium: saved.");
 });
 
 test("candidates are added first or last, moved up, removed and given another effort without duplicates", () => {
@@ -239,6 +284,9 @@ test("models a grade cannot use, and models already listed, are dimmed with the 
   expect(high.groups.at(-1)!.rows[0].disabled).toContain("다른 실행기");
   const coordinator = modelChoices(directory(), "M", "");
   expect(coordinator.groups.at(-1)!.rows[0].disabled).toContain("권한 모드");
+  // Saved lists made by an earlier screen may hold one model at two efforts. Both rows are told apart.
+  const twice = routingRow(directory({ routing: { C: [opus, { ...opus, effort: "xhigh" }] } }), "C");
+  expect(new Set(twice.candidates.map(candidate => JSON.stringify(candidate.route))).size).toBe(2);
   expect(modelChoices(directory(), "M", "", en).groups.at(-1)!.rows[0].disabled).toContain("coordinator mode");
   const yielded = modelChoices(directory({ catalog: [model("claude", "claude-opus-5-5"), model("opencode", "open-1", { coordinatorMode: mode("build") })],
     providers: [provider("claude"), provider("opencode")] }), "M", "");
@@ -254,7 +302,7 @@ test("providers with no usable models explain why, and search covers names and l
     catalog: [model("claude", "claude-opus-5-5")],
   }), "C", "");
   expect(view.unavailable.map(item => [item.provider, item.reason])).toEqual([
-    ["codex", "배정에서 제외한 실행기"], ["grok", "연결을 확인할 실행기"], ["broken", "모델 조회 실패"], ["empty", "선택할 모델 없음"]]);
+    ["codex", "자동 배정에서 꺼짐"], ["grok", "연결을 확인할 실행기"], ["broken", "모델 조회 실패"], ["empty", "선택할 모델 없음"]]);
   expect(names(modelChoices(directory(), "C", "luna").groups)).toEqual([["codex", "gpt-6-luna"]]);
   expect(names(modelChoices(directory(), "C", " CLAUDE code ").groups)).toEqual([["claude", "claude-opus-5-5", "claude-sonnet-5-5"]]);
   const none = modelChoices(directory(), "C", "no such model");

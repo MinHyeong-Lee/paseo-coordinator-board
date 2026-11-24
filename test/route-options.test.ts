@@ -20,7 +20,7 @@ test("실행기 포함 여부·등급·연결 상태를 기준으로 빈 추천�
   }
   expect(message([provider("cursor")], "M")).toMatch(/기존|지정/);
   // The switch that brings a provider back now lives with the accounts.
-  expect(message([provider("codex", { included: false })], "M")).toMatch(/제외.*계정과 사용량/);
+  expect(message([provider("codex", { included: false })], "M")).toMatch(/꺼져.*계정과 사용량/);
   expect(message([provider("codex", { available: false, status: "unavailable" })], "D")).toMatch(/연결/);
   expect(message([provider("codex", { status: "error" })])).toMatch(/조회.*실패/);
   expect(message([provider("codex", { status: "empty", modelCount: 0 })])).toMatch(/모델.*없/);
@@ -36,7 +36,7 @@ test("저장 후보를 제외하거나 모델·강도 목록이 바뀌어도 원
   };
 
   expect(explainEmptyRoute(data, "C")).toMatch(/저장.*후보/);
-  expect(savedCandidateIssue(data, "C", first)).toContain("제외");
+  expect(savedCandidateIssue(data, "C", first)).toContain("꺼짐");
   data.providers[0].included = true;
   expect(savedCandidateIssue(data, "C", first)).toContain("모델");
   data.catalog.push({ ...model("codex", "first"), efforts: [] });

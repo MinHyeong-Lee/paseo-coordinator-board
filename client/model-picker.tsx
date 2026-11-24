@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { TextInput } from "@getpaseo/plugin/client/ui";
+import { Pressable, Text, View } from "react-native";
 import type { Grade, RouteChoice } from "../shared/dispatch";
 import { Button, type Theme } from "./controls";
 import { useBoardLanguage } from "./language";
@@ -40,7 +41,9 @@ export function ModelPicker({ data, grade, theme, taken, selected, disabled = fa
         {rows.map(row => {
           const chosen = selected?.provider === row.provider && selected.model === row.model;
           const name = view.titled ? row.label : row.provider + " / " + row.model;
-          const tags = [row.recommended && t("추천", "Recommended"), row.current && t("사용 중", "In use")].filter(Boolean).join(" · ");
+          // The coordinator's row names the model for the next one. The session running now may use another.
+          const tags = [row.recommended && t("추천", "Recommended"),
+            row.current && (grade === "M" ? t("다음 교체에 씀", "Used for the next replacement") : t("사용 중", "In use"))].filter(Boolean).join(" · ");
           return <Pressable key={row.model} accessibilityRole="button"
             accessibilityLabel={[row.provider + " / " + row.model, tags, row.disabled].filter(Boolean).join(" · ")}
             accessibilityState={{ disabled: !!row.disabled || disabled, selected: chosen }} disabled={!!row.disabled || disabled}

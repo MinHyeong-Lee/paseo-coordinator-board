@@ -9,7 +9,7 @@ type ModelDirectory = Pick<Operations, "providers" | "catalog" | "routing">;
 export function savedCandidateIssue(data: ModelDirectory, grade: Grade, row: RouteChoice, t: Translate = koreanText) {
   const p = data.providers.find(p => p.id === row.provider);
   if (!p) return t("Paseo 목록에 없는 실행기", "Provider missing from Paseo");
-  if (!p.included) return t("배정에서 제외한 실행기", "Provider excluded from routing");
+  if (!p.included) return t("자동 배정에서 꺼짐", "Turned off for automatic assignment");
   if (!eligibleProvider(grade, p.id, false, data.catalog)) return t("이 등급에서 허용하지 않는 실행기", "Provider ineligible for this grade");
   if (!p.available || p.status === "unavailable") return t("연결을 확인할 실행기", "Check the provider connection");
   if (p.status === "error") return t("모델 조회 실패", "Model lookup failed");
@@ -44,7 +44,7 @@ export function explainEmptyRoute(data: ModelDirectory, grade: Grade, t: Transla
     { list: included.filter(p => !p.available || p.status === "unavailable"), action: t("Paseo에서 실행기 연결을 확인하세요.", "Check the provider connection in Paseo.") },
     { list: included.filter(p => p.available && p.status === "error"), action: t("모델 조회에 실패했습니다. 목록을 새로 고쳐 주세요.", "Model lookup failed. Refresh the catalog.") },
     { list: included.filter(p => p.available && p.status === "empty"), action: t("선택할 모델이 없습니다. Paseo에서 모델 설정을 확인하세요.", "No models are available. Check model settings in Paseo.") },
-    { list: disabled, action: t("배정에서 제외되어 있습니다. ‘계정과 사용량’에서 다시 켜 주세요.", "Excluded from routing. Turn this provider back on under Accounts and usage.") },
+    { list: disabled, action: t("자동 배정에서 꺼져 있습니다. ‘계정과 사용량’에서 다시 켜 주세요.", "Turned off for automatic assignment. Turn it back on under Accounts and usage.") },
   ];
   for (const { list, action } of groups) {
     if (list.length) notes.push(`${names(list)} · ${action}`);

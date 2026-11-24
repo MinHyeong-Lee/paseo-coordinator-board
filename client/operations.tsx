@@ -215,9 +215,13 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       {feedbackArea === "provider" && feedback}
     </View>
     {data && <UsageRouting theme={theme} providers={data.providers} reports={data.usage ?? []} supplemental={data.displayUsage} busy={busy || loading}
+      usage={{ enabled: data.usageRouting ?? false, ready: !!data.usage, onToggle: () => void (async () => {
+        const result = await act(() => changeUsageRouting({enabled:!data.usageRouting,expectedRevision:data.revision}), t("사용량으로 순서를 정하는 설정을 저장했습니다.","Saved the usage ordering preference."), "accounts");
+        if (live.current) await refresh(!!result);
+      })() }}
       onInclude={async (provider, included) => {
         const result = await act(() => includeProvider({ provider, included, expectedRevision: data.revision }),
-          included ? t("이 실행기를 새 작업 배정에 포함했습니다.", "Provider included in new assignments.") : t("이 실행기를 새 작업 배정에서 제외했습니다.", "Provider excluded from new assignments."), "accounts");
+          included ? t("이 계정을 자동 배정에 사용합니다.", "This account is used for automatic assignment.") : t("이 계정을 자동 배정에서 껐습니다.", "This account is off for automatic assignment."), "accounts");
         if (live.current) await refresh(!!result);
       }} />}
     {feedbackArea === "accounts" && feedback}
@@ -225,11 +229,7 @@ export function OperationsPanel({ theme, settings, coordinator, configured, refr
       <Text accessibilityRole="header" style={heading}>{t("모델 배정", "Model routing")}</Text>
       <Text style={{ color: muted }}>{t("어떤 일에 어떤 모델을 쓰는지 한눈에 보고, 그 줄에서 바로 바꿉니다. 바꾼 내용은 바로 저장되어 다음 배정부터 적용됩니다.", "See which model each kind of work uses and change it on its row. Changes are saved at once and apply from the next assignment.")}</Text>
       {data && <RouteEditor data={data} theme={theme} busy={busy || loading}
-        save={(grade, candidates, expectedRevision) => saveRouting({ grade, candidates, expectedRevision })}
-        usage={{ enabled: data.usageRouting ?? false, ready: !!data.usage, onToggle: () => void (async () => {
-          const result = await act(() => changeUsageRouting({enabled:!data.usageRouting,expectedRevision:data.revision}), t("사용량 기반 배정 설정을 저장했습니다.","Saved the usage routing preference."), "routing");
-          if (live.current) await refresh(!!result);
-        })() }} />}
+        save={(grade, candidates, expectedRevision) => saveRouting({ grade, candidates, expectedRevision })} />}
       {feedbackArea === "routing" && feedback}
     </View>
     {configured && coordinator && <CoordinatorReplace theme={theme} coordinator={coordinator} data={data} loading={loading} disabled={busy}

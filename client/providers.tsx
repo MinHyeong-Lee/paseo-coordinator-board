@@ -56,7 +56,7 @@ export function ProviderSettings({ providers, catalog, theme, busy, overrides, s
           provider={provider.id} modes={provider.workerModes} selected={Object.hasOwn(overrides, provider.id) ? overrides[provider.id] : undefined}
           theme={theme} busy={busy} save={setMode} /> : null}
         {!provider.included && <Text style={{ fontSize: 12, color: c.statusWarning }}>
-          {t("배정에서 제외됨 · ‘계정과 사용량’에서 다시 켤 수 있습니다.", "Excluded from routing · Turn it back on under Accounts and usage.")}
+          {t("자동 배정에서 꺼짐 · ‘계정과 사용량’에서 다시 켤 수 있습니다.", "Turned off for automatic assignment · Turn it back on under Accounts and usage.")}
         </Text>}
       </View>)}
     </View>}

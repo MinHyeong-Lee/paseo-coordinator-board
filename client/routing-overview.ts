@@ -1,8 +1,9 @@
-import { recommendedRoutes, resolveRoute, sameRoute, type Grade, type RouteChoice } from "../shared/dispatch";
+import { resolveRoute, sameRoute, type Grade, type RouteChoice } from "../shared/dispatch";
 import type { Operations } from "../shared/operations";
 import type { Translate } from "./language";
 import { routeEfforts } from "./model-choices";
 import { explainEmptyRoute, koreanText, savedCandidateIssue } from "./route-options";
+import { boardCandidates } from "./routing-edit";
 
 type Directory = Pick<Operations, "providers" | "catalog" | "routing" | "usage" | "usageRouting">;
 export const routingGrades: readonly Grade[] = ["A", "B", "C", "D", "M"];
@@ -45,13 +46,15 @@ export function routingRow(data: Directory, grade: Grade, t: Translate = koreanT
   const usage = data.usageRouting ? data.usage : undefined;
   const saved = data.routing[grade];
   const active = resolveRoute(grade, data.routing, data.catalog, false, usage);
-  const listed = saved ?? recommendedRoutes(grade, data.catalog);
+  // An unsaved grade lists the candidate in use first: that is the order a first change would save.
+  const listed = saved ?? boardCandidates(data, grade);
+  const preferred = saved ? null : resolveRoute(grade, {}, data.catalog);
   const candidates = listed.map(route => {
     const issue = saved ? savedCandidateIssue(data, grade, route, t) : null;
     return { route, issue, active: !!active && sameRoute(active, route), efforts: issue ? [] : routeEfforts(data, route) };
   });
   const first = candidates[0];
-  const mode: RoutingMode = saved ? "custom" : active && first && !first.active ? "usage" : "recommended";
+  const mode: RoutingMode = saved ? "custom" : active && preferred && !sameRoute(active, preferred) ? "usage" : "recommended";
   const notice = !active ? explainEmptyRoute(data, grade, t)
     : saved && first?.issue ? t(`1순위 ${first.route.provider} / ${first.route.model}을 쓸 수 없어 예비 후보를 씁니다 · ${first.issue}`,
       `Priority 1 (${first.route.provider} / ${first.route.model}) is unavailable, so a fallback is in use · ${first.issue}`)
