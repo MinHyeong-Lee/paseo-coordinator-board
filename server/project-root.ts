@@ -100,28 +100,12 @@ export class ProjectRootReader {
     return read;
   }
 
-  async describe(projects: readonly { id: string; path: string }[], selected: ReadonlySet<string>): Promise<{ rootKey?: string; temporary: boolean }[]> {
-    if (!projects.some(project => this.paths.isAbsolute(project.path))) return projects.map(() => ({ temporary: false }));
+  private async readRequests(pending: readonly PathRequest[]) {
+    const results = new Map<string, PathDetails>();
+    if (!pending.length) return results;
     const now = (this.options.now ?? Date.now)();
     for (const [id, entry] of this.cached) if (entry.expires <= now) this.cached.delete(id);
 
-    const temp = { path: this.temp, identity: false };
-    const managed = projects.filter(project => selected.has(project.id) && this.paths.isAbsolute(project.path));
-    const reads = new Map<string, PathRequest>();
-    if (this.paths.isAbsolute(temp.path)) reads.set(key(temp), temp);
-    for (const { path } of managed) {
-      const request = { path, identity: true };
-      reads.set(key(request), request);
-    }
-
-    // Unmanaged paths need no stat. Resolve only possible spelling variants of known temp roots.
-    for (const { id, path } of projects) {
-      if (selected.has(id) || this.underRoot(path, this.roots) || !this.underRoot(path, this.roots, true)) continue;
-      const request = { path, identity: false };
-      reads.set(key(request), request);
-    }
-    const pending = [...reads.values()];
-    const results = new Map<string, PathDetails>();
     let cursor = 0;
     let finished = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -139,6 +123,34 @@ export class ProjectRootReader {
       finished = true;
       clearTimeout(timer);
     }
+
+    return results;
+  }
+
+  async folderKeys(paths: readonly string[]) {
+    const requests = [...new Set(paths)].filter(path => this.paths.isAbsolute(path)).map(path => ({ path, identity: true }));
+    const results = await this.readRequests(requests);
+    return new Map(requests.map(request => [request.path, results.get(key(request))?.rootKey]));
+  }
+
+  async describe(projects: readonly { id: string; path: string }[], selected: ReadonlySet<string>): Promise<{ rootKey?: string; temporary: boolean }[]> {
+    if (!projects.some(project => this.paths.isAbsolute(project.path))) return projects.map(() => ({ temporary: false }));
+    const temp = { path: this.temp, identity: false };
+    const managed = projects.filter(project => selected.has(project.id) && this.paths.isAbsolute(project.path));
+    const reads = new Map<string, PathRequest>();
+    if (this.paths.isAbsolute(temp.path)) reads.set(key(temp), temp);
+    for (const { path } of managed) {
+      const request = { path, identity: true };
+      reads.set(key(request), request);
+    }
+
+    // Unmanaged paths need no stat. Resolve only possible spelling variants of known temp roots.
+    for (const { id, path } of projects) {
+      if (selected.has(id) || this.underRoot(path, this.roots) || !this.underRoot(path, this.roots, true)) continue;
+      const request = { path, identity: false };
+      reads.set(key(request), request);
+    }
+    const results = await this.readRequests([...reads.values()]);
 
     const canonicalTemp = results.get(key(temp))?.canonical;
     const roots = canonicalTemp ? [...this.roots, canonicalTemp] : this.roots;

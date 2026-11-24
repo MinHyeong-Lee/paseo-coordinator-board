@@ -29,6 +29,7 @@ import { ClarificationSender, clarificationHistory, restoreClarifiedDecision } f
 import { BoardFacts } from "./server/board-facts";
 import { ProjectRootReader } from "./server/project-root";
 import { recordDigestCompletion } from "./server/digest";
+import { coordinatorReach, operatingProjects } from "./server/coordinator-reach";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(hostVisibility);
@@ -41,7 +42,8 @@ export default function contribute(server: PluginServerContext) {
   const projectRoots = new ProjectRootReader();
   const facts = new BoardFacts(prefs, notes, reader);
   facts.register(server);
-  const operations = createOperations(prefs, join(home, "plugin-workspaces", "coordinator-board"), facts);
+  const operatingFolder = join(home, "plugin-workspaces", "coordinator-board");
+  const operations = createOperations(prefs, operatingFolder, facts);
   operations.register(server);
   registerSessionLinks(server, prefs);
   const decisions = new DecisionSender(prefs, notes, reader);
@@ -126,12 +128,16 @@ export default function contribute(server: PluginServerContext) {
     }
     const replyHistory = activity.sort((a,b) => b.at.localeCompare(a.at));
     const clarifications = clarificationHistory(prefs, targets, evidence);
-    const projects = [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) }));
+    const listedCoordinator = coordinatorRow?.id === latest.coordinator ? coordinatorRow : undefined;
+    const projects = [...choices.values()];
+    const reach = await coordinatorReach(paseo, latest, listedCoordinator, operatingFolder, projects, projectRoots);
+    const operating = await operatingProjects(projects, operatingFolder, latest, listedCoordinator, projectRoots);
+    const knownProjects = projects.map(p => ({ ...p, selected: selected.has(p.id), ...(operating.has(p.id) ? { operating: true } : {}) }));
     const missingProjects = latest.projects.filter(id => !selected.has(id)).map(id => ({
       id, title: id, path: "", selected: true, missing: true as const, temporary: false,
     }));
     return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory, ...(clarifications.length ? { clarifications } : {}),
-      projects: [...projects, ...missingProjects], coordinator: latest.coordinator, lastDigestAt: latest.lastDigest?.at };
+      projects: [...knownProjects, ...missingProjects], coordinator: latest.coordinator, lastDigestAt: latest.lastDigest?.at, ...(reach ? { coordinatorReach: reach } : {}) };
   }
   async function buildSessionView(paseo: PluginHandlerContext["paseo"],
     catalog: Awaited<ReturnType<PluginHandlerContext["paseo"]["projects"]["list"]>>,
