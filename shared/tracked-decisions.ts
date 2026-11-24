@@ -33,6 +33,7 @@ export const trackedDecisionInputSchema = reference.extend({
 export type TrackedDecisionInput = z.output<typeof trackedDecisionInputSchema>;
 export type RoutedTrackedDecision = TrackedDecisionInput & { sourceCoordinatorId?: string | null };
 export const trackedDecisionSchema = trackedDecisionInputSchema.extend({
+  historyUnavailable: z.literal(true).optional(),
   queuedReply:z.object({messageId:z.string().uuid(),recipientId:id,answer:z.string().optional(),
     imageCount:z.number().int().nonnegative(), stopped:z.boolean()}).optional(),
   sourceCoordinatorId:id.nullable().optional(), key:z.string(), fingerprint, matchedSessionId:id.nullable(), matchedPull:target.nullable(),

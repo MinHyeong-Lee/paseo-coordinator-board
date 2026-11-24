@@ -8,9 +8,17 @@ export function ledgerFallbackText(t: Translate) {
 
 function fieldText(field: LedgerField, t: Translate) {
   const name = field.path || t("카드", "record");
+  if (field.hint === "option-text") {
+    return t(`${name} 없음 (label 대신 text 사용)`, `${name} is missing (use text instead of label)`);
+  }
   if (field.reason === "missing") return t(`${name} 없음`, `${name} is missing`);
   if (field.reason === "duplicate") return t(`${name} 중복`, `${name} is duplicated`);
   return t(`${name} 값이 올바르지 않음`, `${name} has an invalid value`);
+}
+
+export function ledgerHistoryUnavailableText(t: Translate) {
+  return t("이 원장의 답 기록을 읽지 못해 지금은 답할 수 없습니다.",
+    "Replies are unavailable while this ledger’s reply history cannot be read.");
 }
 
 export function ledgerIssueText(issue: LedgerIssue, t: Translate) {

@@ -200,7 +200,7 @@ export default function contribute(server: PluginServerContext) {
       item.source === card.source && item.projectId === card.projectId && item.id === card.id && item.fingerprint === card.fingerprint;
     const before = view.trackedDecisions?.items.find(sameCard);
     const now = records.items.find(sameCard);
-    return !!before && !!now && now.sourceCoordinatorId === before.sourceCoordinatorId;
+    return !!before && !!now && !now.historyUnavailable && now.sourceCoordinatorId === before.sourceCoordinatorId;
   });
   server.handle(askClarification, async (input, { paseo }) => {
     try {

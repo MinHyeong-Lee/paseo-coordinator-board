@@ -6,6 +6,7 @@ const location = z.object({ source: z.string().min(1).max(256), projectTitle: z.
 const field = z.object({
   path: z.string().max(256),
   reason: z.enum(["missing", "invalid", "duplicate"]),
+  hint: z.literal("option-text").optional(),
 });
 const ledgerIssue = z.discriminatedUnion("kind", [
   location.extend({ kind: z.literal("source") }),
