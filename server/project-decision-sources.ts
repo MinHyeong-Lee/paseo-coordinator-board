@@ -4,6 +4,7 @@ import { z } from "zod";
 import { repositorySlug } from "../shared/prs";
 import { trackedDecisionInputSchema } from "../shared/tracked-decisions";
 import { ledgerFieldLimit, ledgerIssueLimit, type LedgerField, type LedgerIssue } from "../shared/ledger-diagnostics";
+import { openNoFollowSync } from "./safe-open";
 
 // Only an operator-provided local manifest can name a ledger directory.
 // The UI, sessions, and decision content cannot change which files are opened.
@@ -42,7 +43,7 @@ function diagnosticFields(error: z.ZodError, imported = false): LedgerField[] {
 }
 function localFile(path: string, optional = false, ownerFile = false) {
   let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (ownerFile ? constants.O_NOFOLLOW ?? 0 : 0)); }
+  try { fd = ownerFile ? openNoFollowSync(path) : openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
   catch (error) {
     if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error("Could not open decision source");
