@@ -3,6 +3,7 @@ import { useRef, useState, type RefObject } from "react";
 import { Text } from "react-native";
 import { askDigest } from "../shared/operations";
 import type { Theme } from "./controls";
+import { digestRequestWaiting, type DigestSubmission } from "./digest-freshness";
 import { useBoardLanguage } from "./language";
 
 export type CoordinatorAction = {
@@ -11,13 +12,17 @@ export type CoordinatorAction = {
   setBusy: (busy: boolean) => void;
 };
 
-export function useDigestRequest(coordinator: string | null, configured: boolean, action: CoordinatorAction, refresh: () => void) {
+export function useDigestRequest(coordinator: string | null, configured: boolean, action: CoordinatorAction, refresh: () => void, lastDigestAt?: string) {
   const { t, language } = useBoardLanguage();
   const send = useRpc(askDigest);
   const retry = useRef<{ coordinator: string; language: string; key: string } | null>(null);
   const [feedback, setFeedback] = useState<{ coordinator: string; language: string; error: boolean; text: string } | null>(null);
-  async function request() {
-    if (!coordinator || !configured || action.pending.current) return;
+  const submission = useRef<DigestSubmission | null>(null);
+  const [requested, setRequested] = useState<DigestSubmission | null>(null);
+  const waiting = digestRequestWaiting(requested, coordinator, lastDigestAt);
+  async function request(fromDecisions = false) {
+    if (!coordinator || !configured || action.pending.current ||
+      (fromDecisions && digestRequestWaiting(submission.current, coordinator, lastDigestAt))) return;
     action.pending.current = true;
     action.setBusy(true);
     setFeedback(null);
@@ -28,6 +33,8 @@ export function useDigestRequest(coordinator: string | null, configured: boolean
       const result = await send({ coordinator, language, handleBoardFacts: true, requestKey: retry.current.key });
       if (!result.ok) throw Error(t("전송을 확인하지 못했습니다. 다시 시도해 주세요.", "Delivery was not confirmed. Please retry."));
       retry.current = null;
+      submission.current = { coordinator, lastDigestAt };
+      setRequested(submission.current);
       refresh();
       setFeedback({ coordinator, language, error: false,
         text: t("다이제스트를 요청했습니다. 코디네이터 세션에서 답을 확인하세요.", "Digest requested. Open the coordinator session to read the response.") });
@@ -38,7 +45,7 @@ export function useDigestRequest(coordinator: string | null, configured: boolean
       action.setBusy(false);
     }
   }
-  return { request, feedback: feedback?.coordinator === coordinator && feedback.language === language ? feedback : null };
+  return { request, waiting, feedback: feedback?.coordinator === coordinator && feedback.language === language ? feedback : null };
 }
 
 export type DigestRequest = ReturnType<typeof useDigestRequest>;

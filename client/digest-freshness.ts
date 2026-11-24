@@ -16,3 +16,10 @@ export function shouldRefreshDigest(lastDigestAt: string | undefined, pending: r
     return asked !== null && asked > last;
   });
 }
+
+export type DigestSubmission = { coordinator: string; lastDigestAt: string | undefined };
+
+export function digestRequestWaiting(submission: DigestSubmission | null, coordinator: string | null, lastDigestAt: string | undefined) {
+  return !!submission && submission.coordinator === coordinator &&
+    (!lastDigestAt || (!!submission.lastDigestAt && lastDigestAt <= submission.lastDigestAt));
+}

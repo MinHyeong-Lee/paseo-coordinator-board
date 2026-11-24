@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { shouldRefreshDigest } from "../client/digest-freshness";
+import { digestRequestWaiting, shouldRefreshDigest } from "../client/digest-freshness";
 import type { Card } from "../client/model";
 
 const iso = (value: number) => new Date(value).toISOString();
@@ -34,4 +34,13 @@ test("missing digest, prior classifications and non-session questions do not off
   const report: Card = { ...question, session: { ...question.session, decision: undefined },
     note: { sessionId: "sample", kind: "question", origin: "agent", revision: 1, text: "Which take?", requestedAt: iso(digest + 1) } };
   expect(shouldRefreshDigest(iso(digest), [report], "coordinator", now)).toBe(true);
+});
+
+test("an acknowledged request remains disabled until a newer digest or a different coordinator", () => {
+  const submitted = { coordinator: "coordinator", lastDigestAt: iso(digest) };
+  expect(digestRequestWaiting(submitted, "coordinator", iso(digest))).toBe(true);
+  expect(digestRequestWaiting(submitted, "coordinator", iso(digest - 1000))).toBe(true);
+  expect(digestRequestWaiting(submitted, "coordinator", iso(digest + 1000))).toBe(false);
+  expect(digestRequestWaiting(submitted, "replacement", iso(digest))).toBe(false);
+  expect(digestRequestWaiting(null, "coordinator", iso(digest))).toBe(false);
 });

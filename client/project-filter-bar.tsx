@@ -8,7 +8,6 @@ import { useBoardLanguage } from "./language";
 import { visibleProjectFilters, type ProjectFilter } from "./project-filters";
 
 const gap = 6;
-const toggleWidth = 92;
 
 const preference = defineSettings({
   id: "project-filter-view", scope: "device", version: 1,
@@ -30,13 +29,19 @@ export function ProjectFilterBar({ groups, selected, total, clear, toggle, theme
   const [temporary, setTemporary] = useState<boolean | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
   const [rowWidth, setRowWidth] = useState(0);
-  const [allWidth, setAllWidth] = useState(0);
-  const [chipWidths, setChipWidths] = useState<Record<string, number>>({});
+  const [widths, setWidths] = useState<Record<string, number>>({});
   const chipLabel = (group: ProjectFilter) => `${group.label} · ${group.count}`;
-  const { ordered, collapsed, hiddenCount, showToggle } = visibleProjectFilters(groups, selected, {
-    rowWidth, allWidth, toggleWidth, gap, chipWidth: group => chipWidths[chipLabel(group)] ?? Number.POSITIVE_INFINITY,
-  });
-  const expanded = showToggle && (temporary ?? (saved.status === "ready" && saved.values.expanded));
+  const allLabel = t(`전체 ${total}`, `All ${total}`);
+  const collapseLabel = t("접기 ▴", "Collapse ▴");
+  const expandLabel = t("펼치기 ▾", "Expand ▾");
+  const toggleLabels = [collapseLabel, expandLabel, `+${groups.length} ▾`];
+  const labels = [...new Set([allLabel, ...groups.map(chipLabel), ...toggleLabels])];
+  const measured = saved.status !== "loading" && rowWidth > 0 && labels.every(label => widths[label] > 0);
+  const toggleWidth = measured ? Math.ceil(Math.max(...toggleLabels.map(label => widths[label]))) : 0;
+  const layout = measured ? visibleProjectFilters(groups, selected, {
+    rowWidth, allWidth: widths[allLabel], toggleWidth, gap, chipWidth: group => widths[chipLabel(group)],
+  }) : null;
+  const expanded = !!layout?.showToggle && (temporary ?? (saved.status === "ready" && saved.values.expanded));
 
   async function setExpanded(next: boolean) {
     setTemporary(next);
@@ -50,10 +55,9 @@ export function ProjectFilterBar({ groups, selected, total, clear, toggle, theme
   }
 
   const label = t("프로젝트 필터", "Project filters");
-  const all = <Button theme={theme} label={t(`전체 ${total}`, `All ${total}`)} singleLine selected={!selected.size} onPress={clear}
-    onLayout={event => setAllWidth(event.nativeEvent.layout.width)} />;
-  const expandLabel = hiddenCount ? `+${hiddenCount} ▾` : t("펼치기 ▾", "Expand ▾");
-  const chips = (expanded ? ordered : collapsed).map(group => <View key={JSON.stringify(group.ids)} style={expanded ? { maxWidth: "100%" } : undefined}>
+  const all = <Button theme={theme} label={allLabel} singleLine selected={!selected.size} onPress={clear} />;
+  const hiddenCount = layout?.hiddenCount ?? 0;
+  const chips = (expanded ? layout?.ordered : layout?.collapsed)?.map(group => <View key={JSON.stringify(group.ids)} style={expanded ? { maxWidth: "100%" } : undefined}>
     <Button theme={theme} toggle singleLine={!expanded} selected={group.ids.some(id => selected.has(id))}
       label={chipLabel(group)} onPress={() => toggle(group)} />
   </View>);
@@ -64,22 +68,22 @@ export function ProjectFilterBar({ groups, selected, total, clear, toggle, theme
       {expanded ? <View style={{ flex: 1, minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap }}>{all}{chips}</View>
         : <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap }}>
           {all}
-          {chips.length > 0 && <ScrollView horizontal style={{ flexGrow: 0, flexShrink: 1, minWidth: 0 }}
+          {!!chips?.length && <ScrollView horizontal style={{ flexGrow: 0, flexShrink: 1, minWidth: 0 }}
             contentContainerStyle={{ alignItems: "center", gap }}>{chips}</ScrollView>}
         </View>}
-      {showToggle && <View style={{ width: toggleWidth, flexShrink: 0 }}>
-        <Button theme={theme} expanded={expanded} singleLine disabled={saved.saving}
-          label={expanded ? t("접기 ▴", "Collapse ▴") : expandLabel}
+      {layout?.showToggle && <View style={{ width: toggleWidth, flexShrink: 0 }}>
+        <Button theme={theme} expanded={expanded} singleLine tabularNumbers disabled={saved.saving}
+          label={expanded ? collapseLabel : hiddenCount ? `+${hiddenCount} ▾` : expandLabel}
           accessibilityLabel={expanded ? t("프로젝트 필터 접기", "Collapse project filters") : t("프로젝트 필터 펼치기", "Expand project filters")}
           onPress={() => void setExpanded(!expanded)} />
       </View>}
     </View>
     <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden
       style={{ position: "absolute", top: 0, left: 0, right: 0, height: 0, overflow: "hidden", alignItems: "flex-start" }}>
-      {[...new Set(groups.map(chipLabel))].map(value => <ButtonLabelMeasure key={value} label={value}
+      {labels.map(value => <ButtonLabelMeasure key={value} label={value} tabularNumbers={toggleLabels.includes(value)}
         onLayout={event => {
           const { width } = event.nativeEvent.layout;
-          setChipWidths(previous => previous[value] === width ? previous : { ...previous, [value]: width });
+          setWidths(previous => previous[value] === width ? previous : { ...previous, [value]: width });
         }} />)}
     </View>
     {saveFailed && <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.statusWarning }}>

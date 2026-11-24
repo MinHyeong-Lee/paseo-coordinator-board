@@ -42,29 +42,21 @@ export function visibleProjectFilters(groups: readonly ProjectFilter[], selected
   { rowWidth, allWidth, toggleWidth, gap, chipWidth }: FilterMetrics) {
   const ordered = [...groups].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   const chips = ordered.map(group => ({ group, space: chipWidth(group) + gap, pinned: group.ids.some(id => selected.has(id)) }));
-  const chipSpace = chips.reduce((total, chip) => total + chip.space, 0);
-  if (!chips.length || allWidth + chipSpace <= rowWidth) {
+  const eligible = chips.filter(({ group, pinned }) => pinned || group.count > 0);
+  const chipSpace = eligible.reduce((total, chip) => total + chip.space, 0);
+  if (eligible.length === chips.length && (!chips.length || allWidth + chipSpace <= rowWidth)) {
     return { ordered, collapsed: ordered, hiddenCount: 0, showToggle: false };
   }
 
-  const pinnedSpace = chips.reduce((total, chip) => total + (chip.pinned ? chip.space : 0), 0);
+  const included = new Set(eligible.filter(chip => chip.pinned).map(chip => chip.group));
+  const pinnedSpace = eligible.reduce((total, chip) => total + (chip.pinned ? chip.space : 0), 0);
   let available = rowWidth - allWidth - toggleWidth - gap - pinnedSpace;
-  const collapsed = chips.flatMap(({ group, pinned, space }) => {
-    if (pinned) return [group];
-    if (space > available) return [];
+  for (const { group, pinned, space } of eligible) {
+    if (pinned) continue;
+    if (space > available) break;
+    included.add(group);
     available -= space;
-    return [group];
-  });
-  return { ordered, collapsed, hiddenCount: ordered.length - collapsed.length, showToggle: true };
-}
-
-export function isTemporaryProject(path: string) {
-  if (!path.startsWith("/")) return false;
-  const parts: string[] = [];
-  for (const part of path.split("/")) {
-    if (part === "..") parts.pop();
-    else if (part && part !== ".") parts.push(part);
   }
-  const [first, second] = parts[0] === "private" ? parts.slice(1) : parts;
-  return first === "tmp" || (first === "var" && second === "folders");
+  const collapsed = ordered.filter(group => included.has(group));
+  return { ordered, collapsed, hiddenCount: ordered.length - collapsed.length, showToggle: true };
 }

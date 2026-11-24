@@ -30,7 +30,7 @@ import { Project } from "./project-kanban";
 import { SessionProgress } from "./session-progress";
 import { BoardLanguageSetting, useBoardLanguage } from "./language";
 import { projectCards, type Card, type Snapshot } from "./model";
-import { groupProjects, isTemporaryProject, selectedProjectIds, toggleProjectFilter, type ProjectFilter } from "./project-filters";
+import { groupProjects, selectedProjectIds, toggleProjectFilter, type ProjectFilter } from "./project-filters";
 import { ProjectFilterBar } from "./project-filter-bar";
 import { shouldRefreshDigest } from "./digest-freshness";
 import { DigestFeedback, useDigestRequest } from "./digest-request";
@@ -142,7 +142,8 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const coordinatorAction = { pending, busy, setBusy };
-  const digest = useDigestRequest(coordinatorId ?? null, !!configured, coordinatorAction, onRefresh);
+  const lastDigest = snapshot?.lastDigestAt;
+  const digest = useDigestRequest(coordinatorId ?? null, !!configured, coordinatorAction, onRefresh, lastDigest);
   const operationsReady = !!snapshot || !!(readiness?.configured && readiness.coordinator && !settings);
   const openCoordinator = coordinatorId && actions.onOpen ? () => actions.onOpen?.(coordinatorId) : undefined;
   const [digestLimit, setDigestLimit] = useState(5);
@@ -151,7 +152,6 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
   const [receipts, setReceipts] = useState<DecisionReceipt[]>([]);
   const matches = (r: DecisionReceipt, card: Card) => r.projectId === card.session.projectId && r.sessionId === card.session.id && r.version === card.session.decision?.version;
   const now = Date.now();
-  const lastDigest = snapshot?.lastDigestAt;
   const showDigestRefresh = shouldRefreshDigest(lastDigest, allPending.sessions, coordinatorId ?? null, now);
   const ranked = rankDecisionRows({ prs: filteredPrs, records: filteredRecords, sessions: filteredSessions }, now);
   const rankedKeys = ranked.map(row => row.key);
@@ -308,7 +308,7 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
             const title = p.title + (activeProjects.some(x => x.id !== p.id && x.title === p.title) ? " · " + (p.path || p.id) : "");
             const label = p.missing
               ? `${title} · ${t("Paseo에서 사라짐 · 목록에서 빼기", "Missing from Paseo · Remove from list")}`
-              : `${p.selected ? t("관리에서 제외", "Remove") : t("추가", "Add")} · ${title}${isTemporaryProject(p.path) ? " · " + t("임시 폴더", "Temporary folder") : ""}`;
+              : `${p.selected ? t("관리에서 제외", "Remove") : t("추가", "Add")} · ${title}${p.temporary ? " · " + t("임시 폴더", "Temporary folder") : ""}`;
             return <Button key={p.id} theme={theme} selected={p.selected} disabled={actions.changing}
               label={label} onPress={() => onProject(p.id, !p.selected)} />;
           })}
@@ -342,11 +342,9 @@ export function BoardView({ snapshot, readiness, theme, layout, hostLabel, hostI
           {lastDigest && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
             {t("최근 다이제스트", "Last digest")} · {new Date(lastDigest).toLocaleString(language === "ko" ? "ko-KR" : "en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
           </Text>}
-          {showDigestRefresh && <Text accessibilityRole="button" accessibilityState={{ disabled: busy }}
-            onPress={busy ? undefined : () => void digest.request()}
-            style={{ color: busy ? c.foregroundMuted : c.accent, fontSize: 13, fontWeight: "600", textDecorationLine: "underline" }}>
-            {t("다시 모으기", "Refresh digest")}
-          </Text>}
+          {showDigestRefresh && <Button theme={theme}
+            label={digest.waiting ? t("요청함", "Requested") : t("다시 모으기", "Refresh digest")}
+            disabled={busy || digest.waiting} onPress={() => void digest.request(true)} />}
         </View>
         {showDigestRefresh && <DigestFeedback theme={theme} feedback={digest.feedback} />}
         {incomplete &&

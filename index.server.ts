@@ -27,7 +27,7 @@ import { NoteStore } from "./server/notes";
 import { askClarification, sourceQuestion } from "./shared/clarifications";
 import { ClarificationSender, clarificationHistory, restoreClarifiedDecision } from "./server/clarifications";
 import { BoardFacts } from "./server/board-facts";
-import { projectRootKey } from "./server/project-root";
+import { ProjectRootReader } from "./server/project-root";
 import { recordDigestCompletion } from "./server/digest";
 
 export default function contribute(server: PluginServerContext) {
@@ -38,6 +38,7 @@ export default function contribute(server: PluginServerContext) {
 
   const prefs = new PreferenceStore(join(dataDir, "scope.json"));
   const reader = new ConversationReader();
+  const projectRoots = new ProjectRootReader();
   const facts = new BoardFacts(prefs, notes, reader);
   facts.register(server);
   const operations = createOperations(prefs, join(home, "plugin-workspaces", "coordinator-board"), facts);
@@ -74,7 +75,7 @@ export default function contribute(server: PluginServerContext) {
       })(),
       catalogRead.then(({ projects }) => prs.read(paseo, { projects, refresh:refreshPulls })),
     ]);
-    const { choices, sessions, evidence, coordinatorRow, missingTitles } = sessionView;
+    const { choices, sessions, evidence, coordinatorRow } = sessionView;
     const latest = prefs.read();
     const selected = new Set(latest.projects.filter(id => choices.has(id)));
     const activeScope = { ...latest, projects: [...selected] };
@@ -127,7 +128,7 @@ export default function contribute(server: PluginServerContext) {
     const clarifications = clarificationHistory(prefs, targets, evidence);
     const projects = [...choices.values()].map(p => ({ ...p, selected: selected.has(p.id) }));
     const missingProjects = latest.projects.filter(id => !selected.has(id)).map(id => ({
-      id, title: missingTitles.get(id) ?? id, path: "", selected: true, missing: true as const,
+      id, title: id, path: "", selected: true, missing: true as const, temporary: false,
     }));
     return { sessions: visible, notes: visibleNotes, pullRequests, trackedDecisions, replyHistory, ...(clarifications.length ? { clarifications } : {}),
       projects: [...projects, ...missingProjects], coordinator: latest.coordinator, lastDigestAt: latest.lastDigest?.at };
@@ -135,17 +136,22 @@ export default function contribute(server: PluginServerContext) {
   async function buildSessionView(paseo: PluginHandlerContext["paseo"],
     catalog: Awaited<ReturnType<PluginHandlerContext["paseo"]["projects"]["list"]>>,
     rows: Awaited<ReturnType<typeof discoverSessions>>) {
-    const choices = new Map(await Promise.all(catalog.projects.map(async p => {
-      const id = p.projectId;
-      const path = p.projectRootPath;
-      return [id, { id, title: p.projectCustomName || p.projectDisplayName || id, path, rootKey: await projectRootKey(path) }] as const;
-    })));
+    const known = new Map(catalog.projects.map(p => [p.projectId, {
+      id: p.projectId, title: p.projectCustomName || p.projectDisplayName || p.projectId, path: p.projectRootPath || "",
+    }]));
+    for (const row of rows) {
+      if (!known.has(row.projectId)) known.set(row.projectId, { id: row.projectId, title: row.projectTitle, path: "" });
+    }
     const saved = prefs.read();
-    const scope = { ...saved, projects: saved.projects.filter(id => choices.has(id)) };
-    const missingTitles = new Map(rows.filter(row => !choices.has(row.projectId)).map(row => [row.projectId, row.projectTitle]));
-    const titles = new Map([...choices].map(([id, p]) => [id, p.title]));
+    const scope = { ...saved, projects: saved.projects.filter(id => known.has(id)) };
+    const titles = new Map([...known].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
-    const evidence = await reader.decorate(paseo, sessions, scope);
+    const projects = [...known.values()];
+    const [evidence, roots] = await Promise.all([
+      reader.decorate(paseo, sessions, scope),
+      projectRoots.describe(projects, new Set(scope.projects)),
+    ]);
+    const choices = new Map(projects.map((project, i) => [project.id, { ...project, ...roots[i] }]));
     const coordinatorRow = rows.find(row => row.id === scope.coordinator);
     if (coordinatorRow && !sessions.some(row => row.id === coordinatorRow.id)) {
       const observed = await reader.read(paseo, coordinatorRow).catch(() => null);
@@ -172,7 +178,7 @@ export default function contribute(server: PluginServerContext) {
         // Fall back to Paseo's current state when the timeline is unavailable.
       }
     }
-    return { choices, sessions, evidence, coordinatorRow, missingTitles };
+    return { choices, sessions, evidence, coordinatorRow };
   }
   const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
     const { projects, sessionLinks, coordinator, projectRepositories } = prefs.read();
