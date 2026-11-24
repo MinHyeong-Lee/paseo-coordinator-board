@@ -2,6 +2,8 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { repositorySlug } from "../shared/prs";
+import { trackedDecisionInputSchema } from "../shared/tracked-decisions";
+import { ledgerFieldLimit, ledgerIssueLimit, type LedgerField, type LedgerIssue } from "../shared/ledger-diagnostics";
 
 // Only an operator-provided local manifest can name a ledger directory.
 // The UI, sessions, and decision content cannot change which files are opened.
@@ -18,11 +20,26 @@ const entry = z.object({
   ask: lines, recommend: lines, why: lines, risk: lines, steps: lines, qa: z.array(z.unknown()).default([]),
   questions: z.array(z.object({ id:z.string().optional(), text:nonempty, multi:z.boolean().optional(), options:z.array(z.object({
     key:nonempty,text:nonempty,recommended:z.boolean().default(false),does:lines,pros:lines,cons:lines,note:z.string().nullish(),
+    label:z.never().optional(),detail:z.never().optional(),
   })) })).default([]),
   pr: z.number().int().positive().nullish(), since:z.string().nullish(), howToAnswer:z.string().nullish(), answerLead:z.string().nullish(), urgency:z.string().nullish(),
   dueAt:z.string().max(64).nullish(), blocksWork:z.boolean().nullish(),
 });
-const ledger = z.object({ items: z.array(entry) });
+const ledger = z.object({ items: z.array(z.unknown()) });
+type LedgerSource = z.infer<typeof manifest>["sources"][number];
+
+function diagnosticText(value: unknown) {
+  if (typeof value !== "string") return;
+  return value.slice(0, 256).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").trim() || undefined;
+}
+
+function diagnosticFields(error: z.ZodError, imported = false): LedgerField[] {
+  return error.issues.slice(0, ledgerFieldLimit).map(issue => {
+    const path = imported && issue.path[0] === "sessionId" ? ["agentId", ...issue.path.slice(1)] : issue.path;
+    return { path: path.join(".").slice(0, 256),
+      reason: issue.code === "invalid_type" && issue.input === undefined ? "missing" : "invalid" };
+  });
+}
 function localFile(path: string, optional = false, ownerFile = false) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (ownerFile ? constants.O_NOFOLLOW ?? 0 : 0)); }
@@ -66,31 +83,56 @@ function sourceCoordinator(path: unknown, cache: Map<string, string | null>) {
   return id;
 }
 
-export function readProjectDecisionSources(manifestPath: string, selected: Set<string>, onFailure?: () => void) {
-  if (!selected.size) return [];
+export function readProjectDecisionSources(manifestPath: string, selected: Set<string>) {
+  if (!selected.size) return { items: [] };
   const raw = localFile(manifestPath, true);
-  if (raw === null) return [];
+  if (raw === null) return { items: [] };
   const { sources } = manifest.parse(JSON.parse(raw));
   const visible = sources.filter(s => !s.projectId || selected.has(s.projectId));
   const keys = visible.map(s => JSON.stringify([s.source,s.projectId]));
   if (new Set(keys).size !== keys.length) throw new Error("Ambiguous decision source");
   const owners = new Map<string,string | null>();
-  return visible.flatMap(source => {
-    try { return readLedger(source,selected,sourceCoordinator(source.coordinatorFile,owners)); }
-    catch (error) {
-      if (!onFailure) throw error;
-      onFailure();
-      return [];
-    }
-  });
+  const issues: LedgerIssue[] = [];
+  let count = 0;
+  const report = (issue: LedgerIssue) => {
+    count++;
+    if (issues.length < ledgerIssueLimit) issues.push(issue);
+  };
+  const items = visible.flatMap(source => readLedger(source, selected, sourceCoordinator(source.coordinatorFile, owners), report));
+  return { items, ...(count ? { diagnostics: { count, issues } } : {}) };
 }
 
-function readLedger(source: z.infer<typeof manifest>["sources"][number], selected: Set<string>, sourceCoordinatorId: string | null) {
-  const document = localFile(join(source.directory, "decisions.json"));
-  const { items } = ledger.parse(JSON.parse(document!));
-  const answers = history(join(source.directory,"live","board-answers.tsv"));
-  const asked = history(join(source.directory,"live","board-questions.tsv"));
-  return items.map(row => {
+function readLedger(source: LedgerSource, selected: Set<string>, sourceCoordinatorId: string | null, report: (issue: LedgerIssue) => void) {
+  const name = diagnosticText(source.source) ?? "?";
+  const location = { source: name, projectTitle: diagnosticText(source.projectTitle) ?? name };
+  let items: unknown[];
+  try {
+    const document = localFile(join(source.directory, "decisions.json"));
+    items = ledger.parse(JSON.parse(document!)).items;
+  } catch {
+    report({ ...location, kind: "source" });
+    return [];
+  }
+  const readHistory = (part: "answers" | "questions") => {
+    try { return history(join(source.directory, "live", `board-${part}.tsv`)); }
+    catch {
+      report({ ...location, kind: "history", part });
+      return new Map<string, History[]>();
+    }
+  };
+  const answers = readHistory("answers");
+  const asked = readHistory("questions");
+  const invalid = (raw: unknown, row: number, fields: LedgerField[]) => {
+    const metadata = raw && typeof raw === "object" ? raw as { id?: unknown; title?: unknown } : undefined;
+    report({ ...location, kind: "entry", row, id: diagnosticText(metadata?.id), title: diagnosticText(metadata?.title), fields });
+  };
+  const valid = items.flatMap((raw, index) => {
+    const parsed = entry.safeParse(raw, { reportInput: true });
+    if (!parsed.success) {
+      invalid(raw, index + 1, diagnosticFields(parsed.error));
+      return [];
+    }
+    const row = parsed.data;
     const binding = source.matches.find(m => m.id === row.id && m.sessionId === row.agentId && m.title === row.title &&
       JSON.stringify(m.ask) === JSON.stringify(row.ask) && selected.has(m.projectId));
     const kind = row.kind === "approval" ? "approve" : row.kind === "human" ? "check"
@@ -101,7 +143,7 @@ function readLedger(source: z.infer<typeof manifest>["sources"][number], selecte
     for (const prior of (asked.get(row.id) ?? []).filter(current)) {
       if (!row.qa.some(q => q && typeof q === "object" && "q" in q && q.q === prior.text)) qa.push({q:prior.text,a:null,askedAt:prior.at});
     }
-    return {
+    const item = {
       sourceCoordinatorId, source: source.source, projectId: source.projectId, projectTitle: source.projectTitle,
       id:row.id,title:row.title,kind,where:row.where,ask:row.ask,recommend:row.recommend,why:row.why,risk:row.risk,steps:row.steps,
       dueAt:row.dueAt, blocksWork:row.blocksWork, since:row.since, urgency:row.urgency, howToAnswer:row.howToAnswer, answerLead:row.answerLead, sessionId:row.agentId ?? null, sessionHost:row.sessionHost ?? null,
@@ -110,5 +152,19 @@ function readLedger(source: z.infer<typeof manifest>["sources"][number], selecte
       mergeTarget:kind === "merge" && source.repository && row.pr ? {repo:source.repository,number:row.pr} : undefined,
       sessionMatch:binding ? {projectId:binding.projectId, sessionId:binding.sessionId, question:binding.question} : undefined,
     };
+    // Validate the imported card against the same limits as the decision store.
+    const checked = trackedDecisionInputSchema.safeParse(item, { reportInput: true });
+    if (!checked.success) {
+      invalid(raw, index + 1, diagnosticFields(checked.error, true));
+      return [];
+    }
+    return [{ item, raw, row: index + 1 }];
+  });
+  const counts = new Map<string, number>();
+  for (const { item } of valid) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+  return valid.flatMap(({ item, raw, row }) => {
+    if (counts.get(item.id) === 1) return [item];
+    invalid(raw, row, [{ path: "id", reason: "duplicate" }]);
+    return [];
   });
 }

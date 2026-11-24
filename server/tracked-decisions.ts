@@ -12,6 +12,7 @@ import { boardPhotoMessageId } from "../shared/session-photos";
 import { SessionPhotoStore } from "./session-photos";
 import { trackedReplyMessage, trackedReplyOrigin } from "./decision-message";
 import type { Evidence } from "./conversation";
+import type { LedgerDiagnostics } from "../shared/ledger-diagnostics";
 import type { MergeTarget, PullRequestView } from "../shared/prs";
 import {
   cancelQueuedReply, resolveTrackedDecision, trackedDecisionInputSchema, trackedPullTarget, trackedKey, trackedMatches, usesSourceCoordinator,
@@ -35,7 +36,7 @@ type InputRow = {key:string;fingerprint:string;item:RoutedTrackedDecision};
 type Receipt = z.output<typeof receipt>;
 type PendingDelivery = { ready:boolean; send:(answer:string,messageId:string,images?:WorkImage[])=>Promise<void>; accepted:(answer:string,messageId:string)=>Promise<boolean>; stillCurrent:()=>boolean };
 type Attempt = z.output<typeof resolveTrackedDecision.output> & {queueId?:string};
-type AdditionalSources = unknown[] | {items:unknown[];partial:boolean};
+type AdditionalSources = unknown[] | {items:unknown[];partial?:boolean;diagnostics?:LedgerDiagnostics};
 type ReadSources = (selected:Set<string>)=>AdditionalSources;
 
 function validQuestions(row:TrackedDecisionInput,input:TrackedResolution) {
@@ -81,13 +82,14 @@ export class TrackedDecisionStore {
     this.resolutionPath=join(file.dir,file.name+".resolved.json");
   }
 
-  private load(selected:Set<string>):{status:SourceStatus;rows:Map<string,InputRow>} {
+  private load(selected:Set<string>):{status:SourceStatus;rows:Map<string,InputRow>;diagnostics?:LedgerDiagnostics} {
     const rows=new Map<string,InputRow>();
     const input=readJson(this.path);
     if(input.status==="invalid" || input.status==="unavailable")return {status:input.status,rows};
     let sources:AdditionalSources;
     try{sources=this.readSources?.(new Set(selected)) ?? [];}catch{return {status:"unavailable",rows};}
-    const partial=!Array.isArray(sources) && sources.partial;
+    const diagnostics = Array.isArray(sources) ? undefined : sources.diagnostics;
+    const partial = !Array.isArray(sources) && (sources.partial || !!diagnostics);
     const extra=Array.isArray(sources) ? sources : sources.items;
     const raw=feed.safeParse(input.status==="ok"?input.data:[]);
     if(!raw.success || !Array.isArray(extra) || raw.data.length+extra.length>5000)return {status:"invalid",rows};
@@ -110,7 +112,7 @@ export class TrackedDecisionStore {
       }
       rows.set(key,{key,fingerprint,item});
     }
-    if(partial)return {status:"partial",rows};
+    if(partial)return {status:"partial",rows,diagnostics};
     return {status:input.status==="absent" && !extra.length?"absent":"ok",rows};
   }
 
@@ -152,7 +154,7 @@ export class TrackedDecisionStore {
   }
 
   read(selected:Set<string>, sessions:SessionRow[], prs:PullRequestView, evidence: ReadonlyMap<string,Evidence> = new Map()):TrackedDecisionView & { history?:ReplyEntry[] } {
-    const {status,rows}=this.load(selected);
+    const {status,rows,diagnostics}=this.load(selected);
     const resolved=this.recorded();
     if(!resolved)return {items:[],status:"unavailable"};
     const history: ReplyEntry[] = [];
@@ -206,7 +208,7 @@ export class TrackedDecisionStore {
           imageCount:previous.photos?.length ?? 0,stopped:previous.queue.stopped} : undefined;
       items.push({...item,key,fingerprint,...(queuedReply ? {queuedReply} : {}),...trackedMatches(item,scopedSessions,scopedPrs)});
     }
-    return {items,status,...(history.length ? {history} : {})};
+    return {items,status,...(diagnostics ? {diagnostics} : {}),...(history.length ? {history} : {})};
   }
 
   readPhoto(key:string,index:number,selected:Set<string>):WorkImage|null {
