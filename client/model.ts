@@ -49,11 +49,19 @@ export function sessionDetail(detail: string, t: Translate) {
 }
 
 export function coordinatorWaitForCard({ lane, session }: Card) {
-  return lane === "idle" || lane === "review" ? session.coordinatorWait : undefined;
+  return !session.nativePending && (lane === "idle" || lane === "review" || lane === "human") ? session.coordinatorWait : undefined;
 }
 
 export function progressLane(card: Card): Lane {
   return coordinatorWaitForCard(card) ? "running" : card.lane;
+}
+
+export function kanbanSessionLanes(card: Card, coveredByLedger: boolean): Lane[] {
+  const progress = progressLane(card);
+  if (card.lane !== "human") return [progress];
+  const columns: Lane[] = coveredByLedger ? [] : ["human"];
+  if (progress === "running") columns.push(progress);
+  return columns;
 }
 
 export function factStatus({ delivery, kind }: Pick<NonNullable<Session["boardFact"]>, "delivery" | "kind">, t: Translate) {

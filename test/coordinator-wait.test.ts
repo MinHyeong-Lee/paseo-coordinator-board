@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { boardSnapshot, type SessionRow } from "../shared/contract";
 import { decisionCount, displayLane } from "../shared/decision-count";
 import { detectCoordinatorWait, coordinatorWaitLabel, isLongCoordinatorWait } from "../shared/coordinator-wait";
+import { placeMergeCards } from "../shared/merge-card-place";
+import { trackedDecisionSchema } from "../shared/tracked-decisions";
 import { excerpt } from "../server/conversation";
 import { decorateReviewWait } from "../server/review-wait";
-import { progressLane } from "../client/model";
+import { kanbanSessionLanes, progressLane, projectCards } from "../client/model";
 
 const examples = [
   ["코디네이터에게 보고했고 화면 사용 승인을 기다립니다.", "screen"],
@@ -107,8 +109,43 @@ test("local and assigned remote waits move into session progress without becomin
     expect(lane).toBe("review");
     expect(progressLane({ session: row, note: undefined, lane })).toBe("running");
     const note = { sessionId: row.id, kind: "question" as const, text: "Which size?", revision: 1 };
-    expect(progressLane({ session: row, note, lane: displayLane(row, note) })).toBe("human");
+    expect(displayLane(row, note)).toBe("human");
   }
+});
+
+test("a later coordinator wait leaves an open conversation decision and its original request intact", () => {
+  const question = "Please choose the export size.";
+  const decision = { source: "conversation" as const, question, version: "open-question" };
+  const decisionRequestedAt = new Date(now - 90 * 60_000).toISOString();
+  // The decision-retention layer has kept the earlier question. The wait uses the latest turn.
+  const row = decorate([assistant(question), lastWait], {
+    lane: "human", detail: question, decision, decisionRequestedAt,
+  });
+  const snapshot = boardSnapshot.output.parse({ sessions: [row], notes: {}, projects: [], coordinator: null });
+  const [card] = projectCards(snapshot).human;
+  expect(decisionCount(snapshot)).toBe(1);
+  expect(card.session).toMatchObject({ decision, detail: question, decisionRequestedAt, coordinatorWait: "decision", waitingSince: at });
+  expect(progressLane(card)).toBe("running");
+  expect(kanbanSessionLanes(card, false)).toEqual(["human", "running"]);
+});
+
+test("an open ledger decision covering a conversation stays in My decisions when its session waits", () => {
+  const question = "Please choose the export size.";
+  const row = decorate([assistant(question), lastWait], {
+    lane: "human", detail: question, decision: { source: "conversation", question, version: "open-question" },
+  });
+  const record = trackedDecisionSchema.parse({
+    id: "export-size", key: "record-export-size", source: "ledger", projectId: row.projectId, title: "Export size",
+    where: "human", kind: "answer", fingerprint: "a".repeat(64), matchedSessionId: row.id, matchedPull: null,
+  });
+  const snapshot = boardSnapshot.output.parse({
+    sessions: [row], notes: {}, projects: [], coordinator: null, trackedDecisions: { status: "ok", items: [record] },
+  });
+  expect(decisionCount(snapshot)).toBe(1);
+  expect(placeMergeCards(snapshot.trackedDecisions!.items, snapshot.pullRequests).deciding).toEqual([record]);
+  const [card] = projectCards(snapshot).projects[0].cards;
+  expect(progressLane(card)).toBe("running");
+  expect(kanbanSessionLanes(card, true)).toEqual(["running"]);
 });
 
 test("a newer input, native request, later assistant turn or closed session supersedes a wait", () => {

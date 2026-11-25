@@ -6,7 +6,7 @@ import { columnWidth, COLUMN_GAP } from "./lane-width";
 import type { PullRequestItem } from "../shared/prs";
 import { pullColumn } from "../shared/pull-judgments";
 import type { TrackedDecision } from "../shared/tracked-decisions";
-import { coordinatorWaitForCard, factStatus, laneLabel, noteLabel, progressLane, sessionDetail, type Card, type Lane } from "./model";
+import { coordinatorWaitForCard, factStatus, kanbanSessionLanes, laneLabel, noteLabel, sessionDetail, type Card, type Lane } from "./model";
 import type { ReplyEntry } from "../shared/reply-history";
 import type { HistoryLinks } from "./history-sessions";
 import { KANBAN_ORDER, type FollowupKind } from "./reply-followup";
@@ -48,8 +48,8 @@ function CoordinatorPending({ theme }: { theme: Theme }) {
   </View>;
 }
 
-function CardView({ card, theme, now, openCoordinator, onOpen, onEdit, sessionHostLabel }: {
-  card: Card; theme: Theme; now: number; openCoordinator?: () => void;
+function CardView({ card, theme, now, coordinatorWait, openCoordinator, onOpen, onEdit, sessionHostLabel }: {
+  card: Card; theme: Theme; now: number; coordinatorWait?: Card["session"]["coordinatorWait"]; openCoordinator?: () => void;
 } & Actions) {
   const [expanded, setExpanded] = useState(false);
   const { t } = useBoardLanguage();
@@ -62,7 +62,6 @@ function CardView({ card, theme, now, openCoordinator, onOpen, onEdit, sessionHo
   const detailIsQuestion = !!question && (question === session.detail || session.detail.endsWith(" · " + question));
   const runtime = [session.provider, session.model === session.provider ? null : session.model].filter(Boolean).join(" / ");
   const resting = card.lane === "review" || card.lane === "idle";
-  const coordinatorWait = coordinatorWaitForCard(card);
   const waited = resting && !coordinatorWait ? waitedLabel(session.waitingSince, now, t) : "";
   const noteTitle = note && note.kind !== "clear" ? [note.origin === "agent" ? t("세션 보고", "Session report") : null, noteLabel(note.kind, t)].filter(Boolean).join(" · ") : null;
   return (
@@ -173,8 +172,12 @@ export function Project({projectId,title,decisions,cards,records,waiting=[],rend
     groups[lane].push({key:"decision:"+item.key,content:<RecordPreview item={item} theme={theme} render={renderRecord} links={recordLinks(item)} />});
   }
   for(const card of cards) {
-    if(card.lane==="human" && records.some(item=>item.matchedSessionId===card.session.id)) continue;
-    groups[progressLane(card)].push({key:"session:"+card.session.id,content:<CardView card={card} theme={theme} now={now} openCoordinator={openCoordinator} {...actions} />});
+    const coveredByLedger = card.lane === "human" && records.some(item => item.matchedSessionId === card.session.id);
+    for (const lane of kanbanSessionLanes(card, coveredByLedger)) {
+      const wait = lane === "running" ? coordinatorWaitForCard(card) : undefined;
+      groups[lane].push({ key: "session:" + card.session.id,
+        content: <CardView card={card} theme={theme} now={now} coordinatorWait={wait} openCoordinator={openCoordinator} {...actions} /> });
+    }
   }
   const c = theme.colors;
   for (const { serverId, hostLabel, sessionId, title, wait } of remoteWaits) {

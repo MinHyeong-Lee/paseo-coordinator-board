@@ -25,7 +25,7 @@ Open the board from the sidebar and select the projects you want in your digest.
 
 In **Session progress**, choose **All running** to see running sessions and sessions waiting on the coordinator across the selected projects and visible hosts, ordered by recent activity. Each row shows its project and host and opens the corresponding session. Choose **By project** for the kanban layout. Your device remembers the last view.
 
-When a work session's latest reply says it is waiting for the coordinator or another session, both views show the reason, for example **Waiting on coordinator · Screen access**. Requests that ask the user for a decision take priority in **My decisions**. After 30 minutes, the board highlights the wait and shows **Open coordinator** when that session can be opened. The board also shows waits on visible remote hosts when it can match the session to a selected project and read its recent conversation.
+When a work session's latest reply says it is waiting for the coordinator or another session, both views show the reason, for example **Waiting on coordinator · Screen access**. Open conversation and ledger decisions stay visible in **My decisions**. After 30 minutes, the board highlights the wait and shows **Open coordinator** when that session can be opened. The board also shows waits on visible remote hosts when it can match the session to a selected project and read its recent conversation.
 
 In the desktop app and on the web, press **⌘+Enter** on Mac or **Ctrl+Enter** on Windows and Linux to send from the current request, reply or question field. **Enter** inserts a line break. Hover over the send button or focus it with Tab to see the shortcut for your device.
 
