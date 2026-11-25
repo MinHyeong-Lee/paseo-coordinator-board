@@ -38,10 +38,20 @@ export const raisedQuestionSchema = z.object({
   maybeAnswered: z.literal(true).optional(), moved: z.literal(true).optional(),
   // The ledger card the question moved to.
   movedTo: z.string().max(6000).optional(),
+  // Why the coordinator should judge whether it was handled, while it has not.
+  judge: z.enum(["others-open", "spoke-after", "person-wrote", "session-ended"]).optional(),
+  // The coordinator's judgment that it still needs the person.
+  verdict: z.object({ kind: z.literal("needed"), evidence: z.string().max(2000).optional(), at: z.iso.datetime(), by: z.string().max(256) }).optional(),
+  // The coordinator that was told to judge it, and when the board last tried to tell it (sent or failed).
+  notified: z.string().max(256).optional(), notifiedAt: z.iso.datetime().optional(),
+  // How many notices the coordinator got about it. Each reminder waits twice as long as the one before.
+  notices: z.number().int().min(1).max(1000).optional(),
 });
 export type RaisedQuestion = z.output<typeof raisedQuestionSchema>;
 const raisedSession = z.object({
   projectId: z.string(), serverId: z.string().optional(), title: z.string().max(400), projectTitle: z.string().max(400), workspaceTitle: z.string().max(400),
+  // When the session's questions were last in a judgment notice. A session waits 30 minutes before the next one.
+  noticedAt: z.iso.datetime().optional(),
   // Read question by question: one that cannot be read is left out, the others stay. Open questions are not cut by count.
   questions: z.array(z.unknown()).transform(saved => saved.flatMap(entry => {
     const parsed = raisedQuestionSchema.safeParse(entry);
@@ -50,7 +60,10 @@ const raisedSession = z.object({
 });
 export type RaisedSession = z.output<typeof raisedSession>;
 const closedQuestion = z.object({
-  sessionId: z.string(), at: z.iso.datetime(), reason: z.enum(["board", "session", "choice", "ledger", "person"]),
+  sessionId: z.string(), at: z.iso.datetime(), reason: z.enum(["board", "session", "choice", "ledger", "person", "coordinator"]),
+  // A coordinator's judgment: its evidence, who judged, and the question for recent decisions.
+  evidence: z.string().max(2000).optional(), by: z.string().max(256).optional(),
+  question: z.string().max(340).optional(), projectId: z.string().max(4096).optional(),
   // Where the question was in its timeline, so a later settling line still finds it after the record is gone.
   epoch: z.string().max(4096).optional(), seq: z.number().optional(),
   // The person's done note that closed it. One note closes one question.
@@ -162,6 +175,8 @@ const schema = z.object({
   toolsServed: z.object({ fingerprint: z.string().max(128), at: z.iso.datetime() }).optional().catch(undefined),
   // Questions the board raised from a session's conversation, kept until something shows they were handled.
   raisedQuestions: tolerantRecord(raisedSession),
+  // The last judgment notice the board sent to the coordinator. Notices go at least 5 minutes apart.
+  judgmentNotice: z.object({ coordinator: z.string().max(256), at: z.iso.datetime() }).optional().catch(undefined),
   // Questions closed with evidence, by question key. A closed question never opens again.
   closedQuestions: tolerantRecord(closedQuestion),
 });
