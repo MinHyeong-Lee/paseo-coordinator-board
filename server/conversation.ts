@@ -3,6 +3,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { SessionRow } from "../shared/contract";
 import type { Preferences } from "./preferences";
 import { contextBefore, labelDefinitions, questionChoices, type LabelDefinition } from "../shared/question-choices";
+import { blockQuestionLabel, splitQuestionBlock, type QuestionBlock } from "../shared/question-block";
 import { withAssignmentHost } from "./host-assignment";
 import { waitsForIdle } from "../shared/busy-delivery";
 import { asksForDecision } from "../shared/question-request";
@@ -10,7 +11,8 @@ import { asksForDecision } from "../shared/question-request";
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
 // `definitions` keeps option definitions such as "(a) …" from the part of a long turn that `text` cuts off.
-export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean; at?: string; definitions?: LabelDefinition[] };
+// `block` is the question block the message ended with. `text` no longer holds it.
+export type Turn = { role: "user" | "assistant"; text: string; truncated?: boolean; at?: string; definitions?: LabelDefinition[]; block?: QuestionBlock };
 type ClarificationObservation = { bodyHash: string; response?: string };
 export type Evidence = {
   id: string; turns: Turn[]; deliverWhenIdle?:true;
@@ -66,13 +68,19 @@ export function excerpt(page: Page): Evidence {
       if (clarification) {
         for (const id of messageIds) clarificationMessages.set(id, clarification);
       }
-    } else if (text) {
-      if (clarification) clarification.response = text.slice(0, 16000);
-      for (const id of messageIds) replies.set(id, text.length > 1200 ? text.slice(0, 1199) + "…" : text);
+    }
+    // A valid question block at the end is shown as choices, so the message reads without it. The evidence
+    // identity still covers the message as written.
+    const split = role === "assistant" ? splitQuestionBlock(text) : { text };
+    const shown = split.text || split.block?.questions[0].text || "";
+    if (item.type === "assistant_message" && shown) {
+      if (clarification) clarification.response = shown.slice(0, 16000);
+      for (const id of messageIds) replies.set(id, shown.length > 1200 ? shown.slice(0, 1199) + "…" : shown);
     }
     if (!text) continue;
     laterInputs.length = 0;
-    turns.push({ role, text: text.slice(-2000), ...(timestamp ? { at:timestamp } : {}), ...(text.length > 2000 ? { truncated: true } : {}) });
+    turns.push({ role, text: shown.slice(-2000), ...(timestamp ? { at:timestamp } : {}), ...(shown.length > 2000 ? { truncated: true } : {}),
+      ...(split.block ? { block: split.block } : {}) });
     full.set(turns.at(-1)!, item.text);
     digest.update(JSON.stringify([seqEnd, role, text]));
   }
@@ -102,6 +110,13 @@ function questionIn(text: string, coordinatorDigest = false) {
   const quotedRow = (line: string) => coordinatorDigest && /^\|[^|]+\|\s*(?:question|질문)\s*(?:\+[^|]*)?\|/i.test(line);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (quotedRow(lines[i]) || lines[i].startsWith(">") || !asksForDecision(lines[i])) continue;
+    // A request inside a list belongs to the line right above that opens the list ("결정할 것: …" and its answer options), so the card starts there. A list with no request line above it keeps its own start.
+    const listItem = /^(?:[-*+]|\d+[.)])\s/;
+    let start = i;
+    while (listItem.test(lines[start]) && start > 0 && lines[start - 1] && !lines[start - 1].startsWith(">") && !quotedRow(lines[start - 1])) {
+      start--;
+      if (!listItem.test(lines[start])) { if (asksForDecision(lines[start])) i = start; break; }
+    }
     // Include the checklist or options after a request heading.
     const included = (line: string) => !line.startsWith(">") && !quotedRow(line);
     return {
@@ -115,9 +130,19 @@ function questionIn(text: string, coordinatorDigest = false) {
   return null;
 }
 
+// The question a turn asks. A turn that ends in a question block asks even when no sentence does: its first question
+// is the title, and the text before the block is the context.
+function turnQuestion(turn: Turn, coordinatorDigest = false) {
+  const found = questionIn(turn.text, coordinatorDigest);
+  if (found || !turn.block) return found;
+  const first = turn.block.questions[0];
+  const label = blockQuestionLabel(first);
+  return { question: label.slice(0, 340), markdown: label, context: turn.text === first.text ? "" : contextBefore(turn.text.split("\n")) };
+}
+
 export function lastConversationQuestion(evidence: Evidence, coordinatorDigest = false) {
   const last = evidence.turns.at(-1);
-  return last?.role === "assistant" ? questionIn(last.text, coordinatorDigest) : null;
+  return last?.role === "assistant" ? turnQuestion(last, coordinatorDigest) : null;
 }
 
 /** The last question with the text before it and the options it names, looked up in this and earlier assistant turns. */
@@ -125,25 +150,27 @@ export function conversationQuestionDetails(evidence: Evidence, coordinatorDiges
   const question = lastConversationQuestion(evidence, coordinatorDigest);
   const last = evidence.turns.at(-1);
   if (!question || !last) return null;
+  // A block carries its own options, so the labels in the text are not looked up.
+  if (last.block) return { ...question, choices: [], missingLabels: [], block: last.block };
   const earlier = evidence.turns.slice(0, -1).filter(turn => turn.role === "assistant").reverse();
-  return { ...question, ...questionChoices({ question: question.markdown, context: question.context, message: last, earlier }) };
+  return { ...question, ...questionChoices({ question: question.markdown, context: question.context, message: last, earlier }), block: undefined };
 }
 
 export function classify(e: Evidence, row: SessionRow, decision?: Preferences["judgments"][string], isCoordinator = false): Candidate {
   if (row.lane === "human" || row.lane === "running" || row.lane === "unknown" || row.detail.includes("오류")) return row;
   const last = e.turns.at(-1);
   if (decision?.evidenceId === e.id) {
-    const askedAt = decision.kind === "question" && (last?.role === "assistant" && questionIn(last.text, isCoordinator) ? last.at ?? decision.requestedAt : decision.requestedAt);
+    const askedAt = decision.kind === "question" && (last?.role === "assistant" && turnQuestion(last, isCoordinator) ? last.at ?? decision.requestedAt : decision.requestedAt);
     return { lane: decision.kind === "question" ? "human" : decision.kind, detail: "코디네이터 판단 · " + decision.text,
       ...(askedAt ? {decisionRequestedAt:askedAt} : {}) };
   }
   if (!last) return row;
   if (last.role === "assistant") {
-    const question = questionIn(last.text, isCoordinator);
+    const question = turnQuestion(last, isCoordinator);
     if (question) return { lane: "human", detail: "세션의 확인 요청 · " + question.question, ...(last.at ? {decisionRequestedAt:last.at} : {}) };
   } else {
     const previous = e.turns.slice(0, -1).findLast(t => t.role === "assistant");
-    if (previous && questionIn(previous.text, isCoordinator)) {
+    if (previous && turnQuestion(previous, isCoordinator)) {
       return { lane: "review", detail: "질문 뒤에 메시지가 왔습니다. 같은 질문에 대한 답인지 확인하세요." };
     }
   }

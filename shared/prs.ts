@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { queueView } from "./busy-delivery";
 
 // GitHub.com owner/repository only. Keep remote credentials, paths and CLI flags out of settings.
 export const repositorySlug = z.string().trim()
@@ -23,14 +24,23 @@ export const pullVerdict = z.enum(["ready", "needs-changes", "in-progress", "blo
 export type PullVerdict = z.infer<typeof pullVerdict>;
 // Why a GitHub-ready PR is or is not a merge card: github (setting off or no coordinator),
 // ledger (a coordinator ledger merge card), judged (ready verdict on this head), awaiting
-// (no verdict), stale (verdict on an older head), or the coordinator's other verdicts.
-export const pullGate = z.enum(["github", "ledger", "judged", "awaiting", "stale", "needs-changes", "in-progress", "blocked"]);
+// (no verdict), stale (verdict on an older head), the coordinator's other verdicts, or change-requested
+// (the person sent a change request about this head from the merge card).
+export const pullGate = z.enum(["github", "ledger", "judged", "awaiting", "stale", "needs-changes", "in-progress", "blocked", "change-requested"]);
 export type PullGate = z.infer<typeof pullGate>;
 const pull = z.object({
   repo:repositorySlug, number:z.number().int().positive(), title:z.string(), url:z.string().url(),
   headRepo:repositorySlug.optional(), headBranch:z.string().optional(), headSha:commitSha.optional(),
   projectIds:z.array(z.string()), lane:z.enum(["review","progress"]), reason:pullReason, detail:pullDetail.optional(), updatedAt:z.string(),
   gate:pullGate.optional(),
+  // With the change-requested gate: whether the request is confirmed as sent or its delivery is still unknown.
+  // queued: it waits for the recipient to rest, and changeQueue describes the wait.
+  changeRequest:z.enum(["sent","pending","queued"]).optional(),
+  changeQueue:queueView.optional(),
+  // The head the waiting request was written about. It differs from headSha once the PR has moved on.
+  changeQueueHead:commitSha.optional(),
+  // The project a change request on this PR was recorded under, for the row's reopen and queue controls.
+  changeProjectId:z.string().optional(),
   judgment:z.object({ verdict:pullVerdict, reason:z.string(), at:z.string(), ownerSessionId:z.string().optional(), ownerSessionHost:z.string().optional() }).optional(),
 });
 export const pullRequestViewSchema = z.object({
@@ -55,7 +65,8 @@ export const mergeMethod = z.enum(["merge", "squash", "rebase"]);
 export type MergeMethod = z.infer<typeof mergeMethod>;
 const mergeReason = z.enum([...pullReason.options, "merged", "closed", "queue", "permission", "no-method",
   // outdated: the head is the one reviewed, but the base tip or another merge detail changed.
-  "changed", "outdated", "expired", "scope", "unavailable", "unconfirmed"]);
+  // change-requested: the person sent a change request about this head from the merge card.
+  "changed", "outdated", "expired", "scope", "unavailable", "unconfirmed", "change-requested"]);
 export type MergeReason = z.infer<typeof mergeReason>;
 const mergeTarget = z.strictObject({
   projectId: z.string().min(1).max(4096), repo: repositorySlug, number: z.number().int().positive().max(2147483647),

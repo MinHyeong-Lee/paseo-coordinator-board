@@ -29,6 +29,8 @@ export function waitsForIdle(message: string) {
 export const queueRef = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("session"), projectId:z.string(), sessionId:z.string(), version:z.string()}),
   z.object({kind:z.literal("ledger"), projectId:z.string().nullable(), source:z.string(), id:z.string(), fingerprint:z.string()}),
+  // A change request sent from a merge card instead of merging.
+  z.object({kind:z.literal("pull"), projectId:z.string(), repo:z.string(), number:z.number().int().positive(), headSha:z.string()}),
 ]);
 export type QueueRef = z.infer<typeof queueRef>;
 export const parallelState = z.enum(["held", "resumed"]);
