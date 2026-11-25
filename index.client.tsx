@@ -1,8 +1,9 @@
 import { boardReadiness, type BoardReadiness } from "./shared/readiness";
+import { rememberBoardRoute, previousBoardRoute } from "./client/board-host";
 import { DecisionBadge, publishDecisionCount } from "./client/decision-badge";
 import { decisionCount } from "./shared/decision-count";
 import type { z } from "zod";
-import { useRpc, type PluginClientContext, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
+import { useHosts, useRpc, type PluginClientContext, type PluginScreenProps, type PluginSidebarItemProps } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { boardScope, boardSnapshot, saveNote, setReporting } from "./shared/contract";
@@ -97,17 +98,40 @@ function HostBoard({ host, theme, layout, navigation }: PluginScreenProps) {
 }
 
 function BoardScreen(props: PluginScreenProps) {
+  useEffect(() => {
+    if (props.layout.platform !== "web" || typeof window === "undefined") return;
+    try {
+      rememberBoardRoute(window.localStorage, window.location.pathname, props.host.id);
+    } catch {
+      // Storage may be unavailable in a restricted browser.
+    }
+  }, [props.host.id, props.layout.platform]);
   return <BoardLanguageProvider key={props.host.id}><HostBoard {...props} /></BoardLanguageProvider>;
 }
 
 const boardTitle = "세션별 코디네이터 보드";
 const englishBoardTitle = "Session Coordinator Board";
 
-function LocalSidebarItem({ host, theme, currentScreen, openScreen }: PluginSidebarItemProps) {
+function LocalSidebarItem({ host, theme, layout, currentScreen, openScreen }: PluginSidebarItemProps) {
   const { language, t } = useBoardLanguage();
+  const hosts = useHosts();
+  function openBoard() {
+    if (layout.platform === "web" && typeof window !== "undefined") {
+      try {
+        const route = previousBoardRoute(window.localStorage, host.id, hosts.map(item => item.serverId), language);
+        if (route) {
+          window.location.assign(route);
+          return;
+        }
+      } catch {
+        // Use the host-provided navigation if the saved route cannot be opened.
+      }
+    }
+    openScreen({ screenId: "board", params: { language } });
+  }
   return <SidebarRow icon="LayoutDashboard" label={t(boardTitle, englishBoardTitle)} active={currentScreen?.screenId === "board"}
     trailing={<DecisionBadge key={host.id} host={host.id} theme={theme} />}
-    onPress={() => openScreen({ screenId: "board", params: { language } })} />;
+    onPress={openBoard} />;
 }
 
 function SidebarItem(props: PluginSidebarItemProps) {

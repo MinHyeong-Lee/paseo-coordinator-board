@@ -1,5 +1,7 @@
 # Session coordinator board
 
+On desktop and web, reopening the board from the sidebar returns to the last viewed board host, even after visiting a workspace on another host.
+
 The board groups existing Paseo sessions by project and shows which decisions need your attention. A coordinator can review recent conversations, assign work on this host, and report back. The interface supports Korean and English. Open **설정 → 보드 언어 → English** to switch this device to English.
 
 ## Install and choose projects
