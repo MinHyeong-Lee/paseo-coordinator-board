@@ -2,6 +2,7 @@ import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { shellPermissionTargets, type ShellReadTarget } from "./permission-summary";
 import { guardedWord, hiddenPart, resolveReadPath } from "./permission-read-paths";
+import { optionAfterOperand } from "./permission-read-options";
 import { shellCommands, type ShellCommand } from "./shell-permission-command";
 
 // Host setting a person switches on in the board settings. The plugin server can read it and
@@ -83,6 +84,9 @@ function structure(commands: ShellCommand[]): AutoApprovalRefusal | null {
     const name = program?.value ?? "";
     const end = words.findIndex(word => word.value === "--");
     const options = (end < 0 ? words : words.slice(0, end)).map(word => word.value);
+    // Where a utility stops reading options at the first operand, a later option and its value are files the
+    // board never resolved. `find` takes its expression after the paths, and the printing commands read no files.
+    if (!["find", "echo", "printf", "sed"].includes(name) && optionAfterOperand(name, words.map(word => word.value))) return "option";
     // An option that follows symbolic links can list what lies outside the folder the host checked.
     if (listing.has(name) && options.some(option => /^-[a-zA-Z0-9]*[LH]/.test(option) || option === "--dereference")) return "option";
     // Following a file never ends, so the session would wait on it until its own time limit.

@@ -60,6 +60,7 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 - 따옴표 밖에 일부 셸만 확장하는 문자가 없다: 낱말 맨 앞의 `=`(zsh가 명령의 경로로 바꿈), `^`와 낱말 중간의 `~`(확장 글롭). 따옴표 안의 정규식(`'^import'`)은 그대로 통과한다.
 - 분류기의 최고 위험이 `read`다. 쓰기, 네트워크, 코드 실행, 삭제, 알 수 없음, 민감한 읽기, 작업 폴더 밖 읽기가 하나라도 있으면 아니다. 환경 변수 앞붙임, `eval`, `env`, `command`, `sudo`는 여기서 걸린다.
 - 모든 명령이 규칙의 목록에 있다: `ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd printf`와 `cd`. 이 목록은 분류기의 읽기 목록과 따로 둔다. git은 없다.
+- 옵션이 피연산자 뒤에 오지 않는다(`head a.txt -n ../b.txt`). 분류기는 GNU 도구처럼 옵션을 어디서든 읽지만, BSD 도구(macOS)는 첫 피연산자에서 옵션 읽기를 멈추고 뒤의 낱말을 모두 파일로 읽는다. 옵션이 피연산자 뒤에 없을 때만 두 읽기가 같다. `--` 뒤의 낱말, `find`의 식, `echo`와 `printf`의 인자는 해당하지 않는다.
 - 이름과 메타데이터를 보는 명령(`ls find stat readlink file`)에 링크를 따라가는 옵션(`-L`, `-H`, `--dereference`)이 없다.
 - `tail`에 따라가기 옵션(`-f`, `-F`, `--follow`)이 없다(끝나지 않아 세션이 시간 제한까지 기다린다). `rg`에 압축 파일 검색 옵션(`-z`, `--search-zip`)이 없다(`PATH`의 해제 프로그램을 실행한다).
 - `cd` 대상은 절대 경로이거나 `./`로 시작한다. 맨 이름의 상대 경로는 `CDPATH`로 다른 폴더를 가리킬 수 있다.
@@ -124,6 +125,7 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 | R16 | 맨 이름의 상대 `cd`, `tail` 따라가기, `rg` 압축 검색을 거절한다. Claude Code 입력은 확인한 키만 받는다 | "a bare relative cd, following a file and searching compressed files are refused", "only checked shell requests ..." |
 | R17 | Codex의 shlex 꼴 줄을 스크립트로 되읽는다 | "a Codex command line in shlex form is read back into the script it carries" |
 | R18 | 판단 도중 스위치를 끄거나 훅이 취소되면 보내지 않는다. 플러그인은 설정이 읽히고 참일 때만 켜짐으로 본다 | "a switch turned off while the request is being judged, or a cancelled hook, sends nothing", "the plugin treats the switch as on only when the host setting is readable and true" |
+| R19 | 피연산자 뒤에 쓴 옵션을 거절한다 | "an option written after an operand is refused" |
 | R10 | 코디네이터, 관리 밖 세션, 다른 호스트 세션, 보관된 세션, 읽을 수 없는 기록, Windows 호스트에서 답하지 않는다 | "the session, the record and the host each stop the rule", "a coordinator's own request and a session outside the managed projects ..." |
 | R11 | 응답 호출은 한 곳, 서버에서 쓰는 곳은 규칙뿐, 규칙은 훅 한 곳에서만 불리고 타이머·메시지 전송·지속 권한이 없다 | "the plugin wires the rule to the hook for a new request and to nothing else", `test/pending-requests.test.ts`의 "one shared responder answers a waiting request, ..." |
 | R12 | 기록은 요청마다 하나, 상태가 바뀌고, 오래된 것과 넘치는 것이 빠진다 | "the record keeps one entry per request, ..." |

@@ -149,6 +149,20 @@ test("a Codex command line in shlex form is read back into the script it carries
   expect(refusal(codex("<command included NUL byte>"))).not.toBeNull();
 });
 
+// Many utilities stop reading options at the first operand and take every later word as a file,
+// so a word the board reads as an option's value there would be a file it never resolved.
+test("an option written after an operand is refused", () => {
+  for (const command of ["head safe.txt -n ../private.txt", "head safe.txt -n 5", "cat a.txt -n", "tail a.txt -c 10", "wc a.txt -l", "sort a.txt -k 2", "uniq a.txt -c",
+    "ls src -la", "stat a.txt -c %s", "file a.txt -b", "readlink a -f", "rg sample a.txt -n", "grep sample a.txt -f patterns.txt", "rg sample a.txt --file patterns.txt",
+    "awk '{print $1}' a.txt -F :", "sips a.png -g all", "head -n 5 a.txt -5"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, "option"]);
+  }
+  for (const command of ["head -n 5 -q safe.txt", "sort -t , -k 2 a.txt", "rg -n -e sample -g '*.ts' a.txt", "grep -n -e sample a.txt", "cat -- a.txt -n", "ls -la -- src -R",
+    "head -n 5 -- -n", "tail -c 10 a.txt", "echo a -n", "find . -name sample -type f", "sed -n '1,5p' a.txt", "cat -", "cat - a.txt"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, null]);
+  }
+});
+
 test("an option that follows symbolic links while listing is refused", () => {
   for (const command of ["find -L . -name sample", "find -H .", "ls -lL", "ls -RL src", "stat -L src", "file -L src", "file --dereference src"]) {
     expect([command, refusal(codex(command))]).toEqual([command, "option"]);
