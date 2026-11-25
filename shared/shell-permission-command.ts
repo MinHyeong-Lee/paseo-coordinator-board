@@ -7,6 +7,8 @@ export type ShellCommand = {
   inputs: ShellWord[];
   substitutions: ShellCommand[][];
   expandsInputParameters?: true;
+  // A heredoc or here-string feeds this command text written in the request itself.
+  inlineInput?: true;
 };
 
 const separator = /(?:&&|\|\||\|&|[;&|\n])/y;
@@ -124,9 +126,11 @@ export function shellCommands(source: string): ShellCommand[] | null {
         if (/^\d*<<-?$/.test(operator)) {
           if (target.dynamic || !target.value) return invalid();
           heredocs.push({ delimiter: target.value, tabs: operator.endsWith("-"), expand: !target.quoted, command });
+          command.inlineInput = true;
         } else {
           if (operator.includes(">") && (!operator.endsWith("&") || !/^\d+$|^-$/.test(target.value))) command.redirects.push(target);
           if (/^\d*<(?:>|$)/.test(operator)) command.inputs.push(target);
+          if (operator.endsWith("<<<")) command.inlineInput = true;
           if (operator.endsWith("<<<") && target.parameterExpansion) command.expandsInputParameters = true;
         }
         continue;
