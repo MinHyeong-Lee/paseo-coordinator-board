@@ -96,6 +96,9 @@ test("reads only matched idle sessions and keeps remote waits distinct from runn
       { sessionId: "waiting", projectId: "a", title: "실제 원격 작업", activityAt: at,
         wait: { reason: "screen", since: at } },
     ]);
+    // Set an old poll time on the cached observation. Only activity may invalidate it.
+    const saved = options.cache.get("waiting");
+    options.cache.set("waiting", { ...saved, checkedAt: Date.now() - 60_001 });
   }
   expect(reads.sort()).toEqual(["answered", "decision", "unreadable", "unreadable", "waiting"]);
 

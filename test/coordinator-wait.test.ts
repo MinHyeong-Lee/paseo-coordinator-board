@@ -21,6 +21,11 @@ const examples = [
   ["코디네이터가 답을 주면 다시 진행하겠습니다.", "reply"],
   ["Waiting for a reply from another session.", "reply"],
   ["The coordinator has the report. I'll wait for a reply.", "report"],
+  ["코디네이터에게 화면 차례를 요청했습니다. 답을 기다리겠습니다.", "screen"],
+  ["I've asked the coordinator for a screen turn. Waiting for approval.", "screen"],
+  ["코디네이터가 PR을 병합할 때까지 기다립니다.", "merge"],
+  ["병합은 코디네이터 승인 후에 진행합니다. 지금은 대기 중입니다.", "merge"],
+  ["Waiting for approval. The coordinator has the proposed merge.", "merge"],
 ] as const;
 
 test("identifies who the session is waiting on and a short reason in both languages", () => {
@@ -55,6 +60,14 @@ test("ignores human questions, examples, finished waits and unrelated blockers",
     "코디네이터가 화면 차례를 기다립니다.",
     "코디네이터에게 보고했고 CI 완료를 기다립니다.",
     "코디네이터에게 보고했고 사용자 승인을 기다립니다.",
+    "위 내용을 코디네이터에게 보고했습니다. 사용자 승인을 기다립니다.",
+    "코디네이터에게 보고했습니다. 유지관리자님의 답을 기다립니다.",
+    "I told the coordinator. Waiting for the user to approve.",
+    "The coordinator has the report. I'm waiting for your decision.",
+    "Waiting for you to approve. I notified the coordinator.",
+    "Waiting for a reply from the user. The coordinator has the report.",
+    "화면 차례를 요청했습니다. 담당자님 답을 기다리겠습니다.",
+    "코디네이터와 확인했습니다. 여전히 사람의 판단을 기다립니다.",
     "Waiting for your reply.",
     "답을 기다립니다.",
   ]) expect([message, detectCoordinatorWait(message)]).toEqual([message, undefined]);

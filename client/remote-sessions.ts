@@ -18,7 +18,7 @@ export type RemoteSession = {
 export type RemoteWaitingSession = Pick<RemoteSession, "sessionId" | "title"> & {
   serverId: string; hostLabel: string; wait: CoordinatorWait;
 };
-export type RemoteWaitCache = Map<string, { activityAt: string; checkedAt: number; wait: CoordinatorWait | undefined }>;
+export type RemoteWaitCache = Map<string, { activityAt: string; wait: CoordinatorWait | undefined }>;
 
 export function remoteScope(projects: LocalProject[], repositories: Repository[]): RemoteScope {
   const selected = projects.filter(p => p.selected).map(p => p.id).sort();
@@ -134,14 +134,13 @@ export async function readRemoteSessions(
   const ids = new Set(candidates.map(row => row.sessionId));
   for (const id of cache.keys()) if (!ids.has(id)) cache.delete(id);
 
-  const now = Date.now();
   let next = 0;
   const readWaits = async () => {
     while (active() && next < candidates.length) {
       const row = candidates[next++];
       if (skipWait?.(row.sessionId)) continue;
       const saved = cache.get(row.sessionId);
-      if (row.activityAt && saved?.activityAt === row.activityAt && now - saved.checkedAt < 60_000) {
+      if (row.activityAt && saved?.activityAt === row.activityAt) {
         if (saved.wait) row.wait = saved.wait;
         continue;
       }
@@ -153,7 +152,7 @@ export async function readRemoteSessions(
         if (current && (!resting(current) || current.workspaceId !== idle.get(row.sessionId)?.workspaceId)) continue;
         const observed = coordinatorWaitInTimeline(page.entries);
         const wait = observed && { ...observed, since: observed.since ?? row.activityAt };
-        if (row.activityAt) cache.set(row.sessionId, { activityAt: row.activityAt, checkedAt: now, wait });
+        if (row.activityAt) cache.set(row.sessionId, { activityAt: row.activityAt, wait });
         if (wait) row.wait = wait;
       } catch {
         // Keep running sessions and other matches when one conversation is unavailable.
