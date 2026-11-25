@@ -31,6 +31,7 @@ type Candidate = Pick<SessionRow, "lane" | "detail" | "decisionRequestedAt">;
 
 export function excerpt(page: Page): Evidence {
   if (page.error || page.gap || page.staleCursor) throw new Error("대화 발췌를 확인할 수 없습니다.");
+  const coordinatorWait = coordinatorWaitInTimeline(page.entries);
   const turns: Turn[] = [];
   const full = new Map<Turn, string>();
   const digest = createHash("sha256").update(page.epoch);
@@ -95,7 +96,6 @@ export function excerpt(page: Page): Evidence {
     if (definitions.length) turn.definitions = definitions;
   }
   const last = turns.at(-1);
-  const coordinatorWait = coordinatorWaitInTimeline(page.entries);
   return { ...(last?.role === "assistant" && waitsForIdle(full.get(last) ?? "") ? {deliverWhenIdle:true} : {}), id: digest.digest("hex").slice(0, 24), turns: kept,
     ...(coordinatorWait ? { coordinatorWait } : {}),
     ...(clarification && messageIds.length ? { lastInputIds: messageIds } : {}),
