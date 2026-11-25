@@ -81,6 +81,14 @@ test("redirection, substitution, expansion and an environment prefix send the re
     ["curl https://example.invalid", "risk"], ["python3 -c 'print(1)'", "risk"], ["npm ci", "risk"],
   ]) expect([command, refusal(codex(command))]).toEqual([command, reason]);
   expect(plan(codex("echo 'a;b' && ls 2>&1")).summary).toBe("echo · ls");
+  // Characters only some shells expand are refused when they stand outside quotes: zsh turns "=name"
+  // into the path of a command, and extended globbing reads "^" and a later "~" as patterns.
+  for (const command of ["cat =ls", "cat a^b", "cat notes.txt~", "cat a~b", "rg --file=~/patterns README.md", "ls ^README.md"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, "expansion"]);
+  }
+  for (const command of ["rg '^import' src/index.ts", "sed -n '/^a/p' README.md", 'rg "a~b" README.md', "rg -e '=x' README.md", "sort -t= -k2 README.md", "rg --color=never x README.md"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, null]);
+  }
 });
 
 test("the options that slipped past an earlier classifier stay with a person", () => {

@@ -77,7 +77,7 @@ function codexScript(line: string) {
 function structure(commands: ShellCommand[]): AutoApprovalRefusal | null {
   for (const command of commands) {
     if (command.redirects.length || command.inputs.length || command.inlineInput) return "redirect";
-    if (command.substitutions.length || command.expandsInputParameters || command.words.some(word => word.dynamic)) return "expansion";
+    if (command.substitutions.length || command.expandsInputParameters || command.words.some(word => word.dynamic || word.shellSpecific)) return "expansion";
     const [program, ...words] = command.words;
     if (listing.has(program?.value ?? "")) {
       const end = words.findIndex(word => word.value === "--");
