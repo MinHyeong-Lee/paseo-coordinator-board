@@ -101,7 +101,7 @@ function BoardScreen(props: PluginScreenProps) {
   useEffect(() => {
     if (props.layout.platform !== "web" || typeof window === "undefined") return;
     try {
-      rememberBoardRoute(window.localStorage, window.location.pathname, props.host.id);
+      rememberBoardRoute(window.localStorage, props.host.id);
     } catch {
       // Storage may be unavailable in a restricted browser.
     }
@@ -120,7 +120,8 @@ function LocalSidebarItem({ host, theme, layout, currentScreen, openScreen }: Pl
       try {
         const route = previousBoardRoute(window.localStorage, host.id, hosts.map(item => item.serverId), language);
         if (route) {
-          window.location.assign(route);
+          window.history.pushState(null, "", route);
+          window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
           return;
         }
       } catch {

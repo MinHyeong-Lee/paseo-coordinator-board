@@ -8,10 +8,10 @@ test("reopening after visiting another host restores the most recently viewed bo
   const remote = "/h/remote/plugin/coordinator-board/surface/board";
   const reopen = () => previousBoardRoute(storage, "local", hosts, "ko");
   expect(reopen()).toBeNull();
-  rememberBoardRoute(storage, remote, "remote");
-  rememberBoardRoute(storage, "/h/local/workspace/work", "local");
+  rememberBoardRoute(storage, "remote");
+  // Leaving the board does not mount a new BoardScreen.
   expect(reopen()).toBe(remote + "?param.language=ko");
   expect(previousBoardRoute(storage, "local", ["local"], "ko")).toBeNull();
-  rememberBoardRoute(storage, remote.replace("remote", "local"), "local");
+  rememberBoardRoute(storage, "local");
   expect(reopen()).toBeNull();
 });
