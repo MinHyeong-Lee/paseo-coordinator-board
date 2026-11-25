@@ -47,8 +47,17 @@ export function readPathRisks(value: string, cwd?: string, workspace?: string): 
 // "sensitive" label on purpose: a harmless file sent to a person costs one press, and a
 // secret read without one cannot be taken back. It is matched against every word of a request,
 // whether or not that word is a path, and again against each resolved path on the host.
-const guardedName = /^(?:id_|\.?credentials?|\.?secrets?|\.?passw(?:or)?ds?|\.?tokens?(?:[._-]|$)|\.(?:pgpass|my\.cnf|htpasswd)$)|\.env|keychain|_history$|\.(?:kdbx|jks|keystore|p8|ppk|gpg|asc)$/;
+const guardedName = /^(?:id_|\.?secrets?|\.?passw(?:or)?ds?|\.?tokens?(?:[._-]|$)|auth\.json$|kubeconfig|\.(?:pgpass|my\.cnf|htpasswd)$)|credential|\.env|keychain|tfstate|service[-_.]?account.*\.json$|_history$|\.(?:kdbx|jks|keystore|p8|p12|pfx|ppk|gpg|asc)$/;
 const guardedFolder = /(?:^|\/)\.config\/(?:gh|gcloud|op)(?:\/|$)|(?:^|\/)\.docker(?:\/|$)|(?:^|\/)library\/(?:keychains|cookies)(?:\/|$)/;
+
+// A list of names can never be complete: tool settings, cloud state and sign-in files keep getting
+// new names, and most of them start with a dot. So a command that reads contents is refused any
+// path with a dot name in it, apart from these few that hold no secrets by convention.
+const plainDotNames = new Set([".gitignore", ".gitattributes", ".editorconfig", ".github", ".nvmrc"]);
+
+export function hiddenPart(path: string) {
+  return path.replace(/\\/g, "/").split("/").some(part => part.startsWith(".") && part !== "." && part !== ".." && !plainDotNames.has(part.toLowerCase()));
+}
 
 export function guardedWord(word: string) {
   const text = word.replace(/\\/g, "/").toLowerCase();

@@ -1,7 +1,7 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { shellPermissionTargets, type ShellReadTarget } from "./permission-summary";
-import { guardedWord } from "./permission-read-paths";
+import { guardedWord, hiddenPart, resolveReadPath } from "./permission-read-paths";
 import { shellCommands, type ShellCommand } from "./shell-permission-command";
 
 // Host setting a person switches on in the board settings. The plugin server can read it and
@@ -59,6 +59,7 @@ export type AutoApprovalPlan = {
   response: { behavior: "allow" };
 };
 
+const claudeInputs = new Set(["command", "description", "timeout"]);
 const absolute = (path: string) => /^(?:\/|[a-z]:[\\/])/i.test(path);
 const shellWrapper = /^(?:\/(?:usr\/)?bin\/)?(?:sh|bash|zsh)$/;
 
@@ -79,12 +80,17 @@ function structure(commands: ShellCommand[]): AutoApprovalRefusal | null {
     if (command.redirects.length || command.inputs.length || command.inlineInput) return "redirect";
     if (command.substitutions.length || command.expandsInputParameters || command.words.some(word => word.dynamic || word.shellSpecific)) return "expansion";
     const [program, ...words] = command.words;
-    if (listing.has(program?.value ?? "")) {
-      const end = words.findIndex(word => word.value === "--");
-      const options = (end < 0 ? words : words.slice(0, end)).map(word => word.value);
-      // An option that follows symbolic links can list what lies outside the folder the host checked.
-      if (options.some(option => /^-[a-zA-Z0-9]*[LH]/.test(option) || option === "--dereference")) return "option";
-    }
+    const name = program?.value ?? "";
+    const end = words.findIndex(word => word.value === "--");
+    const options = (end < 0 ? words : words.slice(0, end)).map(word => word.value);
+    // An option that follows symbolic links can list what lies outside the folder the host checked.
+    if (listing.has(name) && options.some(option => /^-[a-zA-Z0-9]*[LH]/.test(option) || option === "--dereference")) return "option";
+    // Following a file never ends, so the session would wait on it until its own time limit.
+    if (name === "tail" && options.some(option => /^-[a-zA-Z0-9]*[fF]/.test(option) || /^--follow(?:=|$)/.test(option))) return "option";
+    // Searching compressed files runs whichever decompression program the PATH names.
+    if (name === "rg" && options.some(option => /^-[a-zA-Z0-9]*z/.test(option) || option === "--search-zip")) return "option";
+    // A bare relative name can be looked up through CDPATH. An explicit "./" or an absolute path cannot.
+    if (name === "cd" && !words.every(word => absolute(word.value) || word.value.startsWith("./"))) return "relative";
     if (command.words.some(word => guardedWord(word.value))) return "sensitive";
   }
   return null;
@@ -103,7 +109,9 @@ export function readOnlyShellPlan(request: AutoApprovalRequest, workspace: strin
   let cwd: string | undefined;
   let script: string | null = input.command;
   if (request.provider === "claude") {
-    if (request.detail.command !== input.command || input.dangerouslyDisableSandbox === true || input.run_in_background === true) return refuse("input");
+    // Only the inputs whose meaning was checked. Any other key (running in the background, leaving the sandbox,
+    // or one a later version adds) sends the request to a person.
+    if (request.detail.command !== input.command || Object.keys(input).some(key => !claudeInputs.has(key))) return refuse("input");
   } else {
     if (input.cwd !== undefined && input.cwd !== null) {
       if (typeof input.cwd !== "string" || !absolute(input.cwd)) return refuse("input");
@@ -124,6 +132,10 @@ export function readOnlyShellPlan(request: AutoApprovalRequest, workspace: strin
   if (classification.risk !== "read") return refuse("risk");
   if (classification.commands.some(command => command.risk !== "folder" && !approvable.has(command.name))) return refuse("command");
   if (reads.length > 64) return refuse("size");
+  // A command that reads contents is refused any dot name below the folder, apart from a few plain ones.
+  const base = resolveReadPath(cwd ?? workspace).replace(/\/$/, "");
+  const below = (path: string) => path.startsWith(base + "/") ? path.slice(base.length + 1) : path;
+  if (reads.some(read => read.command !== "cd" && !listing.has(read.command) && hiddenPart(below(resolveReadPath(read.value, read.cwd))))) return refuse("sensitive");
   // Without a stated folder the board cannot know where a relative path points.
   if (cwd === undefined && reads.some(read => !absolute(read.value))) return refuse("relative");
   const counts = new Map<string, number>();

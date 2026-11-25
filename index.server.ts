@@ -75,6 +75,8 @@ export default function contribute(server: PluginServerContext) {
     },
     managed: async (paseo, id) => managedWorkSession(await discoverSessions(paseo), prefs.read(), id),
     changed: () => invalidateCount(),
+    // Paseo keeps worktrees under its own dot folder. They are ordinary checkouts.
+    workRoots: [join(home, "worktrees")],
   });
   const toolStamps = new CoordinatorToolStamps(prefs);
   const reader = new ConversationReader();

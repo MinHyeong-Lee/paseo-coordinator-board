@@ -45,8 +45,8 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 
 - `kind`가 `tool`, `detail.type`이 `shell`이어야 한다.
 - 요청이 자기 선택지(`actions`)를 가지면 대상이 아니다. 그런 요청에서 평범한 허용이 무엇을 뜻하는지 확인하지 않았다.
-- Claude Code: `detail.command`가 `input.command`와 같아야 하고, 샌드박스를 끄는 입력과 백그라운드 실행 입력이 없어야 한다.
-- Codex: 요청은 argv 전체를 한 줄로 싣는다. 그 줄이 `sh|bash|zsh`(`/bin/`, `/usr/bin/` 포함) + `-lc` 또는 `-c` + 스크립트 하나의 꼴이면 보드의 토크나이저로 읽은 세 번째 낱말을 스크립트로 쓴다. 표시용으로 따옴표를 잘라 낸 `detail.command`는 쓰지 않는다.
+- Claude Code: `detail.command`가 `input.command`와 같아야 하고, 입력의 키가 확인한 셋(`command`, `description`, `timeout`)뿐이어야 한다. 그 밖의 키(백그라운드 실행, 샌드박스 끄기, 나중에 생길 키)는 값과 상관없이 사람에게 간다.
+- Codex: 요청은 argv 전체를 한 줄로 싣는다. 그 줄이 `sh|bash|zsh`(`/bin/`, `/usr/bin/` 포함) + `-lc` 또는 `-c` + 스크립트 하나의 꼴이면 보드의 토크나이저로 읽은 세 번째 낱말을 스크립트로 쓴다. 표시용으로 따옴표를 잘라 낸 `detail.command`는 쓰지 않는다. Codex 앱 서버는 이 줄을 argv를 셸 인용으로 이어(shlex) 만들므로(Codex 공개 소스에서 확인), POSIX 토크나이저로 읽으면 argv가 그대로 나온다. 시험이 그 꼴의 줄을 고정한다. 명령이 없는 승인(네트워크 승인 등)은 셸 요청이 아니라 대상이 아니다.
 - 응답은 늘 `{ behavior: "allow" }`다. 두 실행기 모두 이 응답이 원래 입력을 그 한 번만 실행한다. 바꾼 입력, 지속 권한, 선택지 ID를 싣지 않는다.
 - 다른 실행기와 다른 도구는 목록에 더하기 전까지 사람에게 간다. ACP 실행기(Cursor 등)와 OpenCode의 요청은 자기 선택지를 가지므로 위 조건에서도 걸린다.
 
@@ -61,19 +61,24 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 - 분류기의 최고 위험이 `read`다. 쓰기, 네트워크, 코드 실행, 삭제, 알 수 없음, 민감한 읽기, 작업 폴더 밖 읽기가 하나라도 있으면 아니다. 환경 변수 앞붙임, `eval`, `env`, `command`, `sudo`는 여기서 걸린다.
 - 모든 명령이 규칙의 목록에 있다: `ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd printf`와 `cd`. 이 목록은 분류기의 읽기 목록과 따로 둔다. git은 없다.
 - 이름과 메타데이터를 보는 명령(`ls find stat readlink file`)에 링크를 따라가는 옵션(`-L`, `-H`, `--dereference`)이 없다.
-- 모든 낱말(경로가 아닌 인자 포함)에 민감한 이름이 없다(`guardedWord`). 카드 표시용 목록에 더해 `id_*`, 자격 증명·비밀·비밀번호·토큰으로 시작하는 이름, `.env`가 들어간 이름, `.config/gh`, `.docker`, 키체인, 셸 기록 파일, 키 저장소 확장자를 본다.
+- `tail`에 따라가기 옵션(`-f`, `-F`, `--follow`)이 없다(끝나지 않아 세션이 시간 제한까지 기다린다). `rg`에 압축 파일 검색 옵션(`-z`, `--search-zip`)이 없다(`PATH`의 해제 프로그램을 실행한다).
+- `cd` 대상은 절대 경로이거나 `./`로 시작한다. 맨 이름의 상대 경로는 `CDPATH`로 다른 폴더를 가리킬 수 있다.
+- 내용을 읽는 명령의 대상 경로(작업 폴더 아래 부분)에 `.`으로 시작하는 이름이 없다. 예외는 관례상 비밀을 담지 않는 몇 개뿐이다: `.gitignore`, `.gitattributes`, `.editorconfig`, `.github`, `.nvmrc`. 이름 목록은 완전할 수 없어서(도구 설정, 상태 파일, 로그인 파일은 계속 새 이름이 생긴다) 점 이름은 허용 목록으로 다룬다. 이름만 보는 명령(`ls .git`)은 그대로 통과한다.
+- 모든 낱말(경로가 아닌 인자 포함)에 민감한 이름이 없다(`guardedWord`). 카드 표시용 목록에 더해 `id_*`, 비밀·비밀번호·토큰으로 시작하는 이름, 자격 증명 낱말이나 `.env`, `tfstate`가 들어간 이름, `auth.json`, 서비스 계정 JSON, `kubeconfig`, `.config/gh`, `.docker`, 키체인, 셸 기록 파일, 키 저장소 확장자(`p12`, `keystore` 등)를 본다.
 - 요청이 작업 폴더를 알리지 않으면(Claude Code) 읽는 경로와 `cd` 대상이 모두 절대 경로다.
 
 ### 2.6 호스트 확인 (`hostAllows`)
 
 - 세션의 작업 폴더(세션을 만들 때의 폴더)를 실제 경로로 푼다. 루트이거나 홈 폴더이거나 홈 폴더의 위면 거절한다.
+- 작업 폴더가 홈 폴더의 점 폴더(`~/.config` 등)나 `~/Library` 아래면 거절한다. 그런 곳은 일하는 폴더가 아니라 설정과 로그인 데이터가 있는 곳이다. 예외는 Paseo의 워크트리 폴더(`<Paseo 홈>/worktrees` 아래) 하나다. 보드가 관리하는 작업 세션은 대개 여기서 돌고, 그 아래는 저장소 체크아웃뿐이다.
 - 요청이 알린 작업 폴더가 있으면 실제 경로가 세션 작업 폴더 안이어야 한다.
 - 읽는 경로와 `cd` 대상을 하나씩 푼다. 경로는 구성 요소별로 걷는다: 링크는 그 자리에서 따라가고 `..`은 링크가 가리킨 폴더에서 올라간다. 글자로 `..`을 먼저 정리하지 않는다.
-- 푼 경로가 세션 작업 폴더 안이고, 민감한 이름이 없어야 한다.
+- 푼 경로가 세션 작업 폴더 안이어야 한다. 민감한 이름 검사는 작업 폴더 아래 부분만이 아니라 푼 전체 경로에 한다.
 - 내용을 읽는 명령의 대상은 일반 파일이어야 한다. 폴더, 장치, 파이프는 거절한다. 이름을 보는 명령의 대상은 파일이나 폴더, `cd` 대상은 폴더다.
+- 내용을 읽는 대상은 이름이 하나뿐이어야 한다(하드 링크 수 1). 작업 폴더 안의 이름이 밖에 있는 파일의 두 번째 이름일 수 있다. 푼 경로의 작업 폴더 아래 부분에 대해 점 이름 검사도 다시 한다(링크가 점 이름을 가릴 수 있다).
 - 존재하지 않거나 풀 수 없으면 거절한다.
 
-`cd`는 실패할 수 있으므로 분류기는 뒤 명령의 경로를 옮기기 전 폴더와 옮긴 폴더 양쪽에서 본다. 따라서 `cd src && cat index.ts`는 `index.ts`가 양쪽에 있을 때만 통과한다.
+`cd`는 실패할 수 있으므로 분류기는 뒤 명령의 경로를 옮기기 전 폴더와 옮긴 폴더 양쪽에서 본다. 따라서 `cd ./src && cat index.ts`는 `index.ts`가 양쪽에 있을 때만 통과한다.
 
 ### 2.7 응답과 기록
 
@@ -115,6 +120,10 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 | R7 | 호스트에서 링크를 풀어 작업 폴더 밖, 민감한 대상, 내용 명령의 폴더 대상, 없는 파일, 링크 뒤의 `..`을 거절한다. 홈 폴더 이상인 작업 폴더를 거절한다 | "the host resolves each path and refuses links that leave the folder, ..." |
 | R8 | 작업 폴더를 알리지 않는 실행기에서는 절대 경로만 통과한다. Codex의 셸 감싸기는 토크나이저로 읽는다 | "a provider that does not say where the command runs gets only absolute paths approved", "Codex's shell wrapper is read with the board's tokenizer ..." |
 | R9 | 확인된 실행기와 도구의 셸 요청만, 자기 선택지가 없는 것만 대상이다 | "only checked shell requests without choices of their own are considered" |
+| R15 | 내용을 읽는 대상의 점 이름(허용 목록 밖), 더한 민감 이름, 하드 링크, 홈 폴더의 점 폴더와 Library 아래 작업 폴더를 거절하고 Paseo 워크트리는 통과한다 | "a sensitive name anywhere in the request is refused, path or not", "the host resolves each path ..." |
+| R16 | 맨 이름의 상대 `cd`, `tail` 따라가기, `rg` 압축 검색을 거절한다. Claude Code 입력은 확인한 키만 받는다 | "a bare relative cd, following a file and searching compressed files are refused", "only checked shell requests ..." |
+| R17 | Codex의 shlex 꼴 줄을 스크립트로 되읽는다 | "a Codex command line in shlex form is read back into the script it carries" |
+| R18 | 판단 도중 스위치를 끄거나 훅이 취소되면 보내지 않는다. 플러그인은 설정이 읽히고 참일 때만 켜짐으로 본다 | "a switch turned off while the request is being judged, or a cancelled hook, sends nothing", "the plugin treats the switch as on only when the host setting is readable and true" |
 | R10 | 코디네이터, 관리 밖 세션, 다른 호스트 세션, 보관된 세션, 읽을 수 없는 기록, Windows 호스트에서 답하지 않는다 | "the session, the record and the host each stop the rule", "a coordinator's own request and a session outside the managed projects ..." |
 | R11 | 응답 호출은 한 곳, 서버에서 쓰는 곳은 규칙뿐, 규칙은 훅 한 곳에서만 불리고 타이머·메시지 전송·지속 권한이 없다 | "the plugin wires the rule to the hook for a new request and to nothing else", `test/pending-requests.test.ts`의 "one shared responder answers a waiting request, ..." |
 | R12 | 기록은 요청마다 하나, 상태가 바뀌고, 오래된 것과 넘치는 것이 빠진다 | "the record keeps one entry per request, ..." |

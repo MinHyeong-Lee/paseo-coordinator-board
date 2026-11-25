@@ -8,7 +8,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { SessionRow } from "../shared/contract";
 import { wasSent, type SentRecord } from "../shared/answered-requests";
 import { autoApprovalEntry, readOnlyShellPlan, withAutoApprovals, type AutoApprovalEntry, type AutoApprovalPlan, type AutoApprovalRefusal } from "../shared/permission-auto-approve";
-import { guardedWord, readPathRisks } from "../shared/permission-read-paths";
+import { guardedWord, hiddenPart } from "../shared/permission-read-paths";
 import { createResponder, type Outcome } from "../shared/permission-responder";
 import { isManagedCoordinator, type Preferences } from "./preferences";
 import { managedSessions } from "./session-links";
@@ -55,12 +55,15 @@ export class AutoApprovalStore {
 
 export type HostFiles = {
   realpath(path: string): Promise<string>;
-  kind(path: string): Promise<"file" | "folder" | "other">;
+  // What a resolved path is, and how many names (hard links) point at it.
+  describe(path: string): Promise<{ kind: "file" | "folder" | "other"; links: number }>;
   home: string; platform: string;
+  // Folders under a dot folder of the home folder that still hold ordinary work, such as Paseo's own worktrees.
+  workRoots?: readonly string[];
 };
 const hostFiles: HostFiles = {
   realpath: path => realpath(path),
-  kind: async path => { const found = await stat(path); return found.isFile() ? "file" : found.isDirectory() ? "folder" : "other"; },
+  describe: async path => { const found = await stat(path); return { kind: found.isFile() ? "file" : found.isDirectory() ? "folder" : "other", links: found.nlink }; },
   home: homedir(), platform: process.platform,
 };
 
@@ -83,21 +86,30 @@ async function physical(path: string, files: HostFiles) {
 
 // Resolves every path of a plan on this host, symbolic links included, and allows the plan only
 // when each one exists, lies inside the session's folder and has no sensitive name. A path that
-// cannot be resolved refuses the plan. A command that reads contents must be given regular files:
-// the board cannot vouch for every file under a folder.
+// cannot be resolved refuses the plan. A command that reads contents must be given regular files
+// with a single name and no dot name below the folder: the board cannot vouch for every file under a folder.
 export async function hostAllows(plan: AutoApprovalPlan, workspace: string, files: HostFiles = hostFiles) {
   try {
     const root = await physical(workspace, files);
     const home = await physical(files.home, files).catch(() => files.home);
     // A session opened on the home folder, or above it, has no folder of its own to stay inside.
     if (parse(root).root === root || inside(root, home)) return false;
+    // A dot folder of the home folder, or its Library, holds settings and sign-in data rather than work.
+    const [top] = inside(home, root) ? relative(home, root).split(sep) : [];
+    if (top && (top.startsWith(".") || top === "Library")) {
+      const workRoots = await Promise.all((files.workRoots ?? []).map(path => physical(path, files).catch(() => null)));
+      if (!workRoots.some(path => path && path !== root && inside(path, root))) return false;
+    }
     if (plan.cwd !== undefined && !inside(root, await physical(plan.cwd, files))) return false;
     for (const read of plan.reads) {
       if (read.value.startsWith("~") || (!isAbsolute(read.value) && (!read.cwd || !isAbsolute(read.cwd)))) return false;
       const real = await physical(isAbsolute(read.value) ? read.value : read.cwd + sep + read.value, files);
-      if (!inside(root, real) || readPathRisks(real).includes("sensitive-read") || guardedWord(relative(root, real))) return false;
-      const kind = await files.kind(real);
+      // The whole resolved path is checked, not only the part below the session's folder.
+      if (!inside(root, real) || guardedWord(real)) return false;
+      const { kind, links } = await files.describe(real);
       if (read.command === "cd" ? kind !== "folder" : read.content ? kind !== "file" : kind === "other") return false;
+      // A second name for the same file can sit outside the folder, where none of these checks reach.
+      if (read.content && (links !== 1 || hiddenPart(relative(root, real)))) return false;
     }
     return true;
   } catch { return false; }
@@ -117,7 +129,7 @@ type Options = {
   // The record of requests answered from the board's buttons, or null when it cannot be read.
   answered: () => Promise<readonly SentRecord[] | null>;
   managed: (paseo: Sdk, sessionId: string) => Promise<Pick<SessionRow, "title" | "projectId"> | null>;
-  changed?: () => void; files?: HostFiles; now?: () => number; checks?: number; wait?: (ms: number) => Promise<void>;
+  changed?: () => void; files?: HostFiles; workRoots?: readonly string[]; now?: () => number; checks?: number; wait?: (ms: number) => Promise<void>;
 };
 
 // Answers a waiting shell request with one plain allow when a person switched the read-only
@@ -128,7 +140,7 @@ export class PermissionAutoApprover {
   private readonly files: HostFiles;
   private readonly now: () => number;
   constructor(private readonly options: Options) {
-    this.files = options.files ?? hostFiles;
+    this.files = { ...(options.files ?? hostFiles), ...(options.workRoots ? { workRoots: options.workRoots } : {}) };
     this.now = options.now ?? Date.now;
   }
   // Windows shells read a command line differently from the grammar the board checks.

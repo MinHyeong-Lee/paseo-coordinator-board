@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readOnlyShellPlan, permissionAutoApprove, withAutoApprovals, AUTO_APPROVAL_KEEP, type AutoApprovalRequest } from "../shared/permission-auto-approve";
-import { guardedWord } from "../shared/permission-read-paths";
+import { guardedWord, hiddenPart } from "../shared/permission-read-paths";
 
 const workspace = "/Users/you/projects/alpha";
 const claude = (command: string, input: Record<string, unknown> = {}, extra: Partial<AutoApprovalRequest> = {}): AutoApprovalRequest =>
@@ -16,11 +16,11 @@ test("the setting is a host setting that starts off", () => {
 });
 
 test("a read-only command with a stated folder is planned as one plain allow with every path to resolve", () => {
-  const result = plan(codex("cd src && cat index.ts | head -n 5; ls"));
+  const result = plan(codex("cd ./src && cat index.ts | head -n 5; ls"));
   expect(result.response).toEqual({ behavior: "allow" });
   expect(result.cwd).toBe(workspace);
   expect(result.summary).toBe("cd · cat · head · ls");
-  expect(result.reads).toContainEqual({ command: "cd", value: "src", cwd: workspace, content: false });
+  expect(result.reads).toContainEqual({ command: "cd", value: "./src", cwd: workspace, content: false });
   expect(result.reads).toContainEqual({ command: "cat", value: "index.ts", cwd: workspace + "/src", content: true });
   // A failed `cd` leaves the shell in the earlier folder, so that folder is resolved as well.
   expect(result.reads).toContainEqual({ command: "cat", value: "index.ts", cwd: workspace, content: true });
@@ -44,7 +44,7 @@ test("Codex's shell wrapper is read with the board's tokenizer and anything else
 test("a provider that does not say where the command runs gets only absolute paths approved", () => {
   expect(plan(claude(`cat ${workspace}/README.md`)).reads).toEqual([{ command: "cat", value: workspace + "/README.md", cwd: workspace, content: true }]);
   expect(plan(claude("pwd")).cwd).toBeUndefined();
-  for (const command of ["cat README.md", "ls", "rg -n sample", `cd ${workspace}/src && cat index.ts`, "cd src"]) {
+  for (const command of ["cat README.md", "ls", "rg -n sample", `cd ${workspace}/src && cat index.ts`, "cd src", "cd ./src"]) {
     expect([command, refusal(claude(command))]).toEqual([command, "relative"]);
   }
   expect(refusal(codex("cat README.md", ""))).toBe("relative");
@@ -60,8 +60,10 @@ test("only checked shell requests without choices of their own are considered", 
   expect(refusal({ ...codex("pwd"), name: "CodexFileChange" })).toBe("source");
   expect(refusal(claude("pwd", {}, { actions: [{ id: "allow_always", label: "Always", behavior: "allow" }] }))).toBe("action");
   expect(refusal(claude("pwd", {}, { detail: { type: "shell", command: "pwd; rm x" } }))).toBe("input");
-  expect(refusal(claude("pwd", { dangerouslyDisableSandbox: true }))).toBe("input");
-  expect(refusal(claude("pwd", { run_in_background: true }))).toBe("input");
+  // Claude's input is held to the keys that were checked. Any other key, whatever its value, goes to a person.
+  for (const extra of [{ dangerouslyDisableSandbox: true }, { dangerouslyDisableSandbox: false }, { run_in_background: true }, { run_in_background: false }, { shell: "sh" }, { cwd: workspace }]) {
+    expect([extra, refusal(claude("pwd", extra))]).toEqual([extra, "input"]);
+  }
   expect(refusal({ ...codex("pwd"), input: { command: "pwd", cwd: "relative/folder" } })).toBe("input");
   expect(refusal({ ...codex("pwd"), input: { command: "pwd", cwd: 3 } })).toBe("input");
   expect(plan(claude("pwd", { description: "Show the folder", timeout: 1000 })).summary).toBe("pwd");
@@ -117,6 +119,36 @@ test("git is not approved by the rule, even for a read", () => {
   }
 });
 
+test("a bare relative cd, following a file and searching compressed files are refused", () => {
+  // CDPATH can send a bare name somewhere else. "./" and an absolute path cannot be redirected.
+  for (const command of ["cd src", "cd src && ls", "cd src/lib", "cd ..", "cd ./src && cd lib"]) expect([command, refusal(codex(command))]).toEqual([command, "relative"]);
+  for (const command of ["cd ./src", "cd ./src && ls", `cd ${workspace}/src && ls`]) expect([command, refusal(codex(command))]).toEqual([command, null]);
+  for (const command of ["tail -f log.txt", "tail -F log.txt", "tail -n 5 -f log.txt", "tail -fn5 log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
+    "rg -z x a.gz", "rg -nz x a.gz", "rg --search-zip x a.gz"]) {
+    expect([command, ["option", "risk"].includes(refusal(codex(command)) ?? "")]).toEqual([command, true]);
+  }
+  for (const command of ["tail -n 5 log.txt", "tail -c 100 log.txt", "rg -n x a.txt", "grep -z x a.txt"]) expect([command, refusal(codex(command))]).toEqual([command, null]);
+});
+
+// Codex builds the command line by joining the argv with shell quoting (shlex), so reading it back
+// with a POSIX tokenizer gives the argv again. These are lines in that form.
+test("a Codex command line in shlex form is read back into the script it carries", () => {
+  for (const [line, script] of [
+    ["/bin/zsh -lc 'cat README.md'", "cat README.md"],
+    ["/bin/zsh -lc pwd", "pwd"],
+    [`bash -lc "rg -n 'a b' README.md"`, "rg -n 'a b' README.md"],
+    [`bash -lc 'rg -n "a b" README.md'`, 'rg -n "a b" README.md'],
+    [`bash -lc 'rg -n '"'"'a b'"'"' README.md'`, "rg -n 'a b' README.md"],
+    ["cat README.md", "cat README.md"],
+    ["cat 'two words.md'", "cat 'two words.md'"],
+  ]) expect([line, plan(codex(line)).command]).toEqual([line, script]);
+  // A quoted script that would expand or run something is judged as that script.
+  expect(refusal(codex(String.raw`bash -lc "echo \$HOME"`))).toBe("expansion");
+  expect(refusal(codex(String.raw`bash -lc "cat \`ls\`"`))).toBe("expansion");
+  expect(refusal(codex("bash -lc 'cat a; rm a'"))).toBe("risk");
+  expect(refusal(codex("<command included NUL byte>"))).not.toBeNull();
+});
+
 test("an option that follows symbolic links while listing is refused", () => {
   for (const command of ["find -L . -name sample", "find -H .", "ls -lL", "ls -RL src", "stat -L src", "file -L src", "file --dereference src"]) {
     expect([command, refusal(codex(command))]).toEqual([command, "option"]);
@@ -129,7 +161,12 @@ test("a sensitive name anywhere in the request is refused, path or not", () => {
   for (const command of ["cat .env", "cat config/.env.local", "rg -n x ~/.ssh", "find / -name id_rsa", "find . -name 'id_*'", "find . -name '*.pem'",
     "cat server.key", "cat ~/.aws/credentials", "ls ~/.config/gh", "cat credentials.json", "cat prod.tfvars", "ls ~/Library/Keychains",
     "rg '.env' README.md", "rg --file=.env README.md", "grep -f .env notes.txt", "echo id_ed25519", "cat secrets.yaml", "cat .netrc", "cat ~/.zsh_history",
-    "find . -name '*.env'", "cat token.json", "cd .ssh"]) {
+    "find . -name '*.env'", "cat token.json", "cd ./.ssh",
+    "cat terraform.tfstate", "cat terraform.tfstate.backup", "cat auth.json", "cat service-account.json", "cat my-service_account-prod.json", "cat kubeconfig",
+    "cat aws-credentials.txt", "cat store.p12", "cat release.keystore",
+    // A command that reads contents is refused every dot name outside a short list.
+    "cat .git/config", "cat .mcp.json", "cat .dev.vars", "cat .npmrc", "cat config/.settings/app.json", "head -n 3 .vscode/settings.json", "rg -n x .claude/settings.json",
+    "cd ./.git && cat config"]) {
     expect([command, refusal(codex(command))]).toEqual([command, "sensitive"]);
   }
   expect(refusal(claude(`cat ${workspace}/.env`))).toBe("sensitive");
@@ -138,13 +175,22 @@ test("a sensitive name anywhere in the request is refused, path or not", () => {
     ".docker/config.json", "vault.kdbx", ".bash_history", "passwords.txt", ".secret"]) {
     expect([word, guardedWord(word)]).toEqual([word, true]);
   }
-  for (const word of ["README.md", "src/index.ts", "-n", "1,5p", "identity.ts", "package.json", "tokenizer.ts", "environment.ts", "keys.ts", "--color=auto"]) {
+  for (const word of ["README.md", "src/index.ts", "-n", "1,5p", "identity.ts", "package.json", "tokenizer.ts", "environment.ts", "keys.ts", "--color=auto", "author.json", "kube.ts"]) {
     expect([word, guardedWord(word)]).toEqual([word, false]);
   }
+  for (const word of ["terraform.tfstate", "prod.tfstate.backup", "auth.json", "gcp-service-account.json", "kubeconfig", "db_credentials.yaml", "cert.p12"]) {
+    expect([word, guardedWord(word)]).toEqual([word, true]);
+  }
+  // The few dot names that hold no secrets by convention can be read. Listing a dot folder shows names only.
+  for (const command of ["cat .gitignore", "cat .gitattributes .editorconfig .nvmrc", "cat .github/workflows/ci.yml", "ls -la .git", "find .git -name config", "stat .mcp.json"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, null]);
+  }
+  for (const path of [".git/config", "a/.b/c", ".mcp.json", "x/.GitHub2/y"]) expect([path, hiddenPart(path)]).toEqual([path, true]);
+  for (const path of ["a/b.c", "./a", "../a", ".github/x", ".GITIGNORE", "a/.nvmrc"]) expect([path, hiddenPart(path)]).toEqual([path, false]);
 });
 
 test("reads outside the stated folder are refused before the host is asked", () => {
-  for (const command of ["cat ../notes.txt", "cat /etc/hosts", "ls ~", "cd .. && ls", "cd /tmp && cat a.txt", "ls ~/projects"]) {
+  for (const command of ["cat ../notes.txt", "cat /etc/hosts", "ls ~", "cd ./.. && ls", "cd /tmp && cat a.txt", "ls ~/projects"]) {
     expect([command, refusal(codex(command))]).toEqual([command, "risk"]);
   }
 });
@@ -166,7 +212,7 @@ test("the record keeps one entry per request, replaces its state, drops old entr
 });
 
 // ---- The host side: real folders and links in a temporary directory ----
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutoApprovalStore, hostAllows, managedWorkSession, PermissionAutoApprover, type HostFiles } from "../server/permission-auto-approve";
@@ -192,9 +238,15 @@ function sandbox() {
   symlinkSync(outside, join(root, "linked"));
   symlinkSync(join(root, ".env"), join(root, "settings.txt"));
   symlinkSync(join(root, "README.md"), join(root, "alias.md"));
+  // A second name inside the folder for a file that lives outside it.
+  linkSync(join(outside, "notes.txt"), join(root, "twin.txt"));
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, ".git", "config"), "sample");
+  writeFileSync(join(root, ".gitignore"), "sample");
+  symlinkSync(join(root, ".git", "config"), join(root, "plain.txt"));
   const files: HostFiles = {
     realpath: path => realpath(path), home: join(base, "home"), platform: "linux",
-    kind: async path => { const found = await stat(path); return found.isFile() ? "file" : found.isDirectory() ? "folder" : "other"; },
+    describe: async path => { const found = await stat(path); return { kind: found.isFile() ? "file" : found.isDirectory() ? "folder" : "other", links: found.nlink }; },
   };
   return { base, root, outside, data, files, clean: () => rmSync(base, { recursive: true, force: true }) };
 }
@@ -206,15 +258,20 @@ test.skipIf(!posixHost)("the host resolves each path and refuses links that leav
       const result = readOnlyShellPlan(codex(command, cwd), box.root);
       return "refused" in result ? result.refused : await hostAllows(result.plan, box.root, box.files);
     };
-    for (const command of ["cat README.md", "cat alias.md", "cd src && cat index.ts", "ls", "ls src", "find . -name '*.ts'", "head -n 2 src/index.ts | wc -l", "stat src", "pwd", "echo sample"]) {
-      expect([command, await allowed(command)]).toEqual([command, command === "cd src && cat index.ts" ? false : true]);
+    for (const command of ["cat README.md", "cat alias.md", "cd ./src && cat index.ts", "ls", "ls src", "find . -name '*.ts'", "head -n 2 src/index.ts | wc -l", "stat src", "pwd", "echo sample",
+      "cat .gitignore", "ls .git", "stat twin.txt"]) {
+      expect([command, await allowed(command)]).toEqual([command, command === "cd ./src && cat index.ts" ? false : true]);
     }
-    // A `cd` can fail, so `cd src && cat index.ts` also resolves index.ts in the earlier folder, where it does not exist.
-    expect(await allowed("cd src && ls")).toBe(true);
-    expect(await allowed("cd src && cat ../README.md")).toBe("risk");
+    // A `cd` can fail, so `cd ./src && cat index.ts` also resolves index.ts in the earlier folder, where it does not exist.
+    expect(await allowed("cd ./src && ls")).toBe(true);
+    expect(await allowed("cd ./src && cat ../README.md")).toBe("risk");
+    // A hard link gives a file outside the folder a second name inside it, and a link can hide a dot name.
+    expect(await allowed("cat twin.txt")).toBe(false);
+    expect(await allowed("cat plain.txt")).toBe(false);
+    expect(await allowed("cat config", join(box.root, ".git"))).toBe(false);
     expect(await allowed("cat index.ts", join(box.root, "src"))).toBe(true);
     for (const command of ["cat linked.txt", "ls linked", "cat linked/notes.txt", "cat settings.txt", "cat missing.txt", "cat src", "rg -n sample", "rg -n sample src",
-      "grep -r sample", "cd linked", "cd README.md", "cat src/../linked/../outside/notes.txt"]) {
+      "grep -r sample", "cd ./linked", "cd ./README.md", "cat src/../linked/../outside/notes.txt"]) {
       expect([command, await allowed(command)]).toEqual([command, false]);
     }
     // ".." after a link leaves the folder the link points to, not the folder the link sits in.
@@ -230,6 +287,28 @@ test.skipIf(!posixHost)("the host resolves each path and refuses links that leav
     expect(await hostAllows(plan.plan, "/", box.files)).toBe(false);
     expect(await hostAllows(plan.plan, join(box.root, "missing"), box.files)).toBe(false);
     expect(await hostAllows(plan.plan, box.root, box.files)).toBe(true);
+    // A folder under a dot folder of the home folder, or under its Library, is not a place of work,
+    // unless it is under a folder named as one (Paseo's own worktrees).
+    const settings = join(box.files.home, ".config"), tree = join(box.files.home, ".paseo", "worktrees", "tree-1"), library = join(box.files.home, "Library", "App");
+    for (const folder of [join(settings, "gh"), tree, library]) mkdirSync(folder, { recursive: true });
+    writeFileSync(join(settings, "gh", "hosts.yml"), "sample");
+    writeFileSync(join(tree, "README.md"), "sample");
+    writeFileSync(join(library, "notes.txt"), "sample");
+    const read = (command: string, cwd: string) => { const result = readOnlyShellPlan(codex(command, cwd), cwd); if ("refused" in result) throw Error(result.refused); return result.plan; };
+    expect(await hostAllows(read("cat gh/hosts.yml", settings), settings, box.files)).toBe(false);
+    expect(await hostAllows(read("pwd", settings), settings, box.files)).toBe(false);
+    expect(await hostAllows(read("cat notes.txt", library), library, box.files)).toBe(false);
+    expect(await hostAllows(read("cat README.md", tree), tree, box.files)).toBe(false);
+    const withTrees = { ...box.files, workRoots: [join(box.files.home, ".paseo", "worktrees"), join(box.files.home, ".missing")] };
+    expect(await hostAllows(read("cat README.md", tree), tree, withTrees)).toBe(true);
+    // The named folder itself, and other dot folders, stay closed.
+    expect(await hostAllows(read("pwd", join(box.files.home, ".paseo", "worktrees")), join(box.files.home, ".paseo", "worktrees"), withTrees)).toBe(false);
+    expect(await hostAllows(read("cat gh/hosts.yml", settings), settings, withTrees)).toBe(false);
+    // The whole resolved path is checked for sensitive names, not only the part below the folder.
+    const vault = join(box.base, "secrets", "app");
+    mkdirSync(vault, { recursive: true });
+    writeFileSync(join(vault, "notes.txt"), "sample");
+    expect(await hostAllows(read("cat notes.txt", vault), vault, box.files)).toBe(false);
   } finally { box.clean(); }
 });
 
@@ -353,6 +432,49 @@ test("the session, the record and the host each stop the rule", async () => {
     expect(broken.state.responses).toEqual([]);
     expect(broken.approver.view(new Set(["alpha"])).entries).toEqual([]);
   } finally { box.clean(); }
+});
+
+test("a switch turned off while the request is being judged, or a cancelled hook, sends nothing", async () => {
+  const box = sandbox();
+  try {
+    const midway = host(box, [pendingShell("request-1", "cat README.md", box.root)]);
+    let reads = 0;
+    const approver = new PermissionAutoApprover({ store: midway.store, files: box.files, checks: 1, wait: async () => {},
+      enabled: async () => ++reads === 1, answered: async () => [], managed: async () => ({ title: "Worker one", projectId: "alpha" }) });
+    const paseo = { agents: { ref: (id: string) => ({ refresh: async () => ({ agent: { id, cwd: box.root, pendingPermissions: midway.state.pending } }),
+      respondToPermission: async (options: { requestId: string; response: unknown }) => { midway.state.responses.push(options); } }) } };
+    expect(await approver.requested({ agent: { id: "worker-1" }, request: { id: "request-1" } }, { paseo: paseo as never })).toBe("off");
+    expect(reads).toBe(2);
+    const cancelled = new PermissionAutoApprover({ store: midway.store, files: box.files, checks: 1, wait: async () => {},
+      enabled: async () => true, answered: async () => [], managed: async () => ({ title: "Worker one", projectId: "alpha" }) });
+    expect(await cancelled.requested({ agent: { id: "worker-1" }, request: { id: "request-1" } }, { paseo: paseo as never, signal: AbortSignal.abort() })).toBe("off");
+    expect(midway.state.responses).toEqual([]);
+    expect(midway.store.read()).toEqual([]);
+    // The same request with the switch left on does go out, so the two cases above were stopped by the switch and the signal.
+    expect(await cancelled.requested({ agent: { id: "worker-1" }, request: { id: "request-1" } }, { paseo: paseo as never })).toBe("unconfirmed");
+    expect(midway.state.responses).toHaveLength(1);
+  } finally { box.clean(); }
+});
+
+test("the plugin treats the switch as on only when the host setting is readable and true", async () => {
+  for (const [state, reads] of [
+    [{ status: "ready", revision: "1", values: { readOnlyShell: true } }, 1], [{ status: "ready", revision: "1", values: { readOnlyShell: false } }, 0],
+    [{ status: "ready", revision: "1", values: { readOnlyShell: "true" } }, 0], [{ status: "invalid", revision: "1", error: "bad" }, 0],
+    [{ status: "loading", values: { readOnlyShell: true } }, 0], [undefined, 0], ["throw", 0],
+  ] as const) {
+    let hook: ((event: unknown, context: unknown) => Promise<void>) | undefined;
+    contribute({ handle() {}, addHook: (name: string, handler: typeof hook) => { if (name === "agent.permission.before") hook = handler; return () => {}; },
+      registerSettings(definition: { id: string }) {
+        if (definition.id === "answered-requests") return { read: async () => ({ status: "ready", revision: "1", values: { sent: [] } }) };
+        if (definition.id !== "permission-auto-approve") return undefined;
+        return { read: async () => { if (state === "throw") throw Error("offline"); return state; } };
+      } } as never);
+    let refreshes = 0;
+    const paseo = { agents: { ref: () => ({ refresh: async () => { refreshes++; return null; } }) } };
+    await hook!({ agent: { id: "worker-1" }, request: { id: "request-1" } }, { paseo });
+    // On a Windows runner the rule stops before it reads the setting.
+    expect([JSON.stringify(state), refreshes]).toEqual([JSON.stringify(state), posixHost ? reads : 0]);
+  }
 });
 
 test("a coordinator's own request and a session outside the managed projects are not the rule's to answer", () => {
