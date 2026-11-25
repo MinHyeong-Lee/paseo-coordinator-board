@@ -42,3 +42,16 @@ export function readPathRisks(value: string, cwd?: string, workspace?: string): 
     : isAbsolute(raw) || /^\.\.(?:\/|$)/.test(resolveReadPath(path)));
   return [...(sensitive ? ["sensitive-read" as const] : []), ...(outside ? ["outside-read" as const] : [])];
 }
+
+// Names the read-only rule never approves on its own. This list is wider than the card's
+// "sensitive" label on purpose: a harmless file sent to a person costs one press, and a
+// secret read without one cannot be taken back. It is matched against every word of a request,
+// whether or not that word is a path, and again against each resolved path on the host.
+const guardedName = /^(?:id_|\.?credentials?|\.?secrets?|\.?passw(?:or)?ds?|\.?tokens?(?:[._-]|$)|\.(?:pgpass|my\.cnf|htpasswd)$)|\.env|keychain|_history$|\.(?:kdbx|jks|keystore|p8|ppk|gpg|asc)$/;
+const guardedFolder = /(?:^|\/)\.config\/(?:gh|gcloud|op)(?:\/|$)|(?:^|\/)\.docker(?:\/|$)|(?:^|\/)library\/(?:keychains|cookies)(?:\/|$)/;
+
+export function guardedWord(word: string) {
+  const text = word.replace(/\\/g, "/").toLowerCase();
+  if (readPathRisks(word).includes("sensitive-read") || guardedFolder.test(text)) return true;
+  return text.split(/[/=:,]/).some(part => guardedName.test(part) || readPathRisks(part).includes("sensitive-read"));
+}
