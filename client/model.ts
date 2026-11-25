@@ -48,6 +48,14 @@ export function sessionDetail(detail: string, t: Translate) {
   return detail;
 }
 
+export function coordinatorWaitForCard({ lane, session }: Card) {
+  return lane === "idle" || lane === "review" ? session.coordinatorWait : undefined;
+}
+
+export function progressLane(card: Card): Lane {
+  return coordinatorWaitForCard(card) ? "running" : card.lane;
+}
+
 export function factStatus({ delivery, kind }: Pick<NonNullable<Session["boardFact"]>, "delivery" | "kind">, t: Translate) {
   if (delivery === "recorded" && kind === "report") return t("진행 보고 기록됨", "Progress report recorded");
   const words = {

@@ -7,6 +7,7 @@ import { blockQuestionLabel, splitQuestionBlock, type QuestionBlock } from "../s
 import { withAssignmentHost } from "./host-assignment";
 import { waitsForIdle } from "../shared/busy-delivery";
 import { asksForDecision } from "../shared/question-request";
+import { coordinatorWaitInTimeline, type CoordinatorWait } from "../shared/coordinator-wait";
 
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
@@ -21,6 +22,7 @@ export type Evidence = {
   boardMessageHashes?: Map<string,string>;
   clarificationMessages?: Map<string, ClarificationObservation>;
   laterInput?: boolean;
+  coordinatorWait?: CoordinatorWait;
   deliveries?: { id: string; sender: string; bodyHash: string }[];
   // Sender of the most recent agent message when it is the latest input.
   lastInputSender?: string;
@@ -93,7 +95,9 @@ export function excerpt(page: Page): Evidence {
     if (definitions.length) turn.definitions = definitions;
   }
   const last = turns.at(-1);
+  const coordinatorWait = coordinatorWaitInTimeline(page.entries);
   return { ...(last?.role === "assistant" && waitsForIdle(full.get(last) ?? "") ? {deliverWhenIdle:true} : {}), id: digest.digest("hex").slice(0, 24), turns: kept,
+    ...(coordinatorWait ? { coordinatorWait } : {}),
     ...(clarification && messageIds.length ? { lastInputIds: messageIds } : {}),
     ...(clarificationMessages.size ? { clarificationMessages } : {}),
     ...(boardMessageHashes.size ? {boardMessageHashes} : {}),

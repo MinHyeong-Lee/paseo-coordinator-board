@@ -1,0 +1,135 @@
+import { expect, test } from "bun:test";
+import { boardSnapshot, type SessionRow } from "../shared/contract";
+import { decisionCount, displayLane } from "../shared/decision-count";
+import { detectCoordinatorWait, coordinatorWaitLabel, isLongCoordinatorWait } from "../shared/coordinator-wait";
+import { excerpt } from "../server/conversation";
+import { decorateReviewWait } from "../server/review-wait";
+import { progressLane } from "../client/model";
+
+const examples = [
+  ["코디네이터에게 보고했고 화면 사용 승인을 기다립니다.", "screen"],
+  ["코디네이터에게 보고했고 '화면 써도 된다'는 답을 기다립니다.", "report"],
+  ["화면 차례가 오면 이어 갑니다.", "screen"],
+  ["I sent the coordinator a report and I'm waiting for its go-ahead.", "report"],
+  ["Waiting for the coordinator.", "reply"],
+  ["코디네이터의 판단을 기다립니다.", "decision"],
+  ["Waiting for the coordinator to merge the PR.", "merge"],
+  ["병렬 세션의 답변을 기다립니다.", "reply"],
+  ["I'll resume once the coordinator replies.", "reply"],
+  ["Awaiting the coordinator's approval.", "decision"],
+  ["Waiting for a visual QA slot.", "screen"],
+  ["코디네이터가 답을 주면 다시 진행하겠습니다.", "reply"],
+  ["Waiting for a reply from another session.", "reply"],
+  ["The coordinator has the report. I'll wait for a reply.", "report"],
+] as const;
+
+test("identifies who the session is waiting on and a short reason in both languages", () => {
+  for (const [message, reason] of examples) {
+    expect([message, detectCoordinatorWait(message)]).toEqual([message, reason]);
+  }
+  const ko = (a: string) => a;
+  const en = (_: string, b: string) => b;
+  expect(coordinatorWaitLabel("screen", ko)).toBe("코디네이터 대기 · 화면 차례");
+  expect(coordinatorWaitLabel("screen", en)).toBe("Waiting on coordinator · Screen access");
+});
+
+test("ignores human questions, examples, finished waits and unrelated blockers", () => {
+  for (const message of [
+    "Waiting for the coordinator. Please choose the export size.",
+    "코디네이터의 판단을 기다립니다.\n**결정할 것:** 내보낼 크기",
+    "> Waiting for the coordinator.\nAll done.",
+    "The text says “Waiting for the coordinator”.",
+    "The value is `waiting for the coordinator`.",
+    "Example:\n\n```text\nWaiting for the coordinator.\n```",
+    "Example:\n\n   ~~~~text\nWaiting for the coordinator.\n",
+    "Not waiting for the coordinator.",
+    "코디네이터의 답을 기다리지 않습니다.",
+    "I was waiting for the coordinator.",
+    "I am waiting for the coordinator's reply. The coordinator has replied.",
+    "Waiting for CI. I sent the coordinator a report.",
+    "Waiting for CI before I update the coordinator.",
+    "Waiting for CI to finish before my screen slot.",
+    "The coordinator is waiting for my report.",
+    "코디네이터가 제 보고를 기다립니다.",
+    "Waiting for your reply.",
+    "답을 기다립니다.",
+  ]) expect([message, detectCoordinatorWait(message)]).toEqual([message, undefined]);
+  expect(detectCoordinatorWait("> Please confirm.\nWaiting for the coordinator.")).toBe("reply");
+  expect(detectCoordinatorWait("Waiting for the coordinator.\n\n~~~\nPlease confirm.\n~~~")).toBe("reply");
+});
+
+const at = "2026-11-25T08:00:00Z";
+const now = Date.parse(at) + 30 * 60_000;
+const worker: SessionRow = {
+  id: "worker-1", title: "Export", projectId: "alpha", projectTitle: "Alpha",
+  workspaceTitle: "Export", model: null, status: "idle", activityAt: new Date(now).toISOString(),
+  lane: "review", detail: "세션 결과 확인 필요",
+};
+const assistant = (text: string) => ({ type: "assistant_message", text });
+const lastWait = assistant("코디네이터의 판단을 기다립니다.");
+function decorate(items: object[], changes: Partial<SessionRow> = {}) {
+  const observed = excerpt({
+    epoch: "fixture",
+    entries: items.map((item, seqEnd) => ({ item, seqEnd, timestamp: at })),
+  } as never);
+  const row = { ...worker, ...changes };
+  decorateReviewWait([row], new Map([[row.id, observed]]), {
+    coordinator: "coordinator", now, thresholdHours: 12, covered: new Set(), judgments: {},
+  });
+  return row;
+}
+
+test("local and assigned remote waits move into session progress without becoming decisions", () => {
+  for (const serverId of [undefined, "peer-host"]) {
+    const row = decorate([lastWait], { serverId });
+    expect(row).toMatchObject({ coordinatorWait: "decision", detail: worker.detail, waitingSince: at });
+    const snapshot = boardSnapshot.output.parse({ sessions: [row], notes: {}, projects: [], coordinator: null });
+    expect(snapshot.sessions[0].coordinatorWait).toBe("decision");
+    expect(decisionCount(snapshot)).toBe(0);
+    const lane = displayLane(row, undefined);
+    expect(lane).toBe("review");
+    expect(progressLane({ session: row, note: undefined, lane })).toBe("running");
+    const note = { sessionId: row.id, kind: "question" as const, text: "Which size?", revision: 1 };
+    expect(progressLane({ session: row, note, lane: displayLane(row, note) })).toBe("human");
+  }
+});
+
+test("a newer input, native request, later assistant turn or closed session supersedes a wait", () => {
+  const reply = { type: "tool_call", callId: "paseo-agent-message:1", status: "completed",
+    agentMessage: { event: "message", sender: { id: "coordinator" }, text: "Go ahead." } };
+  for (const row of [
+    decorate([lastWait, reply]),
+    decorate([lastWait, { type: "user_message", text: "Go ahead." }]),
+    decorate([lastWait, { type: "user_message", text: "" }]),
+    decorate([lastWait, assistant("완료했습니다.")]),
+    decorate([lastWait], { status: "closed" }),
+    decorate([lastWait], { lane: "running", status: "running" }),
+    decorate([lastWait], { lane: "human", nativePending: true }),
+    decorate([lastWait], { id: "coordinator" }),
+  ]) expect(row.coordinatorWait).toBeUndefined();
+});
+
+test("a long turn is classified before cutting its excerpt or losing the opening code fence", () => {
+  expect(decorate([assistant("Waiting for the coordinator.\n\n" + "Details ".repeat(300))]).coordinatorWait)
+    .toBe("reply");
+  expect(decorate([assistant("Please confirm the export size.\n\n" + "Details ".repeat(300) + "\n\nWaiting for the coordinator.")]).coordinatorWait)
+    .toBeUndefined();
+  expect(decorate([assistant("```text\n" + "Details ".repeat(300) + "\nWaiting for the coordinator.\n```")]).coordinatorWait)
+    .toBeUndefined();
+});
+
+test("an explicit question block takes priority over a coordinator wait", () => {
+  const text = "Waiting for the coordinator.\n\n" + [
+    "```board-question",
+    '{"questions":[{"text":"Pick the export size.","options":[{"key":"a","text":"Small"},{"key":"b","text":"Large"}]}]}',
+    "```",
+  ].join("\n");
+  expect(decorate([assistant(text)]).coordinatorWait).toBeUndefined();
+});
+
+test("emphasis starts at 30 minutes using the message time", () => {
+  expect(isLongCoordinatorWait(at, now - 1)).toBe(false);
+  expect(isLongCoordinatorWait(at, now)).toBe(true);
+  expect(isLongCoordinatorWait(undefined, now)).toBe(false);
+  expect(isLongCoordinatorWait("unknown", now)).toBe(false);
+});

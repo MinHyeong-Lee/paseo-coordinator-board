@@ -41,6 +41,11 @@ export function decorateReviewWait(rows: SessionRow[], evidence: ReadonlyMap<str
         if (last.truncated) row.lastMessageTruncated = true;
       }
     }
+    if (row.status === "idle" && row.id !== context.coordinator && !row.nativePending &&
+        !row.decision && !row.decisionAnswered && observed?.coordinatorWait) {
+      row.coordinatorWait = observed.coordinatorWait.reason;
+      row.waitingSince = observed.coordinatorWait.since ?? row.waitingSince ?? row.activityAt;
+    }
     // Without an excerpt the board cannot tell whether the coordinator acted, so it does not flag.
     if (row.lane === "review" && observed && needsCoordinator({ coordinator: context.coordinator, sessionId: row.id, waitingSince: row.waitingSince, now: context.now,
       thresholdHours: context.thresholdHours, covered: context.covered.has(row.id),

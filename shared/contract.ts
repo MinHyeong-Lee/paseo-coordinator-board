@@ -11,6 +11,7 @@ import { replyEntry } from "./reply-history";
 import { workspacePullSchema } from "./workspace-pull";
 import { coordinatorReachSchema } from "./coordinator-reach";
 import { coordinatorToolsSchema } from "./coordinator-tools";
+import { coordinatorWaitReasons } from "./coordinator-wait";
 import { assignmentLocation, assignmentNotice } from "./dispatch-hosts";
 
 const sessionId = z.string().min(1).max(256);
@@ -40,6 +41,7 @@ const session = z.object({
   decisionRequestedAt: z.string().optional(),
   activityAt: z.string().optional(),
   waitingSince: z.string().optional(),
+  coordinatorWait: z.enum(coordinatorWaitReasons).optional(),
   lastSummary: z.string().max(400).optional(),
   lastMessage: z.string().max(4000).optional(),
   lastMessageTruncated: z.literal(true).optional(),
