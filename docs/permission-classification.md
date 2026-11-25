@@ -15,7 +15,7 @@
 
 ## 읽기 전용 자동 승인이 쓰는 부분
 
-`shellPermissionTargets`는 같은 분류에 더해 각 명령이 읽는 경로(쓴 글자 그대로)와 그 경로를 읽을 폴더 후보, `cd`가 옮겨 가는 폴더를 돌려줍니다. 분류기는 여전히 파일시스템을 보지 않습니다. 읽기 전용 자동 승인(`shared/permission-auto-approve.ts`, `server/permission-auto-approve.ts`)은 이 경로를 세션 호스트에서 구성 요소별로 풀어(링크를 따라간 뒤의 `..` 포함) 작업 폴더 경계와 민감한 이름을 다시 확인합니다. 파서는 헤어닥과 here-string을 받은 명령에 `inlineInput`을, 따옴표 밖에 일부 셸만 확장하는 문자(맨 앞의 `=`, `^`, 중간의 `~`)가 있는 낱말에 `shellSpecific`을 표시합니다. 자동 승인은 이 두 표시와 모든 리디렉션을 거절합니다. 카드의 분류는 이 표시를 쓰지 않습니다. 자동 승인이 쓰는 민감한 이름 목록(`guardedWord`)은 카드의 "민감한 파일 읽기" 표시보다 넓고, 경로가 아닌 인자에도 적용합니다. 자동 승인의 조건 전체는 `intent/permission-auto-approve/spec.md`에 있습니다.
+`shellPermissionTargets`는 같은 분류에 더해 각 명령이 읽는 경로(쓴 글자 그대로)와 그 경로를 읽을 폴더 후보, `cd`가 옮겨 가는 폴더를 돌려줍니다. 분류기는 여전히 파일시스템을 보지 않습니다. 읽기 전용 자동 승인(`shared/permission-auto-approve.ts`, `server/permission-auto-approve.ts`)은 이 경로를 세션 호스트에서 구성 요소별로 풀어(링크를 따라간 뒤의 `..` 포함) 작업 폴더 경계와 민감한 이름을 다시 확인합니다. 파서는 헤어닥과 here-string을 받은 명령에 `inlineInput`을, 따옴표 밖에 일부 셸만 확장하는 문자(맨 앞의 `=`, `^`, 중간의 `~`)가 있는 낱말에 `shellSpecific`을 표시합니다. 자동 승인은 이 두 표시와 모든 리디렉션을 거절합니다. 카드의 분류는 이 표시를 쓰지 않습니다. 출력을 정확히 `/dev/null`로 버리는 리디렉션(`2>/dev/null`, `>/dev/null`, `&>/dev/null`)은 파일에 쓰지 않으므로 파서가 리디렉션 대상에서 빼고, 카드도 쓰기로 표시하지 않습니다. 자동 승인이 쓰는 민감한 이름 목록(`guardedWord`)은 카드의 "민감한 파일 읽기" 표시보다 넓고, 경로가 아닌 인자에도 적용합니다. 자동 승인의 조건 전체는 `intent/permission-auto-approve/spec.md`에 있습니다.
 
 ## 알려진 한계
 

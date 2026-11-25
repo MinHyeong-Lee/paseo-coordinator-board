@@ -131,7 +131,9 @@ export function shellCommands(source: string): ShellCommand[] | null {
           heredocs.push({ delimiter: target.value, tabs: operator.endsWith("-"), expand: !target.quoted, command });
           command.inlineInput = true;
         } else {
-          if (operator.includes(">") && (!operator.endsWith("&") || !/^\d+$|^-$/.test(target.value))) command.redirects.push(target);
+          // Output sent to exactly /dev/null is thrown away. It writes no file, so it is not a redirect target.
+          const discarded = !operator.includes("<") && !target.dynamic && target.value === "/dev/null";
+          if (operator.includes(">") && !discarded && (!operator.endsWith("&") || !/^\d+$|^-$/.test(target.value))) command.redirects.push(target);
           if (/^\d*<(?:>|$)/.test(operator)) command.inputs.push(target);
           if (operator.endsWith("<<<")) command.inlineInput = true;
           if (operator.endsWith("<<<") && target.parameterExpansion) command.expandsInputParameters = true;

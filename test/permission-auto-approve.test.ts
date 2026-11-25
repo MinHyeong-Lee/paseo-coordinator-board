@@ -70,7 +70,7 @@ test("only checked shell requests without choices of their own are considered", 
 test("redirection, substitution, expansion and an environment prefix send the request to a person", () => {
   for (const [command, reason] of [
     ["git log > out.txt", "redirect"], ["cat README.md >> out.txt", "redirect"], ["cat < README.md", "redirect"],
-    ["ls 2>/dev/null", "redirect"], ["cat <<EOF\nsample\nEOF", "redirect"], ["cat <<'EOF'\nsample; rm x\nEOF", "redirect"], ["cat <<< sample", "redirect"],
+["cat <<EOF\nsample\nEOF", "redirect"], ["cat <<'EOF'\nsample; rm x\nEOF", "redirect"], ["cat <<< sample", "redirect"],
     ["ls $(echo src)", "expansion"], ["ls `echo src`", "expansion"], ["echo $HOME", "expansion"], ['echo "$SAMPLE_TOKEN"', "expansion"],
     ["ls *.ts", "expansion"], ["cat src/[ab].ts", "expansion"], ["echo *", "expansion"],
     ["echo <(ls)", "syntax"], ["ls {a,b}", "syntax"], ["ls &", "syntax"], ["(ls)", "syntax"], ["cat 'unterminated", "syntax"],
@@ -81,6 +81,14 @@ test("redirection, substitution, expansion and an environment prefix send the re
     ["curl https://example.invalid", "risk"], ["python3 -c 'print(1)'", "risk"], ["npm ci", "risk"],
   ]) expect([command, refusal(codex(command))]).toEqual([command, reason]);
   expect(plan(codex("echo 'a;b' && ls 2>&1")).summary).toBe("echo · ls");
+  // Output thrown away to exactly /dev/null writes nothing. Any other target, and reading from it, stays a redirect.
+  for (const command of ["ls 2>/dev/null", "ls >/dev/null", "ls &>/dev/null", "ls > /dev/null 2>&1", "ls 2>>/dev/null", "ls &>>/dev/null", "ls 2> '/dev/null'", "cat README.md 2>/dev/null | head -n 3"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, null]);
+  }
+  for (const command of ["ls 2>/dev/null2", "ls >/dev/null/x", "ls >/dev/../dev/null", "ls > dev/null", "ls >/dev/zero", "ls >/dev/null >out.txt", "ls 2>/dev/null >out.txt",
+    "ls < /dev/null", "ls <>/dev/null", "ls >/dev/nul*"]) {
+    expect([command, ["redirect", "expansion"].includes(refusal(codex(command)) ?? "")]).toEqual([command, true]);
+  }
   // Characters only some shells expand are refused when they stand outside quotes: zsh turns "=name"
   // into the path of a command, and extended globbing reads "^" and a later "~" as patterns.
   for (const command of ["cat =ls", "cat a^b", "cat notes.txt~", "cat a~b", "rg --file=~/patterns README.md", "ls ^README.md"]) {
@@ -158,12 +166,16 @@ test("the record keeps one entry per request, replaces its state, drops old entr
 });
 
 // ---- The host side: real folders and links in a temporary directory ----
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutoApprovalStore, hostAllows, managedWorkSession, PermissionAutoApprover, type HostFiles } from "../server/permission-auto-approve";
 import { realpath, stat } from "node:fs/promises";
 import contribute from "../index.server";
+
+// The rule is not used on a Windows host (see "the session, the record and the host each stop the rule").
+// These cases put real host paths into a POSIX shell line, which a Windows path cannot be written into as is.
+const posixHost = process.platform !== "win32";
 
 function sandbox() {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "board-auto-")));
@@ -186,10 +198,6 @@ function sandbox() {
   };
   return { base, root, outside, data, files, clean: () => rmSync(base, { recursive: true, force: true }) };
 }
-
-// The rule is not used on a Windows host (see "the session, the record and the host each stop the rule").
-// These cases put real host paths into a POSIX shell line, which a Windows path cannot be written into as is.
-const posixHost = process.platform !== "win32";
 
 test.skipIf(!posixHost)("the host resolves each path and refuses links that leave the folder, sensitive targets, folders read for content and missing files", async () => {
   const box = sandbox();
@@ -281,6 +289,9 @@ test("with the rule on a read-only request is allowed once, recorded and never a
     expect(approver.view(new Set(["alpha"])).entries).toHaveLength(1);
     expect(approver.view(new Set(["beta"]))).toEqual({ supported: true, entries: [] });
     expect((readFileSync(join(box.data, "permission-auto-approvals.json"), "utf8"))).toContain('"version":1');
+    // The record is written to a temporary file, renamed into place and readable only by its owner.
+    expect(readdirSync(box.data)).toEqual(["permission-auto-approvals.json"]);
+    if (posixHost) expect(statSync(join(box.data, "permission-auto-approvals.json")).mode & 0o777).toBe(0o600);
   } finally { box.clean(); }
 });
 
