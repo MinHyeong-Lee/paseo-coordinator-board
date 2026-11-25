@@ -546,4 +546,7 @@ test("the card line and the setting text read in both languages", () => {
   }
   expect(autoApproveExplanation(ko)).toContain("한 번만 허용");
   expect(autoApproveExplanation(en)).toContain("allows once");
+  // The limit the board cannot close is said in plain words next to the switch.
+  expect(autoApproveExplanation(ko)).toContain("믿는 세션에서만 켜세요");
+  expect(autoApproveExplanation(en)).toContain("only for sessions you trust");
 });
