@@ -91,8 +91,9 @@ function structure(commands: ShellCommand[]): AutoApprovalRefusal | null {
     if (listing.has(name) && options.some(option => /^-[a-zA-Z0-9]*[LH]/.test(option) || option === "--dereference")) return "option";
     // Following a file never ends, so the session would wait on it until its own time limit.
     if (name === "tail" && options.some(option => /^-[a-zA-Z0-9]*[fF]/.test(option) || /^--follow(?:=|$)/.test(option))) return "option";
-    // Searching compressed files runs whichever decompression program the PATH names.
+    // Looking inside compressed files runs whichever decompression program the PATH names.
     if (name === "rg" && options.some(option => /^-[a-zA-Z0-9]*z/.test(option) || option === "--search-zip")) return "option";
+    if (name === "file" && options.some(option => /^-[a-zA-Z0-9]*[zZ]/.test(option) || /^--uncompress/.test(option))) return "option";
     // A bare relative name can be looked up through CDPATH. An explicit "./" or an absolute path cannot.
     if (name === "cd" && !words.every(word => absolute(word.value) || word.value.startsWith("./"))) return "relative";
     if (command.words.some(word => guardedWord(word.value))) return "sensitive";

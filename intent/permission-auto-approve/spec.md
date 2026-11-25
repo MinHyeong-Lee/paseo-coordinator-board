@@ -62,7 +62,7 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 - 모든 명령이 규칙의 목록에 있다: `ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd printf`와 `cd`. 이 목록은 분류기의 읽기 목록과 따로 둔다. git은 없다.
 - 옵션이 피연산자 뒤에 오지 않는다(`head a.txt -n ../b.txt`). 분류기는 GNU 도구처럼 옵션을 어디서든 읽지만, BSD 도구(macOS)는 첫 피연산자에서 옵션 읽기를 멈추고 뒤의 낱말을 모두 파일로 읽는다. 옵션이 피연산자 뒤에 없을 때만 두 읽기가 같다. `--` 뒤의 낱말, `find`의 식, `echo`와 `printf`의 인자는 해당하지 않는다.
 - 이름과 메타데이터를 보는 명령(`ls find stat readlink file`)에 링크를 따라가는 옵션(`-L`, `-H`, `--dereference`)이 없다.
-- `tail`에 따라가기 옵션(`-f`, `-F`, `--follow`)이 없다(끝나지 않아 세션이 시간 제한까지 기다린다). `rg`에 압축 파일 검색 옵션(`-z`, `--search-zip`)이 없다(`PATH`의 해제 프로그램을 실행한다).
+- `tail`에 따라가기 옵션(`-f`, `-F`, `--follow`)이 없다(끝나지 않아 세션이 시간 제한까지 기다린다). `rg`에 압축 파일 검색 옵션(`-z`, `--search-zip`)이, `file`에 압축 안을 들여다보는 옵션(`-z`, `-Z`, `--uncompress`)이 없다(`PATH`의 해제 프로그램을 실행한다).
 - `cd` 대상은 절대 경로이거나 `./`로 시작한다. 맨 이름의 상대 경로는 `CDPATH`로 다른 폴더를 가리킬 수 있다.
 - 내용을 읽는 명령의 대상 경로(작업 폴더 아래 부분)에 `.`으로 시작하는 이름이 없다. 예외는 관례상 비밀을 담지 않는 몇 개뿐이다: `.gitignore`, `.gitattributes`, `.editorconfig`, `.github`, `.nvmrc`. 이름 목록은 완전할 수 없어서(도구 설정, 상태 파일, 로그인 파일은 계속 새 이름이 생긴다) 점 이름은 허용 목록으로 다룬다. 이름만 보는 명령(`ls .git`)은 그대로 통과한다.
 - 모든 낱말(경로가 아닌 인자 포함)에 민감한 이름이 없다(`guardedWord`). 카드 표시용 목록에 더해 `id_*`, 비밀·비밀번호·토큰으로 시작하는 이름, 자격 증명 낱말이나 `.env`, `tfstate`가 들어간 이름, `auth.json`, 서비스 계정 JSON, `kubeconfig`, `.config/gh`, `.docker`, 키체인, 셸 기록 파일, 키 저장소 확장자(`p12`, `keystore` 등)를 본다.

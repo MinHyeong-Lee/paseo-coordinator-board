@@ -124,10 +124,12 @@ test("a bare relative cd, following a file and searching compressed files are re
   for (const command of ["cd src", "cd src && ls", "cd src/lib", "cd ..", "cd ./src && cd lib"]) expect([command, refusal(codex(command))]).toEqual([command, "relative"]);
   for (const command of ["cd ./src", "cd ./src && ls", `cd ${workspace}/src && ls`]) expect([command, refusal(codex(command))]).toEqual([command, null]);
   for (const command of ["tail -f log.txt", "tail -F log.txt", "tail -n 5 -f log.txt", "tail -fn5 log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
-    "rg -z x a.gz", "rg -nz x a.gz", "rg --search-zip x a.gz"]) {
+    "rg -z x a.gz", "rg -nz x a.gz", "rg --search-zip x a.gz",
+    // `file` also hands a compressed file to an external program when asked to look inside it.
+    "file -z archive.gz", "file -bz archive.gz", "file -zb archive.gz", "file -Z archive.gz", "file --uncompress archive.gz", "file --uncompress-noreport archive.gz"]) {
     expect([command, ["option", "risk"].includes(refusal(codex(command)) ?? "")]).toEqual([command, true]);
   }
-  for (const command of ["tail -n 5 log.txt", "tail -c 100 log.txt", "rg -n x a.txt", "grep -z x a.txt"]) expect([command, refusal(codex(command))]).toEqual([command, null]);
+  for (const command of ["tail -n 5 log.txt", "tail -c 100 log.txt", "rg -n x a.txt", "grep -z x a.txt", "file -b archive.gz", "file --mime-type archive.gz"]) expect([command, refusal(codex(command))]).toEqual([command, null]);
 });
 
 // Codex builds the command line by joining the argv with shell quoting (shlex), so reading it back
