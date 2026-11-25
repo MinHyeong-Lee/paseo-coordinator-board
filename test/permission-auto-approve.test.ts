@@ -187,7 +187,11 @@ function sandbox() {
   return { base, root, outside, data, files, clean: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-test("the host resolves each path and refuses links that leave the folder, sensitive targets, folders read for content and missing files", async () => {
+// The rule is not used on a Windows host (see "the session, the record and the host each stop the rule").
+// These cases put real host paths into a POSIX shell line, which a Windows path cannot be written into as is.
+const posixHost = process.platform !== "win32";
+
+test.skipIf(!posixHost)("the host resolves each path and refuses links that leave the folder, sensitive targets, folders read for content and missing files", async () => {
   const box = sandbox();
   try {
     const allowed = async (command: string, cwd = box.root) => {
@@ -298,8 +302,10 @@ test("every other request stays with a person and leaves no record", async () =>
       expect(state.responses).toEqual([]);
       expect(store.read()).toEqual([]);
     }
-    const absolute = host(box, [{ id: "r", ...claude(`cat ${box.root}/README.md`) }]);
-    expect(await absolute.run("r")).toBe("sent");
+    if (posixHost) {
+      const absolute = host(box, [{ id: "r", ...claude(`cat ${box.root}/README.md`) }]);
+      expect(await absolute.run("r")).toBe("sent");
+    }
   } finally { box.clean(); }
 });
 
