@@ -120,7 +120,8 @@ function LocalSidebarItem({ host, theme, layout, currentScreen, openScreen }: Pl
       try {
         const route = previousBoardRoute(window.localStorage, host.id, hosts.map(item => item.serverId), language);
         if (route) {
-          window.location.assign(route);
+          window.history.pushState(null, "", route);
+          window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }));
           return;
         }
       } catch {
