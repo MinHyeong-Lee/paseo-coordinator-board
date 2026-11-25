@@ -59,8 +59,8 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 - 어떤 낱말에도 명령 치환, 변수 확장, 글롭이 없다.
 - 따옴표 밖에 일부 셸만 확장하는 문자가 없다: 낱말 맨 앞의 `=`(zsh가 명령의 경로로 바꿈), `^`와 낱말 중간의 `~`(확장 글롭). 따옴표 안의 정규식(`'^import'`)은 그대로 통과한다.
 - 분류기의 최고 위험이 `read`다. 쓰기, 네트워크, 코드 실행, 삭제, 알 수 없음, 민감한 읽기, 작업 폴더 밖 읽기가 하나라도 있으면 아니다. 환경 변수 앞붙임, `eval`, `env`, `command`, `sudo`는 여기서 걸린다.
-- 모든 명령이 규칙의 목록에 있다: `ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd printf`와 `cd`. 이 목록은 분류기의 읽기 목록과 따로 둔다. git은 없다.
-- 옵션이 피연산자 뒤에 오지 않는다(`head a.txt -n ../b.txt`). 분류기는 GNU 도구처럼 옵션을 어디서든 읽지만, BSD 도구(macOS)는 첫 피연산자에서 옵션 읽기를 멈추고 뒤의 낱말을 모두 파일로 읽는다. 옵션이 피연산자 뒤에 없을 때만 두 읽기가 같다. `--` 뒤의 낱말, `find`의 식, `echo`와 `printf`의 인자는 해당하지 않는다.
+- 모든 명령이 규칙의 목록에 있다: `ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd`와 `cd`. 이 목록은 분류기의 읽기 목록과 따로 둔다. git은 없다. `printf`도 없다: bash의 `printf`는 형식 문자열(`%n`)로 셸 변수에 값을 쓸 수 있어, 같은 요청의 뒤 명령이 바뀐 `PATH`로 찾아질 수 있다.
+- 옵션이 피연산자 뒤에 오지 않는다(`head a.txt -n ../b.txt`). 분류기는 GNU 도구처럼 옵션을 어디서든 읽지만, BSD 도구(macOS)는 첫 피연산자에서 옵션 읽기를 멈추고 뒤의 낱말을 모두 파일로 읽는다. 옵션이 피연산자 뒤에 없을 때만 두 읽기가 같다. `--` 뒤의 낱말, `find`의 식, `echo`의 인자는 해당하지 않는다.
 - 이름과 메타데이터를 보는 명령(`ls find stat readlink file`)에 링크를 따라가는 옵션(`-L`, `-H`, `--dereference`)이 없다.
 - `tail`에 따라가기 옵션(`-f`, `-F`, `--follow`)이 없다(끝나지 않아 세션이 시간 제한까지 기다린다). `rg`에 압축 파일 검색 옵션(`-z`, `--search-zip`)이, `file`에 압축 안을 들여다보는 옵션(`-z`, `-Z`, `--uncompress`)이 없다(`PATH`의 해제 프로그램을 실행한다).
 - `cd` 대상은 절대 경로이거나 `./`로 시작한다. 맨 이름의 상대 경로는 `CDPATH`로 다른 폴더를 가리킬 수 있다.
@@ -116,7 +116,7 @@ Paseo 호스트 코드에서 형식과 효과를 확인한 것만 대상이다.
 | R2 | 조건을 채운 요청에 평범한 허용이 한 번 나가고 기록되며, 같은 요청에 다시 답하지 않는다 | "with the rule on a read-only request is allowed once, recorded and never answered twice" |
 | R3 | 리디렉션, 헤어닥, 치환, 확장, 글롭, 주석, 제어 문자, 환경 변수 앞붙임, `eval`이 사람에게 간다 | "redirection, substitution, expansion and an environment prefix send the request to a person" |
 | R4 | 이전 분류기를 우회했던 옵션 입력이 사람에게 간다 | "the options that slipped past an earlier classifier stay with a person" |
-| R5 | git은 읽기여도 대상이 아니다 | "git is not approved by the rule, even for a read" |
+| R5 | git과 `printf`는 읽기로 분류돼도 대상이 아니다 | "git is not approved by the rule, even for a read", "printf is not approved by the rule" |
 | R6 | 민감한 이름은 경로가 아닌 인자에 있어도 거절한다 | "a sensitive name anywhere in the request is refused, path or not" |
 | R7 | 호스트에서 링크를 풀어 작업 폴더 밖, 민감한 대상, 내용 명령의 폴더 대상, 없는 파일, 링크 뒤의 `..`을 거절한다. 홈 폴더 이상인 작업 폴더를 거절한다 | "the host resolves each path and refuses links that leave the folder, ..." |
 | R8 | 작업 폴더를 알리지 않는 실행기에서는 절대 경로만 통과한다. Codex의 셸 감싸기는 토크나이저로 읽는다 | "a provider that does not say where the command runs gets only absolute paths approved", "Codex's shell wrapper is read with the board's tokenizer ..." |

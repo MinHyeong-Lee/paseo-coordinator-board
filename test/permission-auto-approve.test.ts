@@ -113,6 +113,16 @@ test("the options that slipped past an earlier classifier stay with a person", (
   expect(refusal(codex("node --version"))).toBe("command");
 });
 
+// bash's printf can write a shell variable ("%n" stores a count in the named variable), so a later
+// command in the same request could be looked up through a changed PATH.
+test("printf is not approved by the rule", () => {
+  for (const command of ["printf '%n' PATH; cat README.md", "printf '%n' PATH", "printf '%s\\n' sample", "printf sample", "cat README.md | printf '%s'"]) {
+    expect([command, refusal(codex(command))]).toEqual([command, "command"]);
+  }
+  expect(refusal(codex("printf -v PATH 0"))).toBe("risk");
+  expect(plan(codex("echo sample")).summary).toBe("echo");
+});
+
 test("git is not approved by the rule, even for a read", () => {
   for (const command of ["git status", "git log --oneline", "git diff --no-ext-diff --no-textconv", "git --no-pager log -4", "git --version", "git diff --ext-di", "git log --outp=o"]) {
     expect([command, refusal(codex(command))]).toEqual([command, command.includes("--ext") || command.includes("--outp") ? "risk" : "command"]);

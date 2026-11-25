@@ -40,8 +40,9 @@ const shellSources: Record<string, string> = { claude: "Bash", codex: "CodexBash
 
 // Commands the rule may approve. It is its own list, so a command the card learns to label
 // "read" later does not become approvable without a decision here. Git is left out: a repository's
-// own configuration (external diff, textconv, fsmonitor, pager) can run code on a read.
-const approvable = new Set("ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd printf".split(" "));
+// own configuration (external diff, textconv, fsmonitor, pager) can run code on a read. So is printf:
+// in bash its format can write a shell variable ("%n"), which would change how a later command is found.
+const approvable = new Set("ls cat head tail wc sort uniq rg grep find sed awk readlink stat file sips echo pwd".split(" "));
 // These list names and metadata, so they may be given a folder. Every other command must be given files.
 const listing = new Set(["ls", "find", "stat", "readlink", "file"]);
 
@@ -85,8 +86,8 @@ function structure(commands: ShellCommand[]): AutoApprovalRefusal | null {
     const end = words.findIndex(word => word.value === "--");
     const options = (end < 0 ? words : words.slice(0, end)).map(word => word.value);
     // Where a utility stops reading options at the first operand, a later option and its value are files the
-    // board never resolved. `find` takes its expression after the paths, and the printing commands read no files.
-    if (!["find", "echo", "printf", "sed"].includes(name) && optionAfterOperand(name, words.map(word => word.value))) return "option";
+    // board never resolved. `find` takes its expression after the paths, and `echo` reads no files.
+    if (!["find", "echo", "sed"].includes(name) && optionAfterOperand(name, words.map(word => word.value))) return "option";
     // An option that follows symbolic links can list what lies outside the folder the host checked.
     if (listing.has(name) && options.some(option => /^-[a-zA-Z0-9]*[LH]/.test(option) || option === "--dereference")) return "option";
     // Following a file never ends, so the session would wait on it until its own time limit.
