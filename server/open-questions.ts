@@ -229,21 +229,42 @@ export function scanQuestions(evidence: { epoch?: string; events?: readonly Ques
   return { epoch, open: list.filter(item => !item.closed).map(({ closed: _closed, ...item }) => item), closed };
 }
 
-/** What the card shows about the open question and the older ones still open in the same session. */
+/**
+ * Why the coordinator should judge whether an open question was handled, or nothing when the board can tell or the
+ * coordinator already judged it: another question of the session came after it, the session spoke after it, or the
+ * person wrote something else to the session after it.
+ */
+export type JudgeReason = NonNullable<RaisedQuestion["judge"]>;
+export function judgeReason(scan: QuestionScan, item: FoundQuestion, index: number, verdict?: RaisedQuestion["verdict"], ended = false): JudgeReason | undefined {
+  if (verdict) return undefined;
+  if (ended) return "session-ended";
+  if (index < scan.open.length - 1) return "others-open";
+  if (item.maybeAnswered) return "person-wrote";
+  return item.later > 0 ? "spoke-after" : undefined;
+}
+
+/**
+ * What the card shows about the open question. Other open questions of the session ride along, judged or not: a question
+ * leaves only when something shows it was handled.
+ */
 export function questionNotice(scan: QuestionScan, ended: boolean, now = Date.now()): NonNullable<SessionRow["keptQuestion"]> | undefined {
   const main = scan.open.at(-1);
   if (!main) return undefined;
   const age = main.askedAt ? now - Date.parse(main.askedAt) : NaN;
   const old = main.later > OLD_QUESTION.later || age > OLD_QUESTION.ageMs;
-  const older = scan.open.slice(0, -1).slice(-10).reverse().map(item => ({ key: item.key, question: item.question.slice(0, 340), ...(item.askedAt ? { askedAt: item.askedAt } : {}) }));
+  const verdict = main.record?.verdict;
+  // All of them: the card folds what does not fit, nothing is cut here.
+  const older = scan.open.slice(0, -1).reverse()
+    .map(item => ({ key: item.key, question: item.question.slice(0, 340), ...(item.askedAt ? { askedAt: item.askedAt } : {}) }));
   return { key: main.key, later: main.later, ...(old ? { stale: true as const } : {}), ...(main.maybeAnswered ? { maybeAnswered: true as const } : {}),
-    ...(ended ? { ended: true as const } : {}), ...(older.length ? { older } : {}) };
+    ...(ended ? { ended: true as const } : {}), ...(older.length ? { older } : {}),
+    ...(verdict ? { verdict: "needed" as const, ...(verdict.evidence ? { verdictEvidence: verdict.evidence } : {}) } : {}) };
 }
 
 /** The context a session's scan needs from the host settings. */
 export type LedgerView = { questions: ReadonlyMap<string, ReadonlyMap<string, string>>; resolved?: ReadonlySet<string> };
-export function questionContext(scope: Pick<Preferences, "closedQuestions" | "raisedQuestions" | "decisionReceipts" | "clarifications">, sessionId: string,
-  ledger?: LedgerView, now?: number): QuestionContext {
+export function questionContext(scope: Pick<Preferences, "closedQuestions" | "raisedQuestions" | "decisionReceipts" | "clarifications"> & { coordinator?: string | null },
+  sessionId: string, ledger?: LedgerView, now?: number): QuestionContext {
   const boardMessageIds = new Map<string, string | undefined>();
   for (const [id, receipt] of Object.entries(scope.decisionReceipts ?? {})) {
     if (receipt.sessionId !== sessionId) continue;
@@ -272,7 +293,7 @@ export function ledgerQuestionsBySession(items: readonly { key: string; fingerpr
   return map;
 }
 
-type SessionLabel = Pick<SessionRow, "id" | "projectId" | "serverId" | "title" | "projectTitle" | "workspaceTitle">;
+type SessionLabel = Pick<SessionRow, "id" | "projectId" | "serverId" | "title" | "projectTitle" | "workspaceTitle"> & { status?: string };
 
 /**
  * Saves what a scan found, question by question: open questions are added or updated, closed ones leave the record with
@@ -288,19 +309,23 @@ export function saveScan(scope: Preferences, row: SessionLabel, scan: QuestionSc
   }
   const saved = scope.raisedQuestions[row.id];
   const questions = new Map((saved?.questions ?? []).map(question => [question.key, question]));
-  for (const item of scan.open) {
+  for (const [index, item] of scan.open.entries()) {
     if (Object.hasOwn(scope.closedQuestions, item.key)) continue;
     const kept = questions.get(item.key) ?? item.record;
+    const judge = judgeReason(scan, item, index, kept?.verdict, row.status === "closed");
     const core: RaisedQuestion = {
       key: item.key, epoch: item.epoch, seq: item.seq, question: item.question.slice(0, 2000),
       ...(item.askedAt && item.askedAt.length <= 64 ? { askedAt: item.askedAt } : {}), raisedAt: kept?.raisedAt ?? at,
       later: item.later, ...(item.countedSeq !== undefined ? { countedSeq: item.countedSeq } : {}),
       ...(item.maybeAnswered ? { maybeAnswered: true as const } : {}), ...(item.moved ? { moved: true as const } : {}),
-      ...(item.movedTo ? { movedTo: item.movedTo } : {}),
+      ...(item.movedTo ? { movedTo: item.movedTo } : {}), ...(judge ? { judge } : {}),
+      // The coordinator's verdict and the notice it got stay with the question.
+      ...(kept?.verdict ? { verdict: kept.verdict } : {}), ...(kept?.notified ? { notified: kept.notified } : {}),
+      ...(kept?.notifiedAt ? { notifiedAt: kept.notifiedAt } : {}), ...(kept?.notices ? { notices: kept.notices } : {}),
     };
     // Display fields that do not fit the record are left out. The question itself is always kept.
     // The scan's flags replace the saved ones; the saved display fields stay unless the scan has new ones.
-    const { moved: _moved, movedTo: _movedTo, maybeAnswered: _maybe, ...shown } = kept ?? {};
+    const { moved: _moved, movedTo: _movedTo, maybeAnswered: _maybe, judge: _judge, ...shown } = kept ?? {};
     const full = raisedQuestionSchema.safeParse({ ...shown, ...core, ...display(item) });
     const plain = raisedQuestionSchema.safeParse(core);
     questions.set(item.key, full.success ? full.data : plain.success ? plain.data : { ...core, epoch: core.epoch.slice(0, 4096) });
@@ -309,6 +334,7 @@ export function saveScan(scope: Preferences, row: SessionLabel, scan: QuestionSc
   for (const key of [...questions.keys()]) if (Object.hasOwn(scope.closedQuestions, key)) questions.delete(key);
   if (questions.size) {
     scope.raisedQuestions[row.id] = { projectId: row.projectId || saved?.projectId || "", ...(row.serverId ?? saved?.serverId ? { serverId: row.serverId ?? saved?.serverId } : {}),
+      ...(saved?.noticedAt ? { noticedAt: saved.noticedAt } : {}),
       title: (row.title || saved?.title || "").slice(0, 400), projectTitle: (row.projectTitle || saved?.projectTitle || "").slice(0, 400),
       workspaceTitle: (row.workspaceTitle || saved?.workspaceTitle || "").slice(0, 400), questions: [...questions.values()] };
   } else delete scope.raisedQuestions[row.id];
