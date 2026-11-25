@@ -1,9 +1,8 @@
-// Only persist a route that Paseo actually rendered for this board.
+// The screen prop updates before Expo commits the browser URL on a host switch.
 const storageKey = "coordinator-board:last-viewed-route";
 
-export function rememberBoardRoute(storage: Storage, pathname: string, hostId: string) {
-  const route = parseBoardRoute(pathname);
-  if (route?.hostId === hostId) storage.setItem(storageKey, pathname);
+export function rememberBoardRoute(storage: Storage, hostId: string) {
+  storage.setItem(storageKey, `/h/${encodeURIComponent(hostId)}/plugin/coordinator-board/surface/board`);
 }
 
 function parseBoardRoute(pathname: string) {

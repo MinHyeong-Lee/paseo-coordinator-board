@@ -101,7 +101,7 @@ function BoardScreen(props: PluginScreenProps) {
   useEffect(() => {
     if (props.layout.platform !== "web" || typeof window === "undefined") return;
     try {
-      rememberBoardRoute(window.localStorage, window.location.pathname, props.host.id);
+      rememberBoardRoute(window.localStorage, props.host.id);
     } catch {
       // Storage may be unavailable in a restricted browser.
     }
