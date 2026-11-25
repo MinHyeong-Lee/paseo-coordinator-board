@@ -12,6 +12,7 @@ import { factSchema } from "../shared/board-facts";
 import { assignmentPolicy, hostIdentity } from "../shared/host-assignment";
 import { assignmentLocation, assignmentNotice } from "../shared/dispatch-hosts";
 import { pullJudgmentSchema } from "../shared/pull-judgments";
+import { pullChangeRequestSchema } from "../shared/pull-change-requests";
 import { parallelState } from "../shared/busy-delivery";
 import { WORK_IMAGE_MIME_TYPES } from "../shared/work-images";
 import { conversationIdPattern } from "../shared/coordinator-tools";
@@ -20,6 +21,7 @@ export const judgment = z.object({
   content: decisionFields.optional(),
   evidenceId: z.string(), kind: z.enum(["question", "review", "idle"]), text: z.string().trim().min(1).max(1200),
 });
+const savedChangeRequest = pullChangeRequestSchema.extend({ response: z.string().optional() });
 const coordinatorConfig = z.object({ provider: z.string(), thinkingOptionId: z.string().optional(), modeId: z.string().optional() });
 const schema = z.object({
   projects: z.array(z.string()), coordinator: z.string().nullable(),
@@ -33,6 +35,16 @@ const schema = z.object({
   // Merge cards need a coordinator verdict on the PR head unless the person turns this off.
   judgedMergeCards: z.boolean().default(true),
   pullJudgments: z.record(z.string(), pullJudgmentSchema).default({}),
+  // Change requests the person sent from merge cards, the newest one for each PR.
+  // A record the board cannot read is dropped by itself, so one bad entry never stops the board.
+  pullChangeRequests: z.record(z.string(), z.unknown()).default({}).catch({}).transform(saved => {
+    const records: Record<string, z.output<typeof savedChangeRequest>> = {};
+    for (const [key, entry] of Object.entries(saved)) {
+      const parsed = savedChangeRequest.safeParse(entry);
+      if (parsed.success) records[key] = parsed.data;
+    }
+    return records;
+  }),
   lastDigest: z.object({ at: z.iso.datetime(), coordinator: z.string(), turnId: z.string() }).optional(),
   factHistory: z.record(z.string(), factSchema).default({}),
   workRequestIds: z.record(z.string(), z.string().uuid()).default({}),

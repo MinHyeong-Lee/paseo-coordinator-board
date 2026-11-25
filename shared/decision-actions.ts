@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { workImages } from "./work-images";
+import { questionBlockSchema } from "./question-block";
 
 export const changedDecisionMessage = "결정 카드 또는 수신자가 바뀌었습니다. 보드를 새로 고쳐 주세요. / The decision or recipient changed. Refresh the board.";
 
@@ -21,6 +22,8 @@ export const decisionSchema = decisionFields.extend({
   contextMarkdown: z.string().max(2000).optional(),
   choices: z.array(z.object({ label: z.string().max(40), markdown: z.string().max(700) })).max(8).optional(),
   missingLabels: z.array(z.string().max(40)).max(9).optional(),
+  // Display only, outside the version: the question block the session's message ended with.
+  block: questionBlockSchema.optional(),
   version: z.string().min(1).max(64),
   source: z.enum(["permission", "conversation", "coordinator", "agent-note", "person-note"]),
 });
