@@ -51,6 +51,10 @@ test("ignores human questions, examples, finished waits and unrelated blockers",
     "Waiting for CI to finish before my screen slot.",
     "The coordinator is waiting for my report.",
     "코디네이터가 제 보고를 기다립니다.",
+    "코디네이터가 기다립니다.",
+    "코디네이터가 화면 차례를 기다립니다.",
+    "코디네이터에게 보고했고 CI 완료를 기다립니다.",
+    "코디네이터에게 보고했고 사용자 승인을 기다립니다.",
     "Waiting for your reply.",
     "답을 기다립니다.",
   ]) expect([message, detectCoordinatorWait(message)]).toEqual([message, undefined]);
@@ -125,6 +129,10 @@ test("an explicit question block takes priority over a coordinator wait", () => 
     "```",
   ].join("\n");
   expect(decorate([assistant(text)]).coordinatorWait).toBeUndefined();
+});
+
+test("an answered note does not hide a new wait in the latest assistant message", () => {
+  expect(decorate([lastWait], { decisionAnswered: true }).coordinatorWait).toBe("decision");
 });
 
 test("emphasis starts at 30 minutes using the message time", () => {

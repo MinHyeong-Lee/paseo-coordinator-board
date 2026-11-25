@@ -42,7 +42,7 @@ export function decorateReviewWait(rows: SessionRow[], evidence: ReadonlyMap<str
       }
     }
     if (row.status === "idle" && row.id !== context.coordinator && !row.nativePending &&
-        !row.decision && !row.decisionAnswered && observed?.coordinatorWait) {
+        !row.decision && observed?.coordinatorWait) {
       row.coordinatorWait = observed.coordinatorWait.reason;
       row.waitingSince = observed.coordinatorWait.since ?? row.waitingSince ?? row.activityAt;
     }

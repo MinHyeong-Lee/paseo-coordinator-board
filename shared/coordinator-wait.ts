@@ -28,14 +28,22 @@ export function isLongCoordinatorWait(since: string | undefined, now: number) {
 
 const koreanTarget = /코디네이터|(?:다른|동료|병렬|작업|설계|담당)\s*세션/iu;
 const englishTarget = /\b(?:coordinator|(?:another|other|peer|parallel|worker|design|work) (?:session|agent))\b/i;
-const koreanTargetWaiting = new RegExp(`(?:${koreanTarget.source})(?:가|이|는|은)\\s+[^.!?]*(?:기다리(?:고|겠|는)|기다립|대기(?:하| 중))`, "u");
 const englishDependency = new RegExp(`^(?:(?:a|an|the|my|our)\\s+)?(?:(?:reply|response|approval|decision|feedback|go-ahead)\\s+from\\s+(?:the\\s+)?)?${englishTarget.source}`, "i");
 const koreanWaiting = /기다리(?:고|겠|는)|기다립|대기(?!열)|(?:오면|받으면|나오면|주면|되면)\s*(?:다시\s*)?(?:이어|계속|재개|진행|시작)/u;
+const koreanReplyWord = /답변?|회신|응답|승인|판단|결정|병합|화면\s*(?:사용\s*)?(?:차례|허락|승인)/u;
+const koreanWaitVerb = /기다리(?:고|겠|는)|기다립|대기|오면|받으면|나오면|되면/u;
+const koreanDependency = new RegExp(
+  `(?:${koreanTarget.source})(?:(?:의|에게서|한테서|로부터)?\\s*(?:${koreanReplyWord.source})(?:을|를|이|가)?|(?:을|를)?)\\s*(?:${koreanWaitVerb.source})|` +
+  `(?:${koreanTarget.source})(?:가|이)?\\s+(?:${koreanReplyWord.source})(?:을|를)?\\s*(?:주면|해\\s*주면)`,
+  "u",
+);
+const reportClauseEnd = /(?:보고|전달|문의|공유)(?:드렸고|했고|했으며|했습니다|한 뒤)\s*[,，]?\s*|[,，]\s*/u;
+const koreanImplicitReply = /^(?:(?:라는|는|그)\s+)?(?:답변?|회신|응답|화면\s*사용\s*(?:승인|허락))(?:을|를|이|가)?\s*(?:기다리|기다립|대기|오면|받으면)/u;
 const englishWaiting = /\b(?:wait(?:ing)? (?:for|on|until)|await(?:ing)?|(?:blocked|paused|on hold) (?:on|until|pending)|(?:resume|continue|proceed)\b.*\b(?:once|when|after))\b/i;
 const reply = /\b(?:its|their|a|the)\s+(?:reply|response|go-ahead|approval|decision|confirmation)\b|(?:답변?|회신|응답|승인|판단)(?:을|를|이|가)?\s*(?:기다리|기다립|대기|오면|받으면)/iu;
 const report = /보고|\b(?:report|reported|update|briefed)\b/iu;
 const screen = /화면\s*(?:차례|사용|공유|확인|검증)|\bscreen\s+(?:access|time|turn|slot|permission|clearance)\b/iu;
-const koreanScreenTurn = /화면\s*차례/u;
+const koreanScreenTurn = /^(?:(?:저는|현재|지금|아직|이제)\s+)*화면\s*차례(?:를|가)?\s*(?:기다리|기다립|대기|오면)/u;
 const englishScreenTurn = /^(?:(?:a|the|my|our)\s+)?(?:screen\s+(?:turn|slot)|visual (?:check|QA) slot)\b/i;
 const decision = /판단|결정|승인|\b(?:decision|approval|review|verdict)\b/iu;
 const merge = /병합|\bmerg(?:e[sd]?|ing)\b/iu;
@@ -84,10 +92,11 @@ export function detectCoordinatorWait(text: string): CoordinatorWaitReason | und
       } else if (englishScreenTurn.test(dependency)) {
         reason = "screen";
       } else if ((koWaiting || enWaiting) && (
-        (koWaiting && koTarget && !koreanTargetWaiting.test(sentence)) ||
+        (koWaiting && koreanDependency.test(sentence)) ||
         englishDependency.test(dependency) ||
-        (koWaiting && koreanScreenTurn.test(sentence)) ||
-        (reply.test(dependency || sentence) && (reported || sentReport))
+        (koWaiting && koreanScreenTurn.test(sentence.replace(/^\s*(?:[-+•]\s+)?/, ""))) ||
+        ((reported || sentReport) && (enWaiting ? reply.test(dependency)
+          : koreanImplicitReply.test(sentence.split(reportClauseEnd).at(-1)?.trim() ?? "")))
       )) {
         reason = screen.test(sentence) ? "screen" : merge.test(sentence) ? "merge" : decision.test(sentence) ? "decision"
           : sentReport || reported ? "report" : "reply";
