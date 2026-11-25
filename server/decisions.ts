@@ -1,4 +1,5 @@
-import { decorateDecision, restoreClarifiedDecision } from "./session-decisions";
+import { applyDoneNotes, decorateDecision, restoreClarifiedDecision } from "./session-decisions";
+import { questionContext } from "./open-questions";
 import { join } from "node:path";
 import { SessionPhotoStore } from "./session-photos";
 import { describePhotos, photoReceiptId, saveLocalPhotos, readLocalPhoto, removeLocalPhotos } from "./reply-photos";
@@ -9,7 +10,7 @@ import { changedDecisionMessage as changed, type DecisionInput } from "../shared
 import type { SessionRow } from "../shared/contract";
 import { canChangeQueue, type QueueAction } from "../shared/busy-delivery";
 import type { WorkImage } from "../shared/work-images";
-import { classify, ConversationReader } from "./conversation";
+import { classify, ConversationReader, scanOf } from "./conversation";
 import { isCurrentMembership, managedSessions } from "./session-links";
 import { canReceiveBoardInput } from "./discovery";
 import { discoverBoardSessions } from "./board-sessions";
@@ -159,13 +160,34 @@ export class DecisionSender {
     const prior = current.queuedDecisions[messageId];
     if (queuedId && (!prior || prior.stopped || prior.parallel === "held" || prior.serverId !== (destination.serverId ?? null))) throw Error(waiting);
     const judgment = current.judgments[row.id];
+    Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === current.coordinator,
+      questionContext(current, row.id)), { evidenceId: evidence.id });
+    // After classification, so a question still waiting for the person outranks a status report after it.
     if (verifiedBoardFact(row, evidence, current, note)) throw Error(changed);
-    Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === current.coordinator), { evidenceId: evidence.id });
+    // As the snapshot does: a done note that already closed a question no longer hides the card it uncovered.
+    if (note) applyDoneNotes([row], { [row.id]: note }, current);
     decorateDecision(row, note, current, evidence);
+    const found = row.decision;
     restoreClarifiedDecision(row, note, current, evidence);
+    // A card restored from before a clarification is not the question the session's turn is about now.
+    const restored = row.decision !== found;
     if (!row.decision || row.decision.source === "permission" || row.decision.version !== input.version) throw Error(changed);
     const agent = latest.find(target => target.id === destination.id)!.agent!;
-    const waitForTurn = activeReply && !canReceiveBoardInput(agent,!row.decision.deliverWhenIdle);
+    // A bare reply joins the session's current turn only while the card's question is its latest message and nothing came
+    // in after it. Otherwise the turn may be about something else: the reply waits for the turn to end and then goes
+    // with the card information that binds it to the question.
+    const asked = row.decision.source === "conversation" ? scanOf(row)?.open.at(-1) : undefined;
+    const lastEvent = evidence.events?.at(-1);
+    const bare = !restored &&
+      (!asked || (!!asked.turn && lastEvent?.role === "assistant" && lastEvent.seq === asked.turn.seq && !evidence.laterInput));
+    const waitForTurn = activeReply && (!bare || !canReceiveBoardInput(agent,!row.decision.deliverWhenIdle));
+    // The question the shown card asks. A card restored from before a clarification asks the question it was saved with,
+    // not the newest one the session asked since: find that question among the open ones by its words. If it cannot be
+    // found, the receipt names no question the board knows, so the reply closes none (it stays open rather than closing
+    // the wrong one).
+    const answered = row.decision.source !== "conversation" ? undefined
+      : !restored ? row.keptQuestion?.key
+      : scanOf(row)?.open.findLast(item => item.question === row.decision!.question)?.key ?? "unmatched-restored-card";
     const decision = row.decision;
     if (inspectOnly && !waitForTurn) throw Error(waiting);
     if (waitForTurn) {
@@ -181,7 +203,7 @@ export class DecisionSender {
       }
       return {...receipt,queued:true};
     }
-    const text = activeReply || queuedId ? input.text : sessionReplyMessage(row,input);
+    const text = (activeReply || queuedId) && bare ? input.text : sessionReplyMessage(row,input);
     if (input.images?.length) this.sessionPhotos.save(input.recipientId, messageId, input.images);
     this.store.change(current => {
       if (prior) delete current.queuedDecisions[messageId];
@@ -194,6 +216,8 @@ export class DecisionSender {
           ...(input.images?.length ? {imageCount:input.images.length} : {}),
           answer: input.text, recipientId: input.recipientId, coordinator: input.action === "coordinate" },
         fingerprint, sessionId: row.id, version: input.version, evidenceId: evidence.id, status: "pending", beforeAnswer: current.answers[row.id]?.version, ...(note?.kind === "question" ? { noteRevision: note.revision } : {}),
+        // The conversation question this reply answers. Its arrival closes that question and no other.
+        ...(answered ? { question: answered } : {}),
       };
     });
     if (queuedId) removeLocalPhotos(this.queuePhotos,queuedId,input.images?.length ?? 0);

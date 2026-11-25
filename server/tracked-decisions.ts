@@ -22,6 +22,7 @@ import {
 } from "../shared/tracked-decisions";
 
 import { canChangeQueue, parallelState, type QueueAction } from "../shared/busy-delivery";
+import { ledgerCardId } from "./open-questions";
 
 const maxBytes = 8 * 1024 * 1024;
 const feed = z.union([z.object({version:z.literal(1),items:z.array(z.unknown())}).transform(v=>v.items),z.array(z.unknown())]);
@@ -172,6 +173,17 @@ export class TrackedDecisionStore {
     if(!parsed.success)return null;
     const rows=new Map(parsed.data.items.map(r=>[receiptKey(r.key,r.fingerprint),r]));
     return rows.size===parsed.data.items.length?rows:null;
+  }
+
+  /**
+   * Ledger card revisions (`ledgerCardId`: key and fingerprint) with a resolution on record, closed and not waiting to
+   * send. A later revision of the same card is not resolved by an earlier one. Null when the record cannot be read.
+   */
+  resolvedKeys(): Set<string> | null {
+    const resolved = this.recorded();
+    if (!resolved) return null;
+    return new Set([...resolved.values()].filter(receipt => !receipt.pending && !receipt.queue)
+      .map(receipt => ledgerCardId(receipt.key, receipt.fingerprint)));
   }
 
   mergeRecipient(target: MergeTarget, coordinator: string | null): string | null {

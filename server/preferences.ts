@@ -17,6 +17,47 @@ import { parallelState } from "../shared/busy-delivery";
 import { WORK_IMAGE_MIME_TYPES } from "../shared/work-images";
 import { conversationIdPattern } from "../shared/coordinator-tools";
 
+// A record the board cannot read is dropped by itself, so one bad entry never loses the others.
+function tolerantRecord<T extends z.ZodType>(entry: T) {
+  return z.record(z.string(), z.unknown()).default({}).catch({}).transform(saved => {
+    const records: Record<string, z.output<T>> = {};
+    for (const [key, value] of Object.entries(saved)) {
+      const parsed = entry.safeParse(value);
+      if (parsed.success) records[key] = parsed.data;
+    }
+    return records;
+  });
+}
+export const raisedQuestionSchema = z.object({
+  key: z.string().min(1).max(64), epoch: z.string().max(4096), seq: z.number(),
+  question: z.string().min(1).max(2000), markdown: z.string().max(2000).optional(), context: z.string().max(2000).optional(),
+  choices: decisionSchema.shape.choices, block: decisionSchema.shape.block,
+  askedAt: z.string().max(64).optional(), raisedAt: z.iso.datetime(),
+  // How many times the session spoke after the question, counted up to `countedSeq`.
+  later: z.number().int().nonnegative(), countedSeq: z.number().optional(),
+  maybeAnswered: z.literal(true).optional(), moved: z.literal(true).optional(),
+  // The ledger card the question moved to.
+  movedTo: z.string().max(6000).optional(),
+});
+export type RaisedQuestion = z.output<typeof raisedQuestionSchema>;
+const raisedSession = z.object({
+  projectId: z.string(), serverId: z.string().optional(), title: z.string().max(400), projectTitle: z.string().max(400), workspaceTitle: z.string().max(400),
+  // Read question by question: one that cannot be read is left out, the others stay. Open questions are not cut by count.
+  questions: z.array(z.unknown()).transform(saved => saved.flatMap(entry => {
+    const parsed = raisedQuestionSchema.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  })),
+});
+export type RaisedSession = z.output<typeof raisedSession>;
+const closedQuestion = z.object({
+  sessionId: z.string(), at: z.iso.datetime(), reason: z.enum(["board", "session", "choice", "ledger", "person"]),
+  // Where the question was in its timeline, so a later settling line still finds it after the record is gone.
+  epoch: z.string().max(4096).optional(), seq: z.number().optional(),
+  // The person's done note that closed it. One note closes one question.
+  noteRevision: z.number().optional(),
+});
+export type ClosedReason = z.output<typeof closedQuestion>["reason"];
+
 export const judgment = z.object({
   content: decisionFields.optional(),
   evidenceId: z.string(), kind: z.enum(["question", "review", "idle"]), text: z.string().trim().min(1).max(1200),
@@ -96,6 +137,8 @@ const schema = z.object({
     fingerprint: z.string(), sessionId: z.string(), version: z.string(), status: z.enum(["pending", "sent"]),
     evidenceId: z.string().optional(),
     noteRevision: z.number().optional(), beforeAnswer: z.string().optional(), messageId: z.string().optional(),
+    // The conversation question this reply answers, so its arrival closes that question and no other.
+    question: z.string().max(64).optional(),
   })).default({}),
   pendingCoordinator: z.object({
     id: z.string(), previous: z.string().nullable(),
@@ -117,8 +160,14 @@ const schema = z.object({
   // When this board began serving the tool contract with this fingerprint. A compaction counts as
   // evidence that a conversation loaded these definitions only when it came after.
   toolsServed: z.object({ fingerprint: z.string().max(128), at: z.iso.datetime() }).optional().catch(undefined),
+  // Questions the board raised from a session's conversation, kept until something shows they were handled.
+  raisedQuestions: tolerantRecord(raisedSession),
+  // Questions closed with evidence, by question key. A closed question never opens again.
+  closedQuestions: tolerantRecord(closedQuestion),
 });
 export type Preferences = z.infer<typeof schema>;
+
+
 export type DispatchReceipt = Preferences["dispatchReceipts"][string];
 
 export const maxDispatchReceipts = 256;

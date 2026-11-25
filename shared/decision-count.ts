@@ -6,7 +6,7 @@ import { placeMergeCards, pullDecidesNow } from "./merge-card-place";
 
 export function displayLane(session: SessionRow, note: Note | undefined): SessionRow["lane"] | "done" {
   if (session.nativePending) return "human";
-  if (session.evidenceId && session.evidenceId === note?.evidenceId && note.origin === "person") {
+  if (session.evidenceId && session.evidenceId === note?.evidenceId && note.origin === "person" && !session.keptQuestion?.noteSpent) {
     if (note.kind === "done") return "done";
     if (note.kind === "review") return "review";
     if (note.kind === "clear" && session.lane === "human") return "idle";
@@ -14,7 +14,8 @@ export function displayLane(session: SessionRow, note: Note | undefined): Sessio
   if (session.decisionAnswered) {
     return session.lane === "running" || session.lane === "unknown" ? session.lane : "review";
   }
-  if (session.lane === "human" || note?.kind === "question") return "human";
+  // A question from the conversation stays in My decisions even while its session works.
+  if (session.lane === "human" || note?.kind === "question" || (session.keptQuestion && session.decision?.source === "conversation")) return "human";
   if (session.lane === "running") return "running";
   if (session.lane === "review" || note?.kind === "review" || (note?.kind === "done" && note.origin === "agent")) return "review";
   if (note?.kind === "done") return "done";
