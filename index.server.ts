@@ -13,17 +13,21 @@ import { decisionCount } from "./shared/decision-count";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { boardDecisionCount, boardScope, boardSnapshot, reportingKey, saveNote, setReporting } from "./shared/contract";
+import { boardDecisionCount, boardScope, boardSnapshot, reportingKey, saveNote, setReporting, type SessionRow } from "./shared/contract";
 import { canReceiveBoardInput, discoverSessions } from "./server/discovery";
 import { projectFolderMap, type ProjectFolders } from "./shared/project-folders";
 import { attachReportTool } from "./server/reporting";
 import { ConversationReader, excerpt } from "./server/conversation";
 import { isManagedCoordinator, pruneDispatchReceipts, setCoordinator, PreferenceStore } from "./server/preferences";
+import { closeKeptQuestion } from "./shared/kept-question";
+import { applyRecordedQuestions, questionDetails, recordedSessionRows, scanOf } from "./server/conversation";
+import { closeQuestionByPerson, ledgerQuestionsBySession, recordDisplay, saveScan } from "./server/open-questions";
 import { trackedReviewTool } from "./server/tracked-review";
 import { attachCoordinatorTools } from "./server/coordinator";
 import { createOperations } from "./server/operations";
 import { hostVisibility } from "./shared/hosts";
 import { decorateDecision, DecisionSender } from "./server/decisions";
+import { applyDoneNotes } from "./server/session-decisions";
 import { sendDecision } from "./shared/decision-actions";
 import { isCurrentMembership, managedSessions, registerSessionLinks, releaseUnmanagedCoordinator } from "./server/session-links";
 import { registerRecommendation } from "./server/recommendation";
@@ -122,7 +126,7 @@ export default function contribute(server: PluginServerContext) {
       })(),
       catalogRead.then(({ projects }) => prs.read(paseo, { projects, refresh:refreshPulls })),
     ]);
-    const { choices, sessions, evidence, coordinatorRow } = sessionView;
+    const { choices, sessions, evidence, coordinatorRow, ledger, discovered } = sessionView;
     const latest = prefs.read();
     const selected = new Set(latest.projects.filter(id => choices.has(id)));
     const activeScope = { ...latest, projects: [...selected] };
@@ -131,7 +135,25 @@ export default function contribute(server: PluginServerContext) {
       void mergeNotifications.resume(paseo).catch(() => console.warn("Could not resume queued merge notifications."));
     }
     const visible = sessions.filter(row => isCurrentMembership(row, activeScope));
+    // Questions the board raised stay until something shows they were handled: sessions it did not read show them from
+    // the record, and sessions it can no longer find show them as ended.
+    const questionsAt = Date.now();
+    for (const row of visible) applyRecordedQuestions(row, latest, ledger, questionsAt);
+    visible.push(...recordedSessionRows(latest, selected, discovered, ledger, questionsAt));
     const visibleNotes = notes.visible(new Set(visible.map(s => s.id)));
+    // A person's done note on the card's question closes that question as handled by the person, once.
+    const personClosed = applyDoneNotes(visible, visibleNotes, latest);
+    const scanned = visible.filter(row => scanOf(row));
+    const spent = (scope: typeof latest, id: string, revision: number) =>
+      Object.values(scope.closedQuestions).some(entry => entry.sessionId === id && entry.noteRevision === revision);
+    const save = (scope: typeof latest) => [
+      ...scanned.map(row => saveScan(scope, row, scanOf(row)!, item => recordDisplay(questionDetails(item)), questionsAt)),
+      ...personClosed.map(([id, question, revision]) => !Object.hasOwn(scope.closedQuestions, question) && !spent(scope, id, revision) &&
+        (closeQuestionByPerson(scope, id, question, questionsAt, revision), true)),
+    ].some(Boolean);
+    // Saving the record must not stop the board from showing. The next snapshot saves again.
+    try { if (save(structuredClone(latest))) prefs.change(save); }
+    catch { console.warn("Could not save the board's question records."); }
     facts.decorate(visible, evidence, visibleNotes);
     for (const row of visible) {
       decorateDecision(row, visibleNotes[row.id], latest, evidence.get(row.id));
@@ -299,8 +321,13 @@ export default function contribute(server: PluginServerContext) {
     const titles = new Map([...known].map(([id, p]) => [id, p.title]));
     const sessions = managedSessions(rows, scope, titles);
     const projects = [...known.values()];
+    // The ledger is read first so a question that moved to a ledger card closes only once that card is gone.
+    // A ledger the board cannot read in full leaves every moved question open.
+    const ledgerView = tracked.read(new Set(scope.projects), [], { items: [], projects: [] });
+    const resolved = tracked.resolvedKeys();
+    const ledger = ledgerView.status === "ok" ? { questions: ledgerQuestionsBySession(ledgerView.items), ...(resolved ? { resolved } : {}) } : undefined;
     const [evidence, roots] = await Promise.all([
-      reader.decorate(paseo, sessions, scope),
+      reader.decorate(paseo, sessions, scope, ledger),
       projectRoots.describe(projects, new Set(scope.projects)),
     ]);
     const choices = new Map(projects.map((project, i) => [project.id, { ...project, ...roots[i] }]));
@@ -331,7 +358,7 @@ export default function contribute(server: PluginServerContext) {
         // Fall back to Paseo's current state when the timeline is unavailable.
       }
     }
-    return { choices, sessions, evidence, coordinatorRow };
+    return { choices, sessions, evidence, coordinatorRow, ledger, discovered: new Set(rows.map(row => row.id)) };
   }
   const reads = new SnapshotReads<Awaited<ReturnType<typeof buildSnapshot>>>(() => {
     const { projects, sessionLinks, coordinator, projectRepositories } = prefs.read();
@@ -589,6 +616,20 @@ export default function contribute(server: PluginServerContext) {
     const outcome = notes.update(input);
     if (outcome.ok) invalidateCount();
     return outcome;
+  });
+
+  server.handle(closeKeptQuestion, async ({ sessionId, key }, { paseo }) => {
+    const scope = prefs.read();
+    const recorded = scope.raisedQuestions[sessionId];
+    if (!(recorded && scope.projects.includes(recorded.projectId) && recorded.questions.some(question => question.key === key))) {
+      const sessions = await discoverBoardSessions(paseo, prefs, new Set([sessionId]));
+      if (!managedSessions(sessions, prefs.read()).some(session => session.id === sessionId)) {
+        throw new Error("이 호스트에서 해당 세션을 찾지 못했습니다. 보드를 새로 고쳐 주세요. / This host could not find that session. Refresh the board.");
+      }
+    }
+    prefs.change(current => closeQuestionByPerson(current, sessionId, key));
+    invalidateCount();
+    return { ok: true as const };
   });
 
   server.handle(setReporting, async ({ sessionId, enabled }, { paseo }) => {

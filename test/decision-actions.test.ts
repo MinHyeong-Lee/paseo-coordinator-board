@@ -13,6 +13,8 @@ import { decorateDecision, DecisionSender } from "../server/decisions";
 import { discoverSessions } from "../server/discovery";
 import { NoteStore } from "../server/notes";
 import { PreferenceStore } from "../server/preferences";
+import { applyDoneNotes } from "../server/session-decisions";
+import { closeQuestionByPerson } from "../server/open-questions";
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "decision-card-test-"));
@@ -50,7 +52,10 @@ async function fixture() {
     const result = (await discoverSessions(sdk)).find(r => r.id === "worker");
     const scope = prefs.read();
     await reader.decorate(sdk, [result], scope);
-    decorateDecision(result, notes.visible(new Set(["worker"])).worker, scope);
+    // As a snapshot does: a done note that already closed a question no longer hides the next one.
+    const visibleNotes = notes.visible(new Set(["worker"]));
+    applyDoneNotes([result], visibleNotes, scope);
+    decorateDecision(result, visibleNotes.worker, scope);
     return result;
   }
   const initial = await row();
@@ -308,16 +313,80 @@ test("an unchanged open conversation card steers a running worker, while a new t
   }
 });
 
+test("a reply to a question kept after another session's message never joins the new turn bare", async () => {
+  const f = await fixture();
+  // Another session starts a new turn on the worker after its question. The card stays the same.
+  f.timelines.worker.push({type:"tool_call", callId:"paseo-agent-message:m1", name:"message", status:"completed",
+    agentMessage:{event:"message", sender:{id:"other"}, text:"Please review the release notes."}});
+  Object.assign(f.actors.worker, {status:"running", provider:"claude", activeTurn:{id:"turn"}});
+  expect(await f.send()).toMatchObject({queued:true});
+  expect(f.sent).toBeEmpty();
+  // Once the turn ends the reply goes with the card information that binds it to the question.
+  f.actors.worker.status = "idle"; f.actors.worker.activeTurn = null;
+  await new DecisionSender(f.prefs, f.notes, new ConversationReader()).resume(f.sdk);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0].text).not.toBe(f.input.text);
+  expect(f.sent[0].text).toContain("자막을 한 줄로 할까요?");
+  expect(f.sent[0].text.endsWith(f.input.text)).toBe(true);
+});
+
+test("a done note that closed the newer question does not block replies to the older card it uncovers", async () => {
+  const f = await fixture();
+  f.timelines.worker.unshift({ type: "assistant_message", text: "Which region should I use? Please choose one." });
+  f.actors.worker.updatedAt = "2";
+  const newer = await f.row();
+  expect(newer.decision?.question).toBe("자막을 한 줄로 할까요?");
+  // The person marks the newer card done; a snapshot closes that question with the note's revision.
+  expect(f.notes.update({ sessionId: "worker", kind: "done", text: "처리함", expectedRevision: 0, evidenceId: newer.evidenceId }).ok).toBe(true);
+  f.prefs.change(scope => closeQuestionByPerson(scope, "worker", newer.keptQuestion!.key, Date.now(), 1));
+  f.actors.worker.updatedAt = "3";
+  const older = await f.row();
+  expect(older.decision?.question).toContain("Which region");
+  await f.send({ version: older.decision!.version, requestKey: "send-older-card-1" });
+  expect(f.sent).toHaveLength(1);
+});
+
+test("a reply's receipt names the conversation question it answers", async () => {
+  const f = await fixture();
+  const card = await f.row();
+  await f.send();
+  const receipts = Object.values(f.prefs.read().decisionReceipts);
+  expect(receipts).toHaveLength(1);
+  expect(receipts[0].question).toBe(card.keptQuestion!.key);
+});
+
+test("a kept question still takes its answer while a status report is the latest message", async () => {
+  const f = await fixture();
+  f.timelines.worker.push({type:"assistant_message", text:"Status update only. No decision is requested."});
+  const card = await f.row();
+  expect(card.decision?.question).toBe("자막을 한 줄로 할까요?");
+  f.input.version = card.decision!.version;
+  await f.send();
+  expect(f.sent).toHaveLength(1);
+});
+
 test("a queued conversation answer rechecks the revision after restart", async () => {
   const f = await fixture();
   Object.assign(f.actors.worker, {status:"running", provider:"other", activeTurn:{id:"turn"}});
   expect(await f.send()).toMatchObject({queued:true});
   expect(f.sent).toBeEmpty();
   f.actors.worker.status = "idle"; f.actors.worker.activeTurn = null;
-  f.timelines.worker.push({type:"assistant_message",text:"Should we change the layout?"});
+  // A new question from the session replaces the card, so the answer to the old one is held.
+  f.timelines.worker.push({type:"assistant_message",text:"Which layout should we use? Please choose one."});
   const restarted = new DecisionSender(f.prefs, f.notes, new ConversationReader());
   await restarted.resume(f.sdk);
   expect(f.sent).toBeEmpty();
+});
+
+test("a queued answer still goes out when the session only spoke without asking, since its question is still open", async () => {
+  const f = await fixture();
+  Object.assign(f.actors.worker, {status:"running", provider:"other", activeTurn:{id:"turn"}});
+  expect(await f.send()).toMatchObject({queued:true});
+  f.actors.worker.status = "idle"; f.actors.worker.activeTurn = null;
+  f.timelines.worker.push({type:"assistant_message",text:"Noted the report from the other session."});
+  const restarted = new DecisionSender(f.prefs, f.notes, new ConversationReader());
+  await restarted.resume(f.sdk);
+  expect(f.sent).toHaveLength(1);
 });
 
 test("a conversation idle marker queues a running Codex reply and sends its original photos once after idle", async()=>{

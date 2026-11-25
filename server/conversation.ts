@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { SessionRow } from "../shared/contract";
 import type { Preferences } from "./preferences";
-import { contextBefore, labelDefinitions, questionChoices, type LabelDefinition } from "../shared/question-choices";
-import { blockQuestionLabel, splitQuestionBlock, type QuestionBlock } from "../shared/question-block";
+import { labelDefinitions, questionChoices, type LabelDefinition } from "../shared/question-choices";
+import { splitQuestionBlock, type QuestionBlock } from "../shared/question-block";
 import { withAssignmentHost } from "./host-assignment";
 import { waitsForIdle } from "../shared/busy-delivery";
-import { asksForDecision } from "../shared/question-request";
+import { questionIn, turnQuestion } from "./turn-question";
+import { questionContext, questionNotice, scanQuestions, settlingLines, type AssistantEvent, type FoundQuestion, type QuestionContext,
+  type LedgerView, type QuestionEvent, type QuestionScan } from "./open-questions";
 
 type Sdk = PluginHandlerContext["paseo"];
 type Page = Awaited<ReturnType<ReturnType<Sdk["agents"]["ref"]>["timeline"]["refetch"]>>;
@@ -24,8 +26,17 @@ export type Evidence = {
   deliveries?: { id: string; sender: string; bodyHash: string }[];
   // Sender of the most recent agent message when it is the latest input.
   lastInputSender?: string;
+  // The timeline the excerpt read, and its messages and inputs in order, for the questions the session asked.
+  epoch?: string;
+  events?: QuestionEvent[];
 };
-type Candidate = Pick<SessionRow, "lane" | "detail" | "decisionRequestedAt">;
+const HOUR = 60 * 60 * 1000;
+// How far back the board reads to find a question it has not seen yet.
+const OLDER_PAGES = 2;
+const OLDER_LIMIT = 96;
+const OLDER_REACH = { assistants: 31, ageMs: 24 * HOUR };
+const MAX_EVENTS = 240;
+type Candidate = Pick<SessionRow, "lane" | "detail" | "decisionRequestedAt" | "keptQuestion">;
 
 export function excerpt(page: Page): Evidence {
   if (page.error || page.gap || page.staleCursor) throw new Error("대화 발췌를 확인할 수 없습니다.");
@@ -39,6 +50,7 @@ export function excerpt(page: Page): Evidence {
   let messageIds: string[] = [];
   let clarification: ClarificationObservation | undefined;
   let lastInputSender: string | undefined;
+  const events: QuestionEvent[] = [];
   const clarificationMessages = new Map<string, ClarificationObservation>();
   for (const { item, seqEnd, timestamp } of page.entries) {
     if (item.type === "tool_call" && (item.agentMessage || item.name === "heartbeat")) {
@@ -69,6 +81,9 @@ export function excerpt(page: Page): Evidence {
         for (const id of messageIds) clarificationMessages.set(id, clarification);
       }
     }
+    if (item.type === "user_message") {
+      events.push({ role: "user", seq: seqEnd, ids: messageIds, text: text.slice(0, 2000), ...(timestamp ? { at: timestamp } : {}) });
+    }
     // A valid question block at the end is shown as choices, so the message reads without it. The evidence
     // identity still covers the message as written.
     const split = role === "assistant" ? splitQuestionBlock(text) : { text };
@@ -82,62 +97,49 @@ export function excerpt(page: Page): Evidence {
     turns.push({ role, text: shown.slice(-2000), ...(timestamp ? { at:timestamp } : {}), ...(shown.length > 2000 ? { truncated: true } : {}),
       ...(split.block ? { block: split.block } : {}) });
     full.set(turns.at(-1)!, item.text);
+    if (role === "assistant") {
+      const key = createHash("sha256").update(JSON.stringify([page.epoch, seqEnd, item.text])).digest("hex").slice(0, 24);
+      const settles = settlingLines(text);
+      const event: AssistantEvent = { ...turns.at(-1)!, role, seq: seqEnd, key, ...(settles ? { settles } : {}) };
+      events.push(event);
+      full.set(event, item.text);
+    }
     digest.update(JSON.stringify([seqEnd, role, text]));
   }
   if (laterInputs.length) digest.update(JSON.stringify(laterInputs));
   const kept = turns.slice(-4);
+  const last = turns.at(-1);
+  const recent = events.slice(-MAX_EVENTS);
   // Only the turns the excerpt keeps: long ones keep the definitions their cut-off start holds.
-  for (const turn of kept) {
+  for (const turn of [...kept, ...recent]) {
     if (turn.role !== "assistant" || !turn.truncated) continue;
     const definitions = labelDefinitions(full.get(turn)!.trim());
     if (definitions.length) turn.definitions = definitions;
   }
-  const last = turns.at(-1);
   return { ...(last?.role === "assistant" && waitsForIdle(full.get(last) ?? "") ? {deliverWhenIdle:true} : {}), id: digest.digest("hex").slice(0, 24), turns: kept,
     ...(clarification && messageIds.length ? { lastInputIds: messageIds } : {}),
     ...(clarificationMessages.size ? { clarificationMessages } : {}),
     ...(boardMessageHashes.size ? {boardMessageHashes} : {}),
     ...(replies.size ? { replies } : {}), ...(laterInputs.length ? {laterInput:true} : {}), ...(deliveries.length ? {deliveries} : {}),
-    ...(lastInputSender ? { lastInputSender } : {}) };
+    ...(lastInputSender ? { lastInputSender } : {}), epoch: page.epoch, ...(recent.length ? { events: recent } : {}) };
 }
 
-function questionIn(text: string, coordinatorDigest = false) {
-  const original = text.split("\n");
-  // Keep the source line indexes when ignoring code examples during question detection.
-  const lines = text.replace(/^`{3}[\s\S]*?^`{3}[^\n]*/gm, block => block.replace(/[^\n]/g, ""))
-    .split("\n").map(line => line.trim());
-  // A coordinator's digest quotes questions belonging to other sessions in typed table rows.
-  const quotedRow = (line: string) => coordinatorDigest && /^\|[^|]+\|\s*(?:question|질문)\s*(?:\+[^|]*)?\|/i.test(line);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (quotedRow(lines[i]) || lines[i].startsWith(">") || !asksForDecision(lines[i])) continue;
-    // A request inside a list belongs to the line right above that opens the list ("결정할 것: …" and its answer options), so the card starts there. A list with no request line above it keeps its own start.
-    const listItem = /^(?:[-*+]|\d+[.)])\s/;
-    let start = i;
-    while (listItem.test(lines[start]) && start > 0 && lines[start - 1] && !lines[start - 1].startsWith(">") && !quotedRow(lines[start - 1])) {
-      start--;
-      if (!listItem.test(lines[start])) { if (asksForDecision(lines[start])) i = start; break; }
-    }
-    // Include the checklist or options after a request heading.
-    const included = (line: string) => !line.startsWith(">") && !quotedRow(line);
-    return {
-      // Existing replies and ledger matches identify this question by its compact text.
-      question: lines.slice(i).filter(line => line && included(line)).join(" ").slice(0, 340),
-      markdown: original.slice(i).filter((_, index) => included(lines[i + index])).join("\n").trimEnd(),
-      // The explanation the session wrote before asking, for display only.
-      context: contextBefore(original.slice(0, i).filter((_, index) => included(lines[index]))),
-    };
+// Whether to read further back for a question the board has not seen: no input from the person, no question and no settling
+// line in what was read, and within the reach. Questions the board saw before are kept in the host settings instead.
+export function wantsOlder(page: Pick<Page, "entries" | "hasOlder" | "startCursor">, now = Date.now()) {
+  if (!page.hasOlder || !page.startCursor) return false;
+  let assistants = 0;
+  for (const { item } of page.entries) {
+    if (item.type === "user_message") return false;
+    if (item.type !== "assistant_message" || !item.text.trim()) continue;
+    const split = splitQuestionBlock(item.text.trim());
+    // Read as a coordinator digest would be: a quoted question row in a digest table is not a question here, so it does
+    // not stop the read before the coordinator's own question. For other sessions this only reads further.
+    if (split.block || questionIn(split.text, true) || settlingLines(item.text)) return false;
+    if (++assistants >= OLDER_REACH.assistants) return false;
   }
-  return null;
-}
-
-// The question a turn asks. A turn that ends in a question block asks even when no sentence does: its first question
-// is the title, and the text before the block is the context.
-function turnQuestion(turn: Turn, coordinatorDigest = false) {
-  const found = questionIn(turn.text, coordinatorDigest);
-  if (found || !turn.block) return found;
-  const first = turn.block.questions[0];
-  const label = blockQuestionLabel(first);
-  return { question: label.slice(0, 340), markdown: label, context: turn.text === first.text ? "" : contextBefore(turn.text.split("\n")) };
+  const oldest = page.entries.find(entry => entry.timestamp)?.timestamp;
+  return !oldest || !(now - Date.parse(oldest) > OLDER_REACH.ageMs);
 }
 
 export function lastConversationQuestion(evidence: Evidence, coordinatorDigest = false) {
@@ -145,36 +147,89 @@ export function lastConversationQuestion(evidence: Evidence, coordinatorDigest =
   return last?.role === "assistant" ? turnQuestion(last, coordinatorDigest) : null;
 }
 
-/** The last question with the text before it and the options it names, looked up in this and earlier assistant turns. */
-export function conversationQuestionDetails(evidence: Evidence, coordinatorDigest = false) {
-  const question = lastConversationQuestion(evidence, coordinatorDigest);
-  const last = evidence.turns.at(-1);
-  if (!question || !last) return null;
-  // A block carries its own options, so the labels in the text are not looked up.
-  if (last.block) return { ...question, choices: [], missingLabels: [], block: last.block };
-  const earlier = evidence.turns.slice(0, -1).filter(turn => turn.role === "assistant").reverse();
-  return { ...question, ...questionChoices({ question: question.markdown, context: question.context, message: last, earlier }), block: undefined };
+// An excerpt made by hand (older callers, tests) may have only `turns`: read them as the messages in order.
+function withEvents(e: Evidence): Evidence {
+  if (e.events) return e;
+  const events = e.turns.map((turn, seq): QuestionEvent => turn.role === "assistant"
+    ? { ...turn, role: "assistant", seq, key: createHash("sha256").update(JSON.stringify([e.id, seq, turn.text])).digest("hex").slice(0, 24) }
+    : { role: "user", seq, ids: [], text: turn.text, ...(turn.at ? { at: turn.at } : {}) });
+  return { ...e, events };
 }
 
-export function classify(e: Evidence, row: SessionRow, decision?: Preferences["judgments"][string], isCoordinator = false): Candidate {
+const scans = new WeakMap<SessionRow, QuestionScan>();
+/** The open questions classify found for this row, if it looked. */
+export function scanOf(row: SessionRow) {
+  return scans.get(row);
+}
+
+/** The card's question details: from the message when the board read it, otherwise from the board's record. */
+export function questionDetails(item: FoundQuestion) {
+  const shown = { question: item.question, markdown: item.markdown, context: item.context };
+  const block = item.turn ? item.turn.block : item.record?.block;
+  // A block carries its own options, so the labels in the text are not looked up.
+  if (block) return { ...shown, choices: [], missingLabels: [], block };
+  if (!item.turn) return { ...shown, choices: item.record?.choices ?? [], missingLabels: [], block: undefined };
+  const earlier = (item.earlier ?? []).slice(-3).reverse();
+  return { ...shown, ...questionChoices({ question: item.markdown, context: item.context, message: item.turn, earlier }), block: undefined };
+}
+
+/** The open question of an excerpt with the text before it and the options it names. */
+export function conversationQuestionDetails(evidence: Evidence, coordinatorDigest = false, context: QuestionContext = {}) {
+  const main = scanQuestions(withEvents(evidence), coordinatorDigest, context).open.at(-1);
+  return main ? questionDetails(main) : null;
+}
+
+export function classify(e: Evidence, row: SessionRow, decision?: Preferences["judgments"][string], isCoordinator = false, options: QuestionContext = {}): Candidate {
   if (row.lane === "human" || row.lane === "running" || row.lane === "unknown" || row.detail.includes("오류")) return row;
+  const scan = scanQuestions(withEvents(e), isCoordinator, options);
+  scans.set(row, scan);
   const last = e.turns.at(-1);
-  if (decision?.evidenceId === e.id) {
+  // A coordinator judgment that no person is needed does not hide a question still waiting for the person.
+  if (decision?.evidenceId === e.id && (decision.kind === "question" || !scan.open.length)) {
     const askedAt = decision.kind === "question" && (last?.role === "assistant" && turnQuestion(last, isCoordinator) ? last.at ?? decision.requestedAt : decision.requestedAt);
     return { lane: decision.kind === "question" ? "human" : decision.kind, detail: "코디네이터 판단 · " + decision.text,
       ...(askedAt ? {decisionRequestedAt:askedAt} : {}) };
   }
-  if (!last) return row;
-  if (last.role === "assistant") {
-    const question = turnQuestion(last, isCoordinator);
-    if (question) return { lane: "human", detail: "세션의 확인 요청 · " + question.question, ...(last.at ? {decisionRequestedAt:last.at} : {}) };
-  } else {
-    const previous = e.turns.slice(0, -1).findLast(t => t.role === "assistant");
-    if (previous && turnQuestion(previous, isCoordinator)) {
-      return { lane: "review", detail: "질문 뒤에 메시지가 왔습니다. 같은 질문에 대한 답인지 확인하세요." };
-    }
+  return asked(scan, row.status === "closed", options.now) ?? row;
+}
+
+// The card for the latest open question. Older open questions ride along on it.
+function asked(scan: QuestionScan, ended: boolean, now?: number): Candidate | null {
+  const main = scan.open.at(-1);
+  const notice = questionNotice(scan, ended, now);
+  if (!main || !notice) return null;
+  return { lane: "human", detail: "세션의 확인 요청 · " + main.question, ...(main.askedAt ? { decisionRequestedAt: main.askedAt } : {}), keptQuestion: notice };
+}
+
+/**
+ * A session the board did not read (working, ended, unreachable or its excerpt failed) still shows the questions the
+ * board raised before. A pending permission request takes the card while it waits.
+ */
+export function applyRecordedQuestions(row: SessionRow, prefs: Preferences, ledger?: LedgerView, now = Date.now()) {
+  if (scans.has(row) || row.nativePending || !prefs.raisedQuestions?.[row.id]?.questions.length) return false;
+  const scan = scanQuestions(null, row.id === prefs.coordinator, questionContext(prefs, row.id, ledger, now));
+  scans.set(row, scan);
+  const card = asked(scan, row.status === "closed", now);
+  // A working session keeps its lane and status line, so what reads "running" (merge holds, progress) still sees it.
+  // Its card still counts in My decisions (`displayLane`).
+  if (card && row.lane === "running") Object.assign(row, { keptQuestion: card.keptQuestion, ...(card.decisionRequestedAt ? { decisionRequestedAt: card.decisionRequestedAt } : {}) });
+  else if (card) Object.assign(row, card);
+  return true;
+}
+
+/**
+ * Sessions with questions not handled that the board can no longer find (archived, deleted, or on a host it cannot
+ * reach). They stay as ended cards. A session still listed elsewhere (another project) is left to that scope.
+ */
+export function recordedSessionRows(prefs: Preferences, selected: ReadonlySet<string>, discovered: ReadonlySet<string>, ledger?: LedgerView, now = Date.now()) {
+  const rows: SessionRow[] = [];
+  for (const [id, saved] of Object.entries(prefs.raisedQuestions ?? {})) {
+    if (discovered.has(id) || !selected.has(saved.projectId)) continue;
+    const row: SessionRow = { id, title: saved.title, projectId: saved.projectId, projectTitle: saved.projectTitle, workspaceTitle: saved.workspaceTitle,
+      model: null, status: "closed", lane: "idle", detail: "", ...(saved.serverId ? { serverId: saved.serverId } : {}) };
+    if (applyRecordedQuestions(row, prefs, ledger, now) && row.lane === "human") rows.push(row);
   }
-  return row;
+  return rows;
 }
 
 // The board reads excerpts only for resting sessions without an error to review.
@@ -182,12 +237,23 @@ export function usesConversationEvidence(row: Pick<SessionRow, "lane" | "detail"
   return (row.lane === "idle" || row.lane === "review") && !row.detail.includes("오류");
 }
 
-export function applyConversationEvidence(evidence: Evidence, row: SessionRow, prefs: Preferences) {
+export function applyConversationEvidence(evidence: Evidence, row: SessionRow, prefs: Preferences, ledger?: LedgerView, now?: number) {
   if (!usesConversationEvidence(row)) return false;
   const judgment = prefs.judgments[row.id];
-  Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === prefs.coordinator),
-    { evidenceId: evidence.id });
+  Object.assign(row, classify(evidence, row, judgment?.projectId === row.projectId ? judgment : undefined, row.id === prefs.coordinator,
+    questionContext(prefs, row.id, ledger, now)), { evidenceId: evidence.id });
   return true;
+}
+
+// The latest entries, and further back only while an unanswered question could be there (`wantsOlder`).
+export async function readTimeline(timeline: ReturnType<Sdk["agents"]["ref"]>["timeline"]) {
+  let page = await timeline.refetch({ direction: "tail", projection: "projected", limit: 48 });
+  for (let read = 0; read < OLDER_PAGES && !page.error && wantsOlder(page); read++) {
+    const older = await timeline.refetch({ direction: "before", cursor: page.startCursor!, projection: "projected", limit: OLDER_LIMIT }).catch(() => null);
+    if (!older || older.error || older.gap || older.staleCursor || older.epoch !== page.epoch) break;
+    page = { ...page, entries: [...older.entries, ...page.entries], startCursor: older.startCursor, hasOlder: older.hasOlder };
+  }
+  return page;
 }
 
 export class ConversationReader {
@@ -207,8 +273,7 @@ export class ConversationReader {
     }
     if (row.status !== "idle" && row.status !== "error" && row.status !== "closed" && !(openReply && row.status === "running")) return null;
     if (!fresh && cached && cached.stamp === row.activityAt && Date.now() - cached.at < 60_000) return cached.page;
-    const page = withAssignmentHost(paseo, row.serverId, client =>
-      client.agents.ref(row.id).timeline.refetch({ direction: "tail", projection: "projected", limit: 48 })).then(excerpt);
+    const page = withAssignmentHost(paseo, row.serverId, client => readTimeline(client.agents.ref(row.id).timeline)).then(excerpt);
     this.cache.set(row.id, { serverId: row.serverId, stamp: row.activityAt ?? "", at: Date.now(), page });
     try { return await page; }
     catch (error) {
@@ -217,7 +282,7 @@ export class ConversationReader {
     }
   }
 
-  async decorate(paseo: Sdk, rows: SessionRow[], prefs: Preferences) {
+  async decorate(paseo: Sdk, rows: SessionRow[], prefs: Preferences, ledger?: LedgerView) {
     this.retain(new Set([...rows.map(row => row.id), ...(prefs.coordinator ? [prefs.coordinator] : [])]));
     const observed = new Map<string, Evidence>();
     let cursor = 0;
@@ -226,7 +291,7 @@ export class ConversationReader {
         const row = rows[cursor++];
         try {
           const evidence = await this.read(paseo, row);
-          if (evidence && applyConversationEvidence(evidence, row, prefs)) {
+          if (evidence && applyConversationEvidence(evidence, row, prefs, ledger)) {
             observed.set(row.id, evidence);
           }
         } catch {

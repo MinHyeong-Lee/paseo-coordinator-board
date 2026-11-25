@@ -18,6 +18,8 @@ import { choiceRequest, decisionChoiceNotice } from "./choice-display";
 import { foldsAsk } from "./card-steps";
 import { cardInputPlaceholder, sendWords, withRequest } from "./card-input";
 import { applyBlockChoice, blockPicks, blockQuestionLabel } from "../shared/question-block";
+import { closeKeptQuestion } from "../shared/kept-question";
+import { keptQuestionNotice } from "./kept-question";
 
 type Action = DecisionInput["action"];
 type CoordinationDraft = { text: string; recipientId: string };
@@ -35,9 +37,9 @@ export function ReceiptText({ receipt, theme }: { receipt: DecisionReceipt; them
   </Text>;
 }
 
-export function DecisionActions({ card, theme, hostLabel, coordinator, coordinatorTitle, open, onSent, onQueued, receipt, clarification: renderClarification, pendingRequests, priorityLabel, embedded = false }: {
+export function DecisionActions({ card, theme, hostLabel, coordinator, coordinatorTitle, open, onSent, onQueued, onClosed, receipt, clarification: renderClarification, pendingRequests, priorityLabel, embedded = false }: {
   card: Card; theme: Theme; hostLabel?: string; coordinator: string | null; coordinatorTitle?: string; open?: (id: string) => void;
-  onQueued?: () => void; onSent: (result: DecisionReceipt) => void; receipt?: DecisionReceipt; pendingRequests?: ReactNode; priorityLabel?: string; embedded?: boolean;
+  onQueued?: () => void; onClosed?: () => void; onSent: (result: DecisionReceipt) => void; receipt?: DecisionReceipt; pendingRequests?: ReactNode; priorityLabel?: string; embedded?: boolean;
   // "history" is the earlier questions and answers, shown with the card's evidence. "ask" is the question box of an
   // approval request card, the only thing the board can send from that card.
   clarification?: (part: "ask" | "history") => ReactNode;
@@ -48,6 +50,8 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
   const c = theme.colors;
   const send = useRpc(sendDecision);
   const askRecommendation = useRpc(requestRecommendation);
+  const closeQuestion = useRpc(closeKeptQuestion);
+  const kept = keptQuestionNotice(session);
   const [showMethods, setShowMethods] = useState(false);
   const [reviewedReply, setReviewedReply] = useState<string | null>(null);
   const [replyOverflows, setReplyOverflows] = useState<boolean>();
@@ -115,6 +119,17 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
         "Delivery was not confirmed. Check the latest card and recipient before retrying."]);
     } finally { pending.current = false; setBusy(false); }
   }
+  // Closing a question as handled is recorded on this host only. Nothing is sent to the session.
+  async function closeKept(key: string) {
+    if (!kept || pending.current) return;
+    pending.current = true; setBusy(true); setError(null);
+    try {
+      await closeQuestion({ sessionId: session.id, key });
+      onClosed?.();
+    } catch {
+      setError(["질문을 닫지 못했습니다. 보드를 새로 고친 뒤 다시 시도해 주세요.", "Could not close the question. Refresh the board and try again."]);
+    } finally { pending.current = false; setBusy(false); }
+  }
   async function requestAdvice() {
     if (!decision || formal || !coordinator || decision.recommendation || decision.needsInput || pending.current || requestedFrom === coordinator) return;
     if (recommendationKey.current.recipient !== coordinator) {
@@ -168,10 +183,14 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
       style={{ paddingVertical: 6, paddingHorizontal: 3 }} onPress={onPress}>
       <Text style={{ color: c.foregroundMuted, fontSize: 13, textDecorationLine: "underline" }}>{label}</Text>
     </Pressable>;
-  return <View style={{ gap: 7, ...(embedded && { paddingTop: 10, borderTopWidth: 1, borderColor: c.border }) }}>
+  return <View style={{ gap: 7, ...(kept?.stale && { opacity: 0.6 }), ...(embedded && { paddingTop: 10, borderTopWidth: 1, borderColor: c.border }) }}>
     <CardHeader theme={theme} text={marker}>
       {open && <SessionChip theme={theme} label={t("작업 세션 열기", "Open work session")} accessibilityLabel={named(t("작업 세션 열기", "Open work session")).accessibilityLabel} onPress={() => open(session.id)} />}
     </CardHeader>
+    {kept && <View style={{ ...wrap, alignItems: "center" }}>
+      {kept.line && <Text style={{ color: kept.stale || kept.ended ? c.statusWarning : c.foregroundMuted, fontSize: 12 }}>{t(...kept.line)}</Text>}
+      <Button theme={theme} {...named(t("처리됨으로 닫기", "Close as handled"))} disabled={busy} onPress={() => void closeKept(kept.key)} />
+    </View>}
     {split ? <View>
       {/* The full title, laid out unseen at the same width, tells whether two lines cut it off. */}
       <View pointerEvents="none" aria-hidden accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
@@ -188,11 +207,22 @@ export function DecisionActions({ card, theme, hostLabel, coordinator, coordinat
       {questionFolds && disclose(questionOpen ? t("접기", "Less") : t("더 보기", "More"), questionOpen, () => setQuestionOpen(v => !v))}
     </View>}
     {!formal && decision && <QuestionContext theme={theme} title={session.title} choices={decision.choices} context={context} notice={choiceNotice} />}
+    {!!kept?.older.length && <View style={{ gap: 4 }}>
+      <Text style={{ color: c.foregroundMuted, fontSize: 12, fontWeight: "600" }}>{t("이 세션의 이전 미처리 질문", "Earlier questions in this session, not handled")}</Text>
+      {kept.older.map(item => <View key={item.key} style={{ ...wrap, alignItems: "center" }}>
+        <Text selectable style={{ color: c.foreground, fontSize: 13, flexShrink: 1 }}>{item.question}</Text>
+        <Button theme={theme} {...named(t("처리됨으로 닫기", "Close as handled") + " · " + item.question.slice(0, 40))} label={t("처리됨으로 닫기", "Close as handled")}
+          disabled={busy} onPress={() => void closeKept(item.key)} />
+      </View>)}
+    </View>}
     {completion && !coordination && <View style={wrap}>
       <Button theme={theme} {...named(t(...completion.label))} disabled={busy || replyPhotos.reading}
         onPress={() => { setError(null); setCoordination({ recipientId: coordinator!, text: t(...completion.text) }); }} />
     </View>}
-    {formal || !decision ? formal && (pendingRequests ?? <Text style={{ color: c.foregroundMuted }}>
+    {kept?.ended ? <Text style={{ color: c.foregroundMuted }}>
+      {t("세션이 끝났거나 찾을 수 없어 답을 보낼 수 없습니다. 처리됐으면 처리됨으로 닫아 주세요.",
+        "The session ended or cannot be found, so no reply can be sent. If it was handled, close it as handled.")}
+    </Text> : formal || !decision ? formal && (pendingRequests ?? <Text style={{ color: c.foregroundMuted }}>
       {t("승인 요청은 작업 세션에서 확인해 주세요.", "Review the approval request in the work session.")}
     </Text>) : <>
 
